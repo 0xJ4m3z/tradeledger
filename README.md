@@ -142,8 +142,8 @@ tradeledger/
 
 | Card | Description |
 |------|-------------|
-| Total Tracked Value | Active Positions Value + Wallet USD Value |
-| Active Positions Value | Current market value of all open positions |
+| Total Tracked Value | Wallet USD Value + Positions Value |
+| Positions Value | Current value of open + redeemable positions (active/open markets and won-but-unclaimed) |
 | Wallet USD Value | Polygon wallet USDC.e + pUSD balance (live, read-only) |
 | Unrealized P/L | Floating profit/loss on active positions |
 | Win Count | Number of resolved positions that paid out |
@@ -180,7 +180,7 @@ Tries multiple public Polygon RPCs automatically if one fails. Wallet address is
 - Active tab: all open positions including won-but-unredeemed
 - Redeemable tab: won markets waiting to be claimed
 - Closed tab: most recent 100 closed trades (redeemed, sold, or stop-loss triggered)
-- Total Tracked Value = Active Positions Value + Wallet USD Value
+- Total Tracked Value = Wallet USD Value + Positions Value (active/open + redeemable/unclaimed)
 - Total Tracked Value Over Time chart (from local snapshot history)
 - Wallet address masked in UI after fetch for privacy
 - 99 passing tests

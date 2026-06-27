@@ -268,7 +268,7 @@ class OverviewWidget(QWidget):
         vbox.setSpacing(10)
 
         self._total_card  = _MetricCard("Total Tracked Value",    f"${m['total_tracked_value']:,.2f}", _BLUE)
-        self._active_card = _MetricCard("Active Positions Value",  f"${m['active_positions_value']:,.2f}", _BLUE)
+        self._active_card = _MetricCard("Positions Value",          f"${m['active_positions_value']:,.2f}", _BLUE)
         self._wallet_card = _MetricCard("Wallet USD Value",        "$0.00", _MUTED)
         self._unreal_card = _MetricCard("Unrealized P/L",          f"${m['unrealized_pnl']:,.2f}", _pnl_color(m["unrealized_pnl"]))
         self._win_card    = _MetricCard("Win Count",                str(m["win_count"]), _GREEN)
