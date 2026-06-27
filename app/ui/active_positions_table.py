@@ -43,9 +43,9 @@ class ActivePositionsTable(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        header = QLabel(f"Active Positions  ({len(positions)})")
-        header.setStyleSheet("color: #c9d1d9; font-size: 14px; font-weight: 600;")
-        layout.addWidget(header)
+        self._header = QLabel(f"Active Positions  ({len(positions)})")
+        self._header.setStyleSheet("color: #c9d1d9; font-size: 14px; font-weight: 600;")
+        layout.addWidget(self._header)
 
         search = QLineEdit()
         search.setPlaceholderText("Filter by market, outcome...")
@@ -79,6 +79,19 @@ class ActivePositionsTable(QWidget):
         search.textChanged.connect(self._apply_filter)
 
         layout.addWidget(table)
+
+    def update_positions(self, positions: List[ActivePosition]) -> None:
+        self._header.setText(f"Active Positions  ({len(positions)})")
+        self._table.setRowCount(len(positions))
+        for row, p in enumerate(positions):
+            self._table.setItem(row, 0, _cell(p.market))
+            self._table.setItem(row, 1, _cell(p.outcome))
+            self._table.setItem(row, 2, _cell(f"{p.quantity:,.0f}",       Qt.AlignmentFlag.AlignRight))
+            self._table.setItem(row, 3, _cell(f"${p.avg_cost:.4f}",       Qt.AlignmentFlag.AlignRight))
+            self._table.setItem(row, 4, _cell(f"${p.current_price:.4f}",  Qt.AlignmentFlag.AlignRight))
+            self._table.setItem(row, 5, _cell(f"${p.current_value:,.2f}", Qt.AlignmentFlag.AlignRight))
+            self._table.setItem(row, 6, _pnl_cell(p.unrealized_pnl))
+            self._table.setItem(row, 7, _pnl_cell(p.unrealized_pnl_pct, "{:+.1f}%"))
 
     def _apply_filter(self, text: str) -> None:
         text = text.strip().lower()

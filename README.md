@@ -1,27 +1,37 @@
 # TradeLedger
 
-A local, read-only desktop application for tracking wallet-based trading positions, realized and unrealized P/L, active exposure, and performance history.
+A local, read-only desktop application for tracking Polymarket positions, wallet balance, and total account value.
 
 ## Overview
 
-TradeLedger helps you track open positions, review realized and unrealized P/L, and monitor trading history — all locally, without connecting to any exchange or wallet provider.
+TradeLedger lets you monitor your open positions, redeemable winnings, closed trade history, and activity feed — all locally, using public read-only APIs. No account login, no API key, no wallet connection required.
 
-It loads position data from local files (v0.1) or read-only external APIs (future versions):
+- **Overview** — wallet lookup, metric cards (Total Tracked Value, Positions Value, Wallet USD Value, Unrealized P/L, Win/Loss counts), Total Tracked Value mini chart
+- **Active Positions** — all open positions currently exposed to market movement
+- **Redeemable Positions** — won/resolved positions not yet claimed
+- **Closed Positions** — redeemed or sold positions, most recent 100, with Refresh button
+- **Activity** — full activity feed (trades, redeems, rewards, etc.), searchable, with Refresh button
+- **Total Tracked Value** — full-size chart with 1D / 1W / 1M / All range buttons
 
-- **Overview dashboard** — metric cards, cumulative P/L chart, and position lists on one page
-- **Active positions** — current value and unrealized P/L per position
-- **Resolved positions** — realized P/L, win/loss status, and redemption tracking
-- **P/L chart** — cumulative performance over time
-
-**Read-only by design.** This app never requests or stores private keys, seed phrases, wallet signatures, or login credentials. Wallet lookup by address only — no order placement, no transactions, no trading execution.
+**Read-only by design.** TradeLedger never asks for private keys, seed phrases, wallet signatures, or wallet connection permissions. Wallet lookup uses your public address only — no order placement, no transactions, no trading of any kind.
 
 ---
 
 ## Screenshots
 
-### Overview Dashboard
+![TradeLedger v0.2 Overview](docs/screenshots/tradeledger_v0.2_overview.png)
 
-![TradeLedger Overview Dashboard](docs/screenshots/tradeledger_overview.png)
+---
+
+## Terminology
+
+| Term | Definition |
+|------|------------|
+| **Active / Open Positions** | Positions in unresolved markets; still exposed to price movement and can still win or lose |
+| **Redeemable Positions** | Won/resolved positions that are claimable but not yet redeemed; still count toward Positions Value |
+| **Closed Positions** | Already redeemed or sold; historical only, not counted in current tracked value |
+| **Positions Value** | Current value of Active + Redeemable positions combined |
+| **Total Tracked Value** | Wallet USD Value + Positions Value |
 
 ---
 
@@ -33,8 +43,8 @@ It loads position data from local files (v0.1) or read-only external APIs (futur
 | Storage   | SQLite (sqlite3) |
 | Data      | pandas           |
 | Charts    | matplotlib       |
+| HTTP      | requests         |
 | Tests     | pytest           |
-| API (v0.2+) | httpx / requests |
 
 ---
 
@@ -60,6 +70,15 @@ source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+### 4. Configure environment (optional)
+
+```bash
+cp .env.example .env
+# Edit .env if you want a custom Polygon RPC endpoint
+```
+
+No API key is required. Wallet lookup uses public Polygon RPCs; position and activity lookup use the public Polymarket Data API.
+
 ---
 
 ## Run the app
@@ -68,7 +87,9 @@ pip install -r requirements.txt
 python run.py
 ```
 
-The app launches in **sample data mode**. No wallet address or API key is required. Sample positions are loaded from `sample_data/`. Each launch saves a snapshot to `tradeledger.db` (gitignored).
+The app launches in **sample data mode** — positions are loaded from `sample_data/`. Each launch saves a snapshot to `tradeledger.db` (gitignored).
+
+To load live data: enter your Polygon wallet address in the Overview panel and click **Fetch Wallet Value**. This fetches your stablecoin balance, open positions, redeemable positions, most recent closed positions, and activity feed in one pass. The button becomes **Refresh** after the first successful fetch. Your wallet address is masked in the UI (`0x1234...abcde`) after a successful fetch.
 
 ---
 
@@ -77,6 +98,8 @@ The app launches in **sample data mode**. No wallet address or API key is requir
 ```bash
 pytest tests/ -v
 ```
+
+All tests use mocked network calls — no live API access required.
 
 ---
 
@@ -87,30 +110,41 @@ tradeledger/
 ├── app/
 │   ├── main.py                         # Entry point and app init
 │   ├── database.py                     # SQLite snapshot storage
-│   ├── models.py                       # ActivePosition, ResolvedPosition dataclasses
+│   ├── models.py                       # ActivePosition, ResolvedPosition, UserActivity dataclasses
 │   ├── services/
 │   │   ├── pnl.py                      # P/L calculations and cumulative series
-│   │   ├── metrics.py                  # Dashboard metric aggregation
-│   │   └── positions.py                # Filter and sort helpers
+│   │   ├── metrics.py                  # Dashboard metric aggregation, Total Tracked Value
+│   │   ├── positions.py                # Filter and sort helpers
+│   │   └── chart_ranges.py             # filter_snapshots_by_range (1D/1W/1M/All)
 │   ├── adapters/
-│   │   ├── sample_adapter.py           # Loads from local JSON (v0.1)
-│   │   └── chain_adapter.py            # Stub for future read-only API
+│   │   ├── sample_adapter.py           # Loads from local JSON (v0.1 sample data)
+│   │   ├── wallet_adapter.py           # Read-only Polygon stablecoin balance lookup
+│   │   ├── polymarket_adapter.py       # Read-only Polymarket position + activity lookup
+│   │   └── chain_adapter.py            # Stub for future read-only chain API
 │   └── ui/
 │       ├── main_window.py              # QMainWindow, tabs, global styles
-│       ├── overview.py                 # Overview tab: metric cards, chart, position lists
-│       ├── active_positions_table.py   # Active positions tab with search filter
-│       ├── resolved_positions_table.py # Resolved positions tab with search filter
-│       └── pnl_chart.py               # Cumulative P/L chart (matplotlib)
+│       ├── overview.py                 # Overview tab: cards, wallet panel, mini chart, positions
+│       ├── wallet_panel.py             # Wallet address input, fetch/refresh, signals
+│       ├── total_value_chart.py        # Total Tracked Value chart widget (with range buttons)
+│       ├── active_positions_table.py   # Active Positions tab with search filter
+│       ├── resolved_positions_table.py # Redeemable / Closed Positions tabs with search filter
+│       └── activity_table.py           # Activity tab with search filter and color-coded types
 ├── tests/
 │   ├── test_pnl.py                     # P/L calculation tests
 │   ├── test_positions.py               # Filter and sort tests
-│   └── test_sample_adapter.py          # Sample data integrity tests
+│   ├── test_sample_adapter.py          # Sample data integrity tests
+│   ├── test_metrics_v2.py              # Total Tracked Value calculation tests
+│   ├── test_wallet_adapter.py          # Wallet lookup tests (mocked network)
+│   ├── test_wallet_snapshot.py         # Wallet snapshot storage tests
+│   ├── test_polymarket_adapter.py      # Polymarket position + activity lookup tests (mocked)
+│   └── test_chart_ranges.py            # Chart range filter tests
 ├── sample_data/
 │   ├── sample_wallet_positions.json    # Example active positions
 │   └── sample_resolved_positions.json  # Example resolved positions
 ├── docs/
 │   └── screenshots/
-│       └── tradeledger_overview.png    # Overview dashboard screenshot
+│       └── tradeledger_overview.png    # v0.1 overview screenshot
+├── .env.example                        # Environment variable template
 ├── conftest.py                         # pytest path setup
 ├── run.py                              # Launch script
 ├── requirements.txt
@@ -123,30 +157,60 @@ tradeledger/
 
 | Card | Description |
 |------|-------------|
-| Active Positions Value | Current market value of all open positions |
-| Realized P/L | Total profit/loss from resolved positions |
+| Total Tracked Value | Wallet USD Value + Positions Value |
+| Positions Value | Current value of all Active + Redeemable positions |
+| Wallet USD Value | Polygon wallet USDC.e + pUSD balance (live, read-only) |
+| Unrealized P/L | Floating profit/loss on active/open positions |
 | Win Count | Number of resolved positions that paid out |
 | Loss Count | Number of resolved positions that paid zero |
-| Unrealized P/L | Floating profit/loss on active positions |
+
+---
+
+## Wallet and position lookup
+
+TradeLedger fetches data using public, read-only APIs — no authentication required:
+
+- **Wallet USD value** — sum of USDC.e + pUSD balances via Polygon JSON-RPC `balanceOf()` calls. Both are USD-pegged stablecoins; no price feed needed.
+- **Active positions** — all open positions (including won-but-unredeemed), via `data-api.polymarket.com/positions`
+- **Redeemable positions** — won markets pending redemption, via the same endpoint
+- **Closed positions** — most recent 100 fully closed trades (redeemed, sold, or stop-loss triggered), via `data-api.polymarket.com/closed-positions`
+- **Activity feed** — most recent 100 activity events (trades, redeems, rewards, deposits, etc.), via `data-api.polymarket.com/activity`
+
+Tries multiple public Polygon RPCs automatically if one fails. Wallet address is masked in the UI after a successful fetch — the full address is only held in memory for the current session and never stored in any file.
+
+---
+
+## Privacy and safety
+
+- **Read-only only.** No order placement, no transactions, no contract calls that write state.
+- **Public address only.** TradeLedger never asks for private keys, seed phrases, wallet signatures, or wallet connection permissions.
+- **No secrets committed.** `.env`, local database files, and virtual environments are gitignored.
+- **Address masking.** After a successful fetch, the wallet address is displayed in shortened form (`0x1234...abcde`) in the UI.
 
 ---
 
 ## Roadmap
 
-**v0.1 — Sample dashboard (current)**
+**v0.1 — Sample dashboard** ✓
 - Sample data mode (no live API or wallet required)
-- Overview tab: metric cards, cumulative P/L chart, active and resolved position lists
+- Overview tab: metric cards, active and resolved position lists
 - Individual tabs for Active Positions and Resolved Positions with search filter
-- P/L Chart tab
-- Local SQLite snapshot storage on each launch
+- Local SQLite snapshot storage
 - pytest test suite
 
-**v0.2 — Portfolio value tracking**
-- Total Tracked Value across all positions
-- Wallet USD value display
-- Account value snapshots over time
+**v0.2 — Live wallet + position + activity tracking (current)**
+- Read-only Polygon wallet value (USDC.e + pUSD, no API key required)
+- Live Polymarket position lookup: active, redeemable, closed (most recent 100)
+- Activity tab: full activity feed (trades, redeems, rewards, etc.), searchable
+- Total Tracked Value = Wallet USD Value + Positions Value
+- Total Tracked Value Over Time chart with 1D / 1W / 1M / All range buttons
+- Full-size Total Tracked Value chart tab
+- Refresh button (overview, closed positions tab, activity tab)
+- Wallet address masked in UI after fetch for privacy
+- 130 passing tests
 
-**v0.3 — Read-only live data**
-- Read-only live wallet lookup by address
-- Read-only live market lookup
+**v0.3 — Deeper analytics (planned)**
+- Deeper closed position history and cumulative realized P/L
+- Export to CSV
+- Alerts or watchlist
 - No trading execution, no order placement, no private key storage

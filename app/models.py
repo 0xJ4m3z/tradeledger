@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 
@@ -53,3 +54,19 @@ class ResolvedPosition:
     @property
     def is_win(self) -> bool:
         return self.outcome_held == self.winning_outcome
+
+
+@dataclass
+class UserActivity:
+    timestamp: int    # epoch seconds
+    type: str         # TRADE, REDEEM, SPLIT, MERGE, REWARD, …
+    title: str        # market name
+    outcome: str
+    side: str         # BUY | SELL | ""
+    size: float       # tokens
+    usdc_size: float  # dollars
+    price: float
+
+    @property
+    def datetime_utc(self) -> str:
+        return datetime.fromtimestamp(self.timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")

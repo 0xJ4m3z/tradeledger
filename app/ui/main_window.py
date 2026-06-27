@@ -1,12 +1,13 @@
-from PySide6.QtWidgets import QMainWindow, QStatusBar, QTabWidget
+from PySide6.QtWidgets import QMainWindow, QStatusBar, QTabWidget, QVBoxLayout, QWidget
 
 from app.adapters.sample_adapter import load_all
-from app.database import save_snapshot
+from app.database import load_wallet_snapshots, save_snapshot
 from app.services.metrics import compute_dashboard_metrics
 from app.ui.active_positions_table import ActivePositionsTable
+from app.ui.activity_table import ActivityTable
 from app.ui.overview import OverviewWidget
-from app.ui.pnl_chart import PnlChartWidget
 from app.ui.resolved_positions_table import ResolvedPositionsTable
+from app.ui.total_value_chart import TotalValueChartWidget
 
 _STYLE = """
 QMainWindow, QWidget {
@@ -111,15 +112,47 @@ class MainWindow(QMainWindow):
         save_snapshot("sample", active, resolved)
         metrics = compute_dashboard_metrics(active, resolved)
 
+        overview           = OverviewWidget(active, resolved, metrics)
+        self._active_tab   = ActivePositionsTable(active)
+        self._resolved_tab = ResolvedPositionsTable(resolved, label="Redeemable Positions")
+        self._closed_tab   = ResolvedPositionsTable(
+            [], label="Closed Positions — most recent 100", show_refresh=True
+        )
+        self._activity_tab = ActivityTable([])
+
+        overview.positions_changed.connect(self._on_positions_changed)
+        overview.activity_changed.connect(self._activity_tab.update_activity)
+        self._closed_tab.refresh_requested.connect(overview.request_refresh)
+        self._activity_tab.refresh_requested.connect(overview.request_refresh)
+
+        # Full-size Total Tracked Value tab (same data as overview mini chart, bigger canvas)
+        self._tv_tab_chart = TotalValueChartWidget(load_wallet_snapshots(), figsize=(10, 5))
+        overview.snapshots_changed.connect(self._tv_tab_chart.update_snapshots)
+        tv_tab = QWidget()
+        tv_layout = QVBoxLayout(tv_tab)
+        tv_layout.setContentsMargins(20, 20, 20, 20)
+        tv_layout.addWidget(self._tv_tab_chart)
+
         tabs = QTabWidget()
-        tabs.addTab(OverviewWidget(active, resolved, metrics), "Overview")
-        tabs.addTab(ActivePositionsTable(active),              "Active Positions")
-        tabs.addTab(ResolvedPositionsTable(resolved),          "Resolved Positions")
-        tabs.addTab(PnlChartWidget(resolved),                  "P/L Chart")
+        tabs.addTab(overview,                  "Overview")
+        tabs.addTab(self._active_tab,          "Active Positions")
+        tabs.addTab(self._resolved_tab,        "Redeemable Positions")
+        tabs.addTab(self._closed_tab,          "Closed Positions")
+        tabs.addTab(self._activity_tab,        "Activity")
+        tabs.addTab(tv_tab,                    "Total Tracked Value")
         self.setCentralWidget(tabs)
 
-        status = QStatusBar()
-        status.showMessage(
+        self._status_bar = QStatusBar()
+        self._status_bar.showMessage(
             f"Sample data mode  •  {len(active)} active positions  •  {len(resolved)} resolved positions"
         )
-        self.setStatusBar(status)
+        self.setStatusBar(self._status_bar)
+
+    def _on_positions_changed(self, active: list, redeemable: list, closed: list) -> None:
+        self._active_tab.update_positions(active)
+        self._resolved_tab.update_positions(redeemable)
+        self._closed_tab.update_positions(closed)
+        self._status_bar.showMessage(
+            f"Live Polymarket data  •  {len(active)} active"
+            f"  •  {len(redeemable)} redeemable  •  {len(closed)} closed"
+        )
