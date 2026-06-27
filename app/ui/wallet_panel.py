@@ -14,11 +14,12 @@ from PySide6.QtWidgets import (
 from app.adapters.polymarket_adapter import (
     PolymarketLookupError,
     fetch_active_positions,
+    fetch_activity,
     fetch_closed_positions,
     fetch_redeemable_positions,
 )
 from app.adapters.wallet_adapter import WalletLookupError, fetch_wallet_usd_value
-from app.models import ActivePosition, ResolvedPosition
+from app.models import ActivePosition, ResolvedPosition, UserActivity
 
 _POLY_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _MASK_RE = re.compile(r"^0x[0-9a-fA-F]{4}\.{3}[0-9a-fA-F]{5}$")  # e.g. 0x99d0...Aa67e
@@ -43,6 +44,8 @@ class _FetchThread(QThread):
     wallet_err     = Signal(str)
     positions_ok   = Signal(list, list, list)   # (active, redeemable, closed)
     positions_err  = Signal(str)
+    activity_ok    = Signal(list)
+    activity_err   = Signal(str)
 
     def __init__(self, address: str):
         super().__init__()
@@ -71,6 +74,15 @@ class _FetchThread(QThread):
         except Exception as exc:
             self.positions_err.emit(f"Unexpected error: {exc}")
 
+        # Step 3: activity feed (non-fatal — positions already emitted)
+        try:
+            activity = fetch_activity(self._address)
+            self.activity_ok.emit(activity)
+        except PolymarketLookupError as exc:
+            self.activity_err.emit(str(exc))
+        except Exception as exc:
+            self.activity_err.emit(f"Unexpected error: {exc}")
+
 
 class WalletPanel(QWidget):
     """
@@ -85,6 +97,7 @@ class WalletPanel(QWidget):
 
     wallet_value_changed = Signal(float)
     positions_fetched    = Signal(list, list, list)
+    activity_fetched     = Signal(list)
 
     def __init__(self):
         super().__init__()
@@ -165,6 +178,7 @@ class WalletPanel(QWidget):
         self._thread.wallet_err.connect(self._on_wallet_err)
         self._thread.positions_ok.connect(self._on_positions_ok)
         self._thread.positions_err.connect(self._on_positions_err)
+        self._thread.activity_ok.connect(lambda a: self.activity_fetched.emit(a))
         self._thread.finished.connect(self._on_fetch_done)
         self._thread.start()
 
@@ -210,3 +224,8 @@ class WalletPanel(QWidget):
 
     def current_value(self) -> float:
         return self._current_value
+
+    def request_refresh(self) -> None:
+        """Trigger a refresh programmatically (e.g. from another tab's Refresh button)."""
+        if self._full_address and not (self._thread and self._thread.isRunning()):
+            self._on_fetch()

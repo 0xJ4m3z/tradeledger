@@ -191,6 +191,7 @@ def _resolved_section(positions: List[ResolvedPosition]) -> QWidget:
 class OverviewWidget(QWidget):
     positions_changed = Signal(list, list, list)   # (active, redeemable, closed) — for main_window tabs
     snapshots_changed = Signal(list)               # updated snapshot list — for the full-size tab chart
+    activity_changed  = Signal(list)               # activity feed — for the Activity tab
 
     def __init__(
         self,
@@ -219,6 +220,7 @@ class OverviewWidget(QWidget):
         self._wallet_panel = WalletPanel()
         self._wallet_panel.wallet_value_changed.connect(self._on_wallet_value_changed)
         self._wallet_panel.positions_fetched.connect(self._on_positions_fetched)
+        self._wallet_panel.activity_fetched.connect(self.activity_changed)
         main.addWidget(self._wallet_panel)
 
         main.addSpacing(14)
@@ -328,6 +330,10 @@ class OverviewWidget(QWidget):
         self._replace_section("_res_section", _resolved_section(redeemable))
 
         self.positions_changed.emit(active, redeemable, closed)
+
+    def request_refresh(self) -> None:
+        """Trigger a full data refresh — called by other tabs' Refresh buttons."""
+        self._wallet_panel.request_refresh()
 
     def _replace_section(self, attr: str, new_widget: QWidget) -> None:
         old = getattr(self, attr)

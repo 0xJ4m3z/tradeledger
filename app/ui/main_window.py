@@ -4,6 +4,7 @@ from app.adapters.sample_adapter import load_all
 from app.database import load_wallet_snapshots, save_snapshot
 from app.services.metrics import compute_dashboard_metrics
 from app.ui.active_positions_table import ActivePositionsTable
+from app.ui.activity_table import ActivityTable
 from app.ui.overview import OverviewWidget
 from app.ui.resolved_positions_table import ResolvedPositionsTable
 from app.ui.total_value_chart import TotalValueChartWidget
@@ -114,9 +115,15 @@ class MainWindow(QMainWindow):
         overview           = OverviewWidget(active, resolved, metrics)
         self._active_tab   = ActivePositionsTable(active)
         self._resolved_tab = ResolvedPositionsTable(resolved, label="Redeemable Positions")
-        self._closed_tab   = ResolvedPositionsTable([], label="Closed Positions — most recent 100")
+        self._closed_tab   = ResolvedPositionsTable(
+            [], label="Closed Positions — most recent 100", show_refresh=True
+        )
+        self._activity_tab = ActivityTable([])
 
         overview.positions_changed.connect(self._on_positions_changed)
+        overview.activity_changed.connect(self._activity_tab.update_activity)
+        self._closed_tab.refresh_requested.connect(overview.request_refresh)
+        self._activity_tab.refresh_requested.connect(overview.request_refresh)
 
         # Full-size Total Tracked Value tab (same data as overview mini chart, bigger canvas)
         self._tv_tab_chart = TotalValueChartWidget(load_wallet_snapshots(), figsize=(10, 5))
@@ -131,6 +138,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._active_tab,          "Active Positions")
         tabs.addTab(self._resolved_tab,        "Redeemable Positions")
         tabs.addTab(self._closed_tab,          "Closed Positions")
+        tabs.addTab(self._activity_tab,        "Activity")
         tabs.addTab(tv_tab,                    "Total Tracked Value")
         self.setCentralWidget(tabs)
 

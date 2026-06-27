@@ -1,11 +1,13 @@
 from typing import List
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -38,16 +40,34 @@ def _pnl_cell(val: float, fmt: str = "${:,.2f}") -> QTableWidgetItem:
 
 
 class ResolvedPositionsTable(QWidget):
-    def __init__(self, positions: List[ResolvedPosition], label: str = "Resolved Positions"):
+    refresh_requested = Signal()
+
+    def __init__(
+        self,
+        positions: List[ResolvedPosition],
+        label: str = "Resolved Positions",
+        show_refresh: bool = False,
+    ):
         super().__init__()
         self._label = label
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
+        header_row = QHBoxLayout()
         self._header = QLabel(f"{label}  ({len(positions)})")
         self._header.setStyleSheet("color: #c9d1d9; font-size: 14px; font-weight: 600;")
-        layout.addWidget(self._header)
+        header_row.addWidget(self._header)
+        if show_refresh:
+            header_row.addStretch()
+            refresh_btn = QPushButton("Refresh")
+            refresh_btn.setStyleSheet(
+                "background-color: #21262d; border: 1px solid #30363d; border-radius: 4px;"
+                " color: #c9d1d9; padding: 4px 14px; font-size: 12px;"
+            )
+            refresh_btn.clicked.connect(self.refresh_requested)
+            header_row.addWidget(refresh_btn)
+        layout.addLayout(header_row)
 
         search = QLineEdit()
         search.setPlaceholderText("Filter by market, outcome, redeemed status...")

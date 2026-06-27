@@ -11,7 +11,7 @@ from typing import List
 
 import requests
 
-from app.models import ActivePosition, ResolvedPosition
+from app.models import ActivePosition, ResolvedPosition, UserActivity
 
 _DATA_API         = "https://data-api.polymarket.com"
 _TIMEOUT          = 30
@@ -129,6 +129,30 @@ def fetch_redeemable_positions(wallet: str) -> List[ResolvedPosition]:
     """
     rows = _paginate("positions", {"user": wallet, "redeemable": "true"}, _PAGE_SIZE)
     return [_to_redeemable(r) for r in rows]
+
+
+def _to_activity(row: dict) -> UserActivity:
+    return UserActivity(
+        timestamp = int(row.get("timestamp") or 0),
+        type      = row.get("type") or "",
+        title     = row.get("title") or "",
+        outcome   = row.get("outcome") or "",
+        side      = row.get("side") or "",
+        size      = float(row.get("size") or 0),
+        usdc_size = float(row.get("usdcSize") or 0),
+        price     = float(row.get("price") or 0),
+    )
+
+
+def fetch_activity(wallet: str) -> List[UserActivity]:
+    """Return the 100 most-recent activity events for a wallet, newest first."""
+    rows = _paginate(
+        "activity",
+        {"user": wallet, "sortBy": "TIMESTAMP", "sortDirection": "DESC"},
+        page_size=100,
+        max_pages=1,
+    )
+    return [_to_activity(r) for r in rows]
 
 
 def fetch_closed_positions(wallet: str) -> List[ResolvedPosition]:

@@ -11,6 +11,7 @@ import requests
 from app.adapters.polymarket_adapter import (
     PolymarketLookupError,
     fetch_active_positions,
+    fetch_activity,
     fetch_closed_positions,
     fetch_redeemable_positions,
 )
@@ -326,3 +327,105 @@ class TestPagination:
         assert params["redeemable"] == "true"
         # sizeThreshold omitted to avoid server-side 408 timeouts
         assert "sizeThreshold" not in params
+
+
+# ── Activity ───────────────────────────────────────────────────────────────────
+
+_ACTIVITY_ROW = {
+    "timestamp":  1_750_000_000,
+    "type":       "TRADE",
+    "title":      "Will something happen?",
+    "outcome":    "YES",
+    "side":       "BUY",
+    "size":       50.0,
+    "usdcSize":   35.0,
+    "price":      0.70,
+    "proxyWallet": "0x" + "a" * 40,
+}
+
+_REDEEM_ROW = {
+    "timestamp":  1_750_001_000,
+    "type":       "REDEEM",
+    "title":      "Resolved market",
+    "outcome":    "YES",
+    "side":       "",
+    "size":       50.0,
+    "usdcSize":   50.0,
+    "price":      0.0,
+}
+
+
+class TestFetchActivity:
+    def test_returns_activity_list(self):
+        with patch("requests.get", return_value=_mock_response([_ACTIVITY_ROW])):
+            result = fetch_activity(_FAKE_WALLET)
+        assert len(result) == 1
+
+    def test_trade_fields_mapped_correctly(self):
+        with patch("requests.get", return_value=_mock_response([_ACTIVITY_ROW])):
+            a = fetch_activity(_FAKE_WALLET)[0]
+        assert a.timestamp  == 1_750_000_000
+        assert a.type       == "TRADE"
+        assert a.title      == "Will something happen?"
+        assert a.outcome    == "YES"
+        assert a.side       == "BUY"
+        assert a.size       == pytest.approx(50.0)
+        assert a.usdc_size  == pytest.approx(35.0)
+        assert a.price      == pytest.approx(0.70)
+
+    def test_redeem_row_no_side(self):
+        with patch("requests.get", return_value=_mock_response([_REDEEM_ROW])):
+            a = fetch_activity(_FAKE_WALLET)[0]
+        assert a.type == "REDEEM"
+        assert a.side == ""
+        assert a.price == pytest.approx(0.0)
+
+    def test_datetime_utc_property_formats_timestamp(self):
+        with patch("requests.get", return_value=_mock_response([_ACTIVITY_ROW])):
+            a = fetch_activity(_FAKE_WALLET)[0]
+        # Just check it returns a string in expected format — exact value depends on TZ
+        assert len(a.datetime_utc) == 16   # "YYYY-MM-DD HH:MM"
+        assert "-" in a.datetime_utc
+        assert ":" in a.datetime_utc
+
+    def test_empty_response_returns_empty_list(self):
+        with patch("requests.get", return_value=_mock_response([])):
+            result = fetch_activity(_FAKE_WALLET)
+        assert result == []
+
+    def test_network_error_raises(self):
+        with patch("requests.get", side_effect=requests.ConnectionError("timeout")):
+            with pytest.raises(PolymarketLookupError):
+                fetch_activity(_FAKE_WALLET)
+
+    def test_hits_activity_endpoint(self):
+        with patch("requests.get", return_value=_mock_response([])) as mock_get:
+            fetch_activity(_FAKE_WALLET)
+        url = mock_get.call_args[0][0]
+        assert url.endswith("/activity")
+
+    def test_sorted_descending_by_timestamp(self):
+        with patch("requests.get", return_value=_mock_response([])) as mock_get:
+            fetch_activity(_FAKE_WALLET)
+        params = mock_get.call_args[1]["params"]
+        assert params["sortBy"]        == "TIMESTAMP"
+        assert params["sortDirection"] == "DESC"
+
+    def test_capped_at_single_page(self):
+        # max_pages=1 means a full first page stops pagination (no second request)
+        full_page = [_ACTIVITY_ROW] * 100
+        with patch("requests.get") as mock_get:
+            mock_get.return_value = _mock_response(full_page)
+            fetch_activity(_FAKE_WALLET)
+        assert mock_get.call_count == 1
+
+    def test_missing_fields_default_gracefully(self):
+        sparse = {"timestamp": 1_700_000_000, "type": "REWARD"}
+        with patch("requests.get", return_value=_mock_response([sparse])):
+            a = fetch_activity(_FAKE_WALLET)[0]
+        assert a.title     == ""
+        assert a.outcome   == ""
+        assert a.side      == ""
+        assert a.size      == pytest.approx(0.0)
+        assert a.usdc_size == pytest.approx(0.0)
+        assert a.price     == pytest.approx(0.0)
