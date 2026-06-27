@@ -76,9 +76,9 @@ def _to_redeemable(row: dict) -> ResolvedPosition:
 
 
 def fetch_active_positions(wallet: str) -> List[ActivePosition]:
-    """Return currently open (non-redeemable) positions for the wallet."""
+    """Return all open positions, including redeemable (won but not yet claimed)."""
     rows = _paginate({"user": wallet, "sizeThreshold": "0"})
-    return [_to_active(r) for r in rows if not r.get("redeemable")]
+    return [_to_active(r) for r in rows]
 
 
 def fetch_redeemable_positions(wallet: str) -> List[ResolvedPosition]:

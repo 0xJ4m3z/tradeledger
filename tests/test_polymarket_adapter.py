@@ -62,12 +62,12 @@ class TestFetchActivePositions:
         assert p.avg_cost      == pytest.approx(0.6)
         assert p.current_price == pytest.approx(0.72)
 
-    def test_filters_out_redeemable_rows(self):
+    def test_includes_redeemable_rows_as_active(self):
+        # Redeemable = won but not yet claimed — still shows as active until redeemed
         data = [_ACTIVE_ROW, _REDEEMABLE_ROW]
         with patch("requests.get", return_value=_mock_response(data)):
             result = fetch_active_positions(_FAKE_WALLET)
-        assert len(result) == 1
-        assert result[0].market == "Will X happen?"
+        assert len(result) == 2
 
     def test_empty_response_returns_empty_list(self):
         with patch("requests.get", return_value=_mock_response([])):
