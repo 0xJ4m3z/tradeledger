@@ -19,9 +19,7 @@ TradeLedger lets you monitor your open positions, redeemable winnings, closed tr
 
 ## Screenshots
 
-> Screenshot below is from v0.1 (sample data mode). A v0.2 screenshot with live data will be added after the first live release.
-
-![TradeLedger v0.1 Overview](docs/screenshots/tradeledger_overview.png)
+![TradeLedger v0.2 Overview](docs/screenshots/tradeledger_v0.2_overview.png)
 
 ---
 
