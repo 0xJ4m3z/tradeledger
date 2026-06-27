@@ -111,15 +111,28 @@ class MainWindow(QMainWindow):
         save_snapshot("sample", active, resolved)
         metrics = compute_dashboard_metrics(active, resolved)
 
+        overview           = OverviewWidget(active, resolved, metrics)
+        self._active_tab   = ActivePositionsTable(active)
+        self._resolved_tab = ResolvedPositionsTable(resolved)
+
+        overview.positions_changed.connect(self._on_positions_changed)
+
         tabs = QTabWidget()
-        tabs.addTab(OverviewWidget(active, resolved, metrics), "Overview")
-        tabs.addTab(ActivePositionsTable(active),              "Active Positions")
-        tabs.addTab(ResolvedPositionsTable(resolved),          "Resolved Positions")
-        tabs.addTab(PnlChartWidget(resolved),                  "P/L Chart")
+        tabs.addTab(overview,              "Overview")
+        tabs.addTab(self._active_tab,      "Active Positions")
+        tabs.addTab(self._resolved_tab,    "Resolved Positions")
+        tabs.addTab(PnlChartWidget(resolved), "P/L Chart")
         self.setCentralWidget(tabs)
 
-        status = QStatusBar()
-        status.showMessage(
+        self._status_bar = QStatusBar()
+        self._status_bar.showMessage(
             f"Sample data mode  •  {len(active)} active positions  •  {len(resolved)} resolved positions"
         )
-        self.setStatusBar(status)
+        self.setStatusBar(self._status_bar)
+
+    def _on_positions_changed(self, active: list, redeemable: list) -> None:
+        self._active_tab.update_positions(active)
+        self._resolved_tab.update_positions(redeemable)
+        self._status_bar.showMessage(
+            f"Live Polymarket data  •  {len(active)} active  •  {len(redeemable)} redeemable"
+        )

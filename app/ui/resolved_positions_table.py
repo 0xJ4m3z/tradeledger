@@ -44,9 +44,9 @@ class ResolvedPositionsTable(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        header = QLabel(f"Resolved Positions  ({len(positions)})")
-        header.setStyleSheet("color: #c9d1d9; font-size: 14px; font-weight: 600;")
-        layout.addWidget(header)
+        self._header = QLabel(f"Resolved Positions  ({len(positions)})")
+        self._header.setStyleSheet("color: #c9d1d9; font-size: 14px; font-weight: 600;")
+        layout.addWidget(self._header)
 
         search = QLineEdit()
         search.setPlaceholderText("Filter by market, outcome, redeemed status...")
@@ -87,6 +87,24 @@ class ResolvedPositionsTable(QWidget):
         search.textChanged.connect(self._apply_filter)
 
         layout.addWidget(table)
+
+    def update_positions(self, positions: List[ResolvedPosition]) -> None:
+        self._header.setText(f"Resolved Positions  ({len(positions)})")
+        self._table.setRowCount(len(positions))
+        for row, p in enumerate(positions):
+            outcome_item = _cell(p.outcome_held)
+            outcome_item.setForeground(_GREEN if p.is_win else _RED)
+            self._table.setItem(row, 0, _cell(p.market))
+            self._table.setItem(row, 1, outcome_item)
+            self._table.setItem(row, 2, _cell(p.winning_outcome))
+            self._table.setItem(row, 3, _cell(f"{p.quantity:,.0f}",       Qt.AlignmentFlag.AlignRight))
+            self._table.setItem(row, 4, _cell(f"${p.cost_basis:,.2f}",    Qt.AlignmentFlag.AlignRight))
+            self._table.setItem(row, 5, _cell(f"${p.redeem_value:,.2f}",  Qt.AlignmentFlag.AlignRight))
+            self._table.setItem(row, 6, _pnl_cell(p.realized_pnl))
+            self._table.setItem(row, 7, _pnl_cell(p.realized_pnl_pct, "{:+.1f}%"))
+            status = _cell("Yes" if p.redeemed else "Pending")
+            status.setForeground(_GREEN if p.redeemed else _MUTED)
+            self._table.setItem(row, 8, status)
 
     def _apply_filter(self, text: str) -> None:
         text = text.strip().lower()

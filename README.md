@@ -65,7 +65,7 @@ cp .env.example .env
 # Edit .env if you want a custom Polygon RPC endpoint
 ```
 
-No API key is required. Basic wallet lookup (MATIC + USDC) uses the public Polygon RPC and CoinGecko price API.
+No API key is required. Wallet lookup uses public Polygon RPCs; position lookup uses the public Polymarket Data API.
 
 ---
 
@@ -77,7 +77,7 @@ python run.py
 
 The app launches in **sample data mode**. Active positions are loaded from `sample_data/`. Each launch saves a position snapshot to `tradeledger.db` (gitignored).
 
-To track wallet value: enter your Polygon wallet address in the Overview panel and click **Fetch Wallet Value**, or type a value manually and click **Set**.
+To load live data: enter your Polygon wallet address in the Overview panel and click **Fetch Wallet Value**. This fetches your stablecoin balance and all active and redeemable Polymarket positions in one step.
 
 ---
 
@@ -103,12 +103,13 @@ tradeledger/
 │   │   └── positions.py                # Filter and sort helpers
 │   ├── adapters/
 │   │   ├── sample_adapter.py           # Loads from local JSON (v0.1)
-│   │   ├── wallet_adapter.py           # Read-only Polygon wallet value lookup (v0.2)
+│   │   ├── wallet_adapter.py           # Read-only Polygon stablecoin balance lookup (v0.2)
+│   │   ├── polymarket_adapter.py       # Read-only Polymarket position lookup (v0.2)
 │   │   └── chain_adapter.py            # Stub for future read-only API
 │   └── ui/
 │       ├── main_window.py              # QMainWindow, tabs, global styles
 │       ├── overview.py                 # Overview tab: cards, wallet panel, chart, positions
-│       ├── wallet_panel.py             # Wallet address input, live fetch, manual fallback
+│       ├── wallet_panel.py             # Wallet address input, live fetch + position signals
 │       ├── total_value_chart.py        # Total Tracked Value over time chart
 │       ├── active_positions_table.py   # Active positions tab with search filter
 │       ├── resolved_positions_table.py # Resolved positions tab with search filter
@@ -119,7 +120,8 @@ tradeledger/
 │   ├── test_sample_adapter.py          # Sample data integrity tests
 │   ├── test_metrics_v2.py              # Total Tracked Value calculation tests
 │   ├── test_wallet_adapter.py          # Wallet lookup tests (mocked network)
-│   └── test_wallet_snapshot.py         # Wallet snapshot storage tests
+│   ├── test_wallet_snapshot.py         # Wallet snapshot storage tests
+│   └── test_polymarket_adapter.py      # Polymarket position lookup tests (mocked)
 ├── sample_data/
 │   ├── sample_wallet_positions.json    # Example active positions
 │   └── sample_resolved_positions.json  # Example resolved positions
@@ -141,7 +143,7 @@ tradeledger/
 |------|-------------|
 | Total Tracked Value | Active Positions Value + Wallet USD Value |
 | Active Positions Value | Current market value of all open positions |
-| Wallet USD Value | Polygon wallet value (MATIC + USDC), live or manual |
+| Wallet USD Value | Polygon wallet USDC.e + pUSD balance (live, read-only) |
 | Unrealized P/L | Floating profit/loss on active positions |
 | Win Count | Number of resolved positions that paid out |
 | Loss Count | Number of resolved positions that paid zero |
@@ -150,13 +152,13 @@ tradeledger/
 
 ## Wallet value lookup
 
-TradeLedger fetches wallet value using public, read-only APIs — no API key required:
+TradeLedger fetches wallet value and positions using public, read-only APIs — no API key required:
 
-- **Native MATIC balance** via public Polygon JSON-RPC (`https://polygon-rpc.com`)
-- **USDC balance** (native USDC + USDC.e) via direct contract call
-- **MATIC/USD price** via CoinGecko simple price API
+- **Wallet USD value** — sum of USDC.e + pUSD balances via Polygon JSON-RPC `balanceOf()` calls. Both tokens are USD-pegged stablecoins; no price API needed.
+- **Active positions** — open Polymarket positions via `data-api.polymarket.com/positions`
+- **Redeemable positions** — won markets pending redemption via the same endpoint
 
-If lookup fails, enter the wallet USD value manually. The app remains fully usable without live data.
+Tries multiple public Polygon RPCs automatically if one fails.
 
 ---
 
@@ -170,12 +172,12 @@ If lookup fails, enter the wallet USD value manually. The app remains fully usab
 - Local SQLite snapshot storage
 - pytest test suite
 
-**v0.2 — Wallet value tracking (current)**
-- Read-only Polygon wallet value lookup (MATIC + USDC, no API key required)
-- Manual wallet USD value fallback
+**v0.2 — Live wallet and position lookup (current)**
+- Read-only Polygon wallet value (USDC.e + pUSD stablecoins, no API key required)
+- Live Polymarket active and redeemable position lookup by wallet address
 - Total Tracked Value = Active Positions Value + Wallet USD Value
 - Total Tracked Value Over Time chart (from local snapshot history)
-- 65 passing tests
+- 87 passing tests
 
 **v0.3 — Read-only live market data**
 - Read-only live active position lookup by wallet address

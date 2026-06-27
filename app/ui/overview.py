@@ -1,6 +1,6 @@
 from typing import List
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 
 from app.database import load_wallet_snapshots, save_wallet_snapshot
 from app.models import ActivePosition, ResolvedPosition
-from app.services.metrics import compute_total_tracked_value
+from app.services.metrics import compute_dashboard_metrics, compute_total_tracked_value
 from app.ui.total_value_chart import TotalValueChartWidget
 from app.ui.wallet_panel import WalletPanel
 
@@ -189,6 +189,8 @@ def _resolved_section(positions: List[ResolvedPosition]) -> QWidget:
 # ── Overview widget ────────────────────────────────────────────────────────────
 
 class OverviewWidget(QWidget):
+    positions_changed = Signal(list, list)   # (active, redeemable) — for main_window tabs
+
     def __init__(
         self,
         active: List[ActivePosition],
@@ -197,10 +199,10 @@ class OverviewWidget(QWidget):
     ):
         super().__init__()
 
-        # Store values needed for snapshot writes when wallet value changes
-        self._active_value   = metrics["active_positions_value"]
-        self._unrealized_pnl = metrics["unrealized_pnl"]
-        self._realized_pnl   = metrics["realized_pnl"]
+        self._active_value    = metrics["active_positions_value"]
+        self._unrealized_pnl  = metrics["unrealized_pnl"]
+        self._realized_pnl    = metrics["realized_pnl"]
+        self._wallet_usd_value = 0.0
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -210,6 +212,7 @@ class OverviewWidget(QWidget):
         main = QVBoxLayout(content)
         main.setContentsMargins(16, 16, 16, 20)
         main.setSpacing(0)
+        self._content_layout = main   # stored for dynamic section replacement
 
         # ── Top: cards (left) + Total Tracked Value chart (right) ─────
         top = QWidget()
@@ -229,22 +232,25 @@ class OverviewWidget(QWidget):
         main.addSpacing(14)
 
         # ── Wallet panel ───────────────────────────────────────────────
-        wallet_panel = WalletPanel()
-        wallet_panel.wallet_value_changed.connect(self._on_wallet_value_changed)
-        main.addWidget(wallet_panel)
+        self._wallet_panel = WalletPanel()
+        self._wallet_panel.wallet_value_changed.connect(self._on_wallet_value_changed)
+        self._wallet_panel.positions_fetched.connect(self._on_positions_fetched)
+        main.addWidget(self._wallet_panel)
 
         main.addSpacing(20)
         main.addWidget(_divider())
         main.addSpacing(16)
 
         # ── Active positions ───────────────────────────────────────────
-        main.addWidget(_active_section(active))
+        self._act_section = _active_section(active)
+        main.addWidget(self._act_section)
         main.addSpacing(20)
         main.addWidget(_divider())
         main.addSpacing(16)
 
         # ── Resolved positions ─────────────────────────────────────────
-        main.addWidget(_resolved_section(resolved))
+        self._res_section = _resolved_section(resolved)
+        main.addWidget(self._res_section)
         main.addStretch(1)
 
         scroll.setWidget(content)
@@ -260,12 +266,12 @@ class OverviewWidget(QWidget):
         vbox.setContentsMargins(0, 0, 0, 0)
         vbox.setSpacing(10)
 
-        self._total_card    = _MetricCard("Total Tracked Value",   f"${m['total_tracked_value']:,.2f}", _BLUE)
-        self._active_card   = _MetricCard("Active Positions Value", f"${m['active_positions_value']:,.2f}", _BLUE)
-        self._wallet_card   = _MetricCard("Wallet USD Value",       "$0.00", _MUTED)
-        self._unreal_card   = _MetricCard("Unrealized P/L",         f"${m['unrealized_pnl']:,.2f}", _pnl_color(m["unrealized_pnl"]))
-        self._win_card      = _MetricCard("Win Count",               str(m["win_count"]), _GREEN)
-        self._loss_card     = _MetricCard("Loss Count",              str(m["loss_count"]), _RED)
+        self._total_card  = _MetricCard("Total Tracked Value",    f"${m['total_tracked_value']:,.2f}", _BLUE)
+        self._active_card = _MetricCard("Active Positions Value",  f"${m['active_positions_value']:,.2f}", _BLUE)
+        self._wallet_card = _MetricCard("Wallet USD Value",        "$0.00", _MUTED)
+        self._unreal_card = _MetricCard("Unrealized P/L",          f"${m['unrealized_pnl']:,.2f}", _pnl_color(m["unrealized_pnl"]))
+        self._win_card    = _MetricCard("Win Count",                str(m["win_count"]), _GREEN)
+        self._loss_card   = _MetricCard("Loss Count",               str(m["loss_count"]), _RED)
 
         row1 = QHBoxLayout()
         row1.setSpacing(10)
@@ -286,6 +292,7 @@ class OverviewWidget(QWidget):
     # ── Wallet value update ────────────────────────────────────────────────────
 
     def _on_wallet_value_changed(self, wallet_usd_value: float) -> None:
+        self._wallet_usd_value = wallet_usd_value
         total = compute_total_tracked_value(self._active_value, wallet_usd_value)
 
         self._total_card.update_value(f"${total:,.2f}", _BLUE)
@@ -297,5 +304,35 @@ class OverviewWidget(QWidget):
             unrealized_pnl=self._unrealized_pnl,
             realized_pnl=self._realized_pnl,
         )
-
         self._chart.update_snapshots(load_wallet_snapshots())
+
+    # ── Live positions update ──────────────────────────────────────────────────
+
+    def _on_positions_fetched(self, active: list, redeemable: list) -> None:
+        metrics = compute_dashboard_metrics(active, redeemable)
+        self._active_value   = metrics["active_positions_value"]
+        self._unrealized_pnl = metrics["unrealized_pnl"]
+        self._realized_pnl   = metrics["realized_pnl"]
+
+        # Recompute total with current wallet value
+        total = compute_total_tracked_value(self._active_value, self._wallet_usd_value)
+        self._total_card.update_value(f"${total:,.2f}", _BLUE)
+        self._active_card.update_value(f"${self._active_value:,.2f}", _BLUE)
+        self._unreal_card.update_value(f"${self._unrealized_pnl:,.2f}", _pnl_color(self._unrealized_pnl))
+        self._win_card.update_value(str(metrics["win_count"]), _GREEN)
+        self._loss_card.update_value(str(metrics["loss_count"]), _RED)
+
+        # Swap section widgets in-place
+        self._replace_section("_act_section", _active_section(active))
+        self._replace_section("_res_section", _resolved_section(redeemable))
+
+        self.positions_changed.emit(active, redeemable)
+
+    def _replace_section(self, attr: str, new_widget: QWidget) -> None:
+        old = getattr(self, attr)
+        idx = self._content_layout.indexOf(old)
+        if idx >= 0:
+            self._content_layout.removeWidget(old)
+            old.deleteLater()
+            self._content_layout.insertWidget(idx, new_widget)
+        setattr(self, attr, new_widget)
