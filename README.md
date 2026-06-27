@@ -17,6 +17,14 @@ It loads position data from local files (v0.1) or read-only external APIs (futur
 
 ---
 
+## Screenshots
+
+### Overview Dashboard
+
+![TradeLedger Overview Dashboard](docs/screenshots/tradeledger_overview.png)
+
+---
+
 ## Tech Stack
 
 | Layer     | Library          |
@@ -100,6 +108,9 @@ tradeledger/
 ├── sample_data/
 │   ├── sample_wallet_positions.json    # Example active positions
 │   └── sample_resolved_positions.json  # Example resolved positions
+├── docs/
+│   └── screenshots/
+│       └── tradeledger_overview.png    # Overview dashboard screenshot
 ├── conftest.py                         # pytest path setup
 ├── run.py                              # Launch script
 ├── requirements.txt
