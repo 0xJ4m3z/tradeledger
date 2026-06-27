@@ -11,27 +11,26 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.database import load_wallet_snapshots, save_wallet_snapshot
 from app.models import ActivePosition, ResolvedPosition
-from app.ui.pnl_chart import PnlChartWidget
+from app.services.metrics import compute_total_tracked_value
+from app.ui.total_value_chart import TotalValueChartWidget
+from app.ui.wallet_panel import WalletPanel
 
 # ── Palette ────────────────────────────────────────────────────────────────────
-_GREEN  = "#3fb950"
-_RED    = "#f85149"
-_MUTED  = "#8b949e"
-_TEXT   = "#c9d1d9"
-_BLUE   = "#58a6ff"
-_BG     = "#0d1117"
-_CARD   = "#161b22"
-_BORDER = "#30363d"
+_GREEN   = "#3fb950"
+_RED     = "#f85149"
+_MUTED   = "#8b949e"
+_TEXT    = "#c9d1d9"
+_BLUE    = "#58a6ff"
+_BG      = "#0d1117"
+_CARD    = "#161b22"
+_BORDER  = "#30363d"
 _ROWLINE = "#21262d"
 
-# ── Reusable style fragments ───────────────────────────────────────────────────
-_CARD_FRAME_S = (
-    f"QFrame {{ background-color: {_CARD}; border: 1px solid {_BORDER}; border-radius: 6px; }}"
-)
+_CARD_FRAME_S  = f"QFrame {{ background-color: {_CARD}; border: 1px solid {_BORDER}; border-radius: 6px; }}"
 _METRIC_TITLE_S = f"color: {_MUTED}; font-size: 11px; font-weight: 600; letter-spacing: 0.8px;"
 _SECTION_HDR_S  = f"color: {_TEXT}; font-size: 14px; font-weight: 600;"
-
 _COL_HDR_S = (
     f"color: {_MUTED}; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; "
     f"padding: 7px 12px; background-color: {_CARD}; border-bottom: 1px solid {_BORDER};"
@@ -42,51 +41,29 @@ _R = Qt.AlignmentFlag.AlignRight
 _V = Qt.AlignmentFlag.AlignVCenter
 
 
-# ── Metric cards ───────────────────────────────────────────────────────────────
+# ── Updatable metric card ──────────────────────────────────────────────────────
 
-def _pnl_color(val: float) -> str:
-    return _GREEN if val > 0 else (_RED if val < 0 else _TEXT)
+class _MetricCard(QFrame):
+    def __init__(self, title: str, value: str, color: str):
+        super().__init__()
+        self.setStyleSheet(_CARD_FRAME_S)
+        vbox = QVBoxLayout(self)
+        vbox.setContentsMargins(14, 12, 14, 14)
+        vbox.setSpacing(6)
+        t = QLabel(title.upper())
+        t.setStyleSheet(_METRIC_TITLE_S)
+        self._val = QLabel(value)
+        self._val.setStyleSheet(f"color: {color}; font-size: 20px; font-weight: 700;")
+        self._val.setAlignment(_L | _V)
+        vbox.addWidget(t)
+        vbox.addWidget(self._val)
 
-
-def _card(title: str, value: str, color: str) -> QFrame:
-    frame = QFrame()
-    frame.setStyleSheet(_CARD_FRAME_S)
-    vbox = QVBoxLayout(frame)
-    vbox.setContentsMargins(14, 12, 14, 14)
-    vbox.setSpacing(6)
-    t = QLabel(title.upper())
-    t.setStyleSheet(_METRIC_TITLE_S)
-    v = QLabel(value)
-    v.setStyleSheet(f"color: {color}; font-size: 20px; font-weight: 700;")
-    v.setAlignment(_L)
-    vbox.addWidget(t)
-    vbox.addWidget(v)
-    return frame
-
-
-def _cards_panel(m: dict) -> QWidget:
-    panel = QWidget()
-    vbox = QVBoxLayout(panel)
-    vbox.setContentsMargins(0, 0, 0, 0)
-    vbox.setSpacing(10)
-
-    row1 = QHBoxLayout()
-    row1.setSpacing(10)
-    row1.addWidget(_card("Active Positions Value", f"${m['active_positions_value']:,.2f}", _BLUE))
-    row1.addWidget(_card("Realized P/L",           f"${m['realized_pnl']:,.2f}",           _pnl_color(m["realized_pnl"])))
-
-    row2 = QHBoxLayout()
-    row2.setSpacing(10)
-    row2.addWidget(_card("Win Count",      str(m["win_count"]),               _GREEN))
-    row2.addWidget(_card("Loss Count",     str(m["loss_count"]),              _RED))
-    row2.addWidget(_card("Unrealized P/L", f"${m['unrealized_pnl']:,.2f}",   _pnl_color(m["unrealized_pnl"])))
-
-    vbox.addLayout(row1)
-    vbox.addLayout(row2)
-    return panel
+    def update_value(self, value: str, color: str) -> None:
+        self._val.setText(value)
+        self._val.setStyleSheet(f"color: {color}; font-size: 20px; font-weight: 700;")
 
 
-# ── Grid-based flat table (no scroll container) ────────────────────────────────
+# ── Grid-based flat table (no internal scroll) ─────────────────────────────────
 
 def _col_hdr(text: str, align=_L) -> QLabel:
     lbl = QLabel(text.upper())
@@ -112,9 +89,13 @@ def _divider() -> QFrame:
     return f
 
 
+def _pnl_color(val: float) -> str:
+    return _GREEN if val > 0 else (_RED if val < 0 else _TEXT)
+
+
 # ── Active positions section ───────────────────────────────────────────────────
 
-_ACT_HDRS = ["Market", "Outcome", "Quantity", "Avg Cost", "Current Price", "Current Value", "Unrealized P/L", "P/L %"]
+_ACT_HDRS  = ["Market", "Outcome", "Quantity", "Avg Cost", "Current Price", "Current Value", "Unrealized P/L", "P/L %"]
 _ACT_ALIGN = [_L, _L, _R, _R, _R, _R, _R, _R]
 
 
@@ -128,7 +109,6 @@ def _active_section(positions: List[ActivePosition]) -> QWidget:
     lbl.setStyleSheet(_SECTION_HDR_S)
     vbox.addWidget(lbl)
 
-    # Plain QFrame — QGridLayout of QLabels, not a scroll area
     frame = QFrame()
     frame.setStyleSheet(f"QFrame {{ background-color: {_BG}; border: 1px solid {_BORDER}; }}")
     grid = QGridLayout(frame)
@@ -217,7 +197,11 @@ class OverviewWidget(QWidget):
     ):
         super().__init__()
 
-        # One scroll area owns the entire page
+        # Store values needed for snapshot writes when wallet value changes
+        self._active_value   = metrics["active_positions_value"]
+        self._unrealized_pnl = metrics["unrealized_pnl"]
+        self._realized_pnl   = metrics["realized_pnl"]
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -227,35 +211,91 @@ class OverviewWidget(QWidget):
         main.setContentsMargins(16, 16, 16, 20)
         main.setSpacing(0)
 
-        # ── Top: metric cards (left) + P/L chart (right) ──────────
+        # ── Top: cards (left) + Total Tracked Value chart (right) ─────
         top = QWidget()
         top.setMinimumHeight(280)
         top_row = QHBoxLayout(top)
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(14)
-        top_row.addWidget(_cards_panel(metrics), 42)
-        top_row.addWidget(PnlChartWidget(resolved), 58)
+
+        cards_panel = self._build_cards_panel(metrics)
+        top_row.addWidget(cards_panel, 42)
+
+        snapshots = load_wallet_snapshots()
+        self._chart = TotalValueChartWidget(snapshots)
+        top_row.addWidget(self._chart, 58)
+
         main.addWidget(top)
+        main.addSpacing(14)
+
+        # ── Wallet panel ───────────────────────────────────────────────
+        wallet_panel = WalletPanel()
+        wallet_panel.wallet_value_changed.connect(self._on_wallet_value_changed)
+        main.addWidget(wallet_panel)
 
         main.addSpacing(20)
         main.addWidget(_divider())
         main.addSpacing(16)
 
-        # ── Active positions — labels in a grid, no scroll box ─────
+        # ── Active positions ───────────────────────────────────────────
         main.addWidget(_active_section(active))
-
         main.addSpacing(20)
         main.addWidget(_divider())
         main.addSpacing(16)
 
-        # ── Resolved positions — same approach ─────────────────────
+        # ── Resolved positions ─────────────────────────────────────────
         main.addWidget(_resolved_section(resolved))
-
-        # Push everything up if the window is taller than the content
         main.addStretch(1)
 
         scroll.setWidget(content)
-
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
+
+    # ── Card panel ─────────────────────────────────────────────────────────────
+
+    def _build_cards_panel(self, m: dict) -> QWidget:
+        panel = QWidget()
+        vbox = QVBoxLayout(panel)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(10)
+
+        self._total_card    = _MetricCard("Total Tracked Value",   f"${m['total_tracked_value']:,.2f}", _BLUE)
+        self._active_card   = _MetricCard("Active Positions Value", f"${m['active_positions_value']:,.2f}", _BLUE)
+        self._wallet_card   = _MetricCard("Wallet USD Value",       "$0.00", _MUTED)
+        self._unreal_card   = _MetricCard("Unrealized P/L",         f"${m['unrealized_pnl']:,.2f}", _pnl_color(m["unrealized_pnl"]))
+        self._win_card      = _MetricCard("Win Count",               str(m["win_count"]), _GREEN)
+        self._loss_card     = _MetricCard("Loss Count",              str(m["loss_count"]), _RED)
+
+        row1 = QHBoxLayout()
+        row1.setSpacing(10)
+        row1.addWidget(self._total_card)
+        row1.addWidget(self._active_card)
+        row1.addWidget(self._wallet_card)
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(10)
+        row2.addWidget(self._unreal_card)
+        row2.addWidget(self._win_card)
+        row2.addWidget(self._loss_card)
+
+        vbox.addLayout(row1)
+        vbox.addLayout(row2)
+        return panel
+
+    # ── Wallet value update ────────────────────────────────────────────────────
+
+    def _on_wallet_value_changed(self, wallet_usd_value: float) -> None:
+        total = compute_total_tracked_value(self._active_value, wallet_usd_value)
+
+        self._total_card.update_value(f"${total:,.2f}", _BLUE)
+        self._wallet_card.update_value(f"${wallet_usd_value:,.2f}", _TEXT)
+
+        save_wallet_snapshot(
+            active_positions_value=self._active_value,
+            wallet_usd_value=wallet_usd_value,
+            unrealized_pnl=self._unrealized_pnl,
+            realized_pnl=self._realized_pnl,
+        )
+
+        self._chart.update_snapshots(load_wallet_snapshots())
