@@ -4,7 +4,7 @@ from app.adapters.sample_adapter import load_all
 from app.database import save_snapshot
 from app.services.metrics import compute_dashboard_metrics
 from app.ui.active_positions_table import ActivePositionsTable
-from app.ui.dashboard import DashboardWidget
+from app.ui.overview import OverviewWidget
 from app.ui.pnl_chart import PnlChartWidget
 from app.ui.resolved_positions_table import ResolvedPositionsTable
 
@@ -92,7 +92,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("TradeLedger")
-        self.setMinimumSize(1200, 780)
+        self.setMinimumSize(1100, 700)
+        self.resize(1440, 940)
         self.setStyleSheet(_STYLE)
 
         active, resolved = load_all()
@@ -100,10 +101,10 @@ class MainWindow(QMainWindow):
         metrics = compute_dashboard_metrics(active, resolved)
 
         tabs = QTabWidget()
-        tabs.addTab(DashboardWidget(metrics),            "Dashboard")
-        tabs.addTab(ActivePositionsTable(active),        "Active Positions")
-        tabs.addTab(ResolvedPositionsTable(resolved),    "Resolved Positions")
-        tabs.addTab(PnlChartWidget(resolved),            "P/L Chart")
+        tabs.addTab(OverviewWidget(active, resolved, metrics), "Overview")
+        tabs.addTab(ActivePositionsTable(active),              "Active Positions")
+        tabs.addTab(ResolvedPositionsTable(resolved),          "Resolved Positions")
+        tabs.addTab(PnlChartWidget(resolved),                  "P/L Chart")
         self.setCentralWidget(tabs)
 
         status = QStatusBar()
