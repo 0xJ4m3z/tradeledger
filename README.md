@@ -6,9 +6,10 @@ A local, read-only desktop application for tracking wallet-based trading positio
 
 TradeLedger helps you track open positions, review P/L, monitor wallet value, and estimate your total tracked value — all locally, without connecting to any exchange or wallet provider.
 
-- **Overview dashboard** — Total Tracked Value, metric cards, wallet lookup, P/L chart
-- **Active positions** — current value and unrealized P/L per position
-- **Resolved positions** — realized P/L, win/loss status, and redemption tracking
+- **Overview dashboard** — Total Tracked Value, metric cards, wallet lookup, snapshot chart
+- **Active positions** — all currently held positions including won-but-unredeemed
+- **Redeemable positions** — won markets waiting to be claimed
+- **Closed positions** — redeemed or sold positions (most recent 100)
 - **P/L chart** — cumulative performance over time
 
 **Read-only by design.** TradeLedger never asks for private keys, seed phrases, wallet signatures, or wallet connection permissions. Wallet lookup by public address only — no order placement, no transactions, no trading execution.
@@ -77,7 +78,7 @@ python run.py
 
 The app launches in **sample data mode**. Active positions are loaded from `sample_data/`. Each launch saves a position snapshot to `tradeledger.db` (gitignored).
 
-To load live data: enter your Polygon wallet address in the Overview panel and click **Fetch Wallet Value**. This fetches your stablecoin balance and all active and redeemable Polymarket positions in one step.
+To load live data: enter your Polygon wallet address in the Overview panel and click **Fetch Wallet Value**. This fetches your stablecoin balance, active positions, redeemable positions, and most recent closed positions in one step. The address is masked in the UI after a successful fetch.
 
 ---
 
@@ -155,10 +156,11 @@ tradeledger/
 TradeLedger fetches wallet value and positions using public, read-only APIs — no API key required:
 
 - **Wallet USD value** — sum of USDC.e + pUSD balances via Polygon JSON-RPC `balanceOf()` calls. Both tokens are USD-pegged stablecoins; no price API needed.
-- **Active positions** — open Polymarket positions via `data-api.polymarket.com/positions`
-- **Redeemable positions** — won markets pending redemption via the same endpoint
+- **Active positions** — all open positions including won-but-unredeemed, via `data-api.polymarket.com/positions`
+- **Redeemable positions** — won markets pending redemption, via the same endpoint
+- **Closed positions** — most recent 100 fully closed trades (redeemed, sold, or stop-loss triggered), via `data-api.polymarket.com/closed-positions`
 
-Tries multiple public Polygon RPCs automatically if one fails.
+Tries multiple public Polygon RPCs automatically if one fails. Wallet address is masked in the UI after a successful fetch (`0x1234...abcde`) — the full address is only used internally during the session.
 
 ---
 
@@ -174,12 +176,16 @@ Tries multiple public Polygon RPCs automatically if one fails.
 
 **v0.2 — Live wallet and position lookup (current)**
 - Read-only Polygon wallet value (USDC.e + pUSD stablecoins, no API key required)
-- Live Polymarket active and redeemable position lookup by wallet address
+- Live Polymarket active, redeemable, and closed position lookup by wallet address
+- Active tab: all open positions including won-but-unredeemed
+- Redeemable tab: won markets waiting to be claimed
+- Closed tab: most recent 100 closed trades (redeemed, sold, or stop-loss triggered)
 - Total Tracked Value = Active Positions Value + Wallet USD Value
 - Total Tracked Value Over Time chart (from local snapshot history)
-- 87 passing tests
+- Wallet address masked in UI after fetch for privacy
+- 99 passing tests
 
-**v0.3 — Read-only live market data**
-- Read-only live active position lookup by wallet address
-- Live market price updates
+**v0.3 — Historical P/L and analytics**
+- Full closed position history and cumulative realized P/L
+- Live market price refresh
 - No trading execution, no order placement, no private key storage

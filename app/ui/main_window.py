@@ -113,8 +113,8 @@ class MainWindow(QMainWindow):
 
         overview           = OverviewWidget(active, resolved, metrics)
         self._active_tab   = ActivePositionsTable(active)
-        self._resolved_tab = ResolvedPositionsTable(resolved)
-        self._closed_tab   = ResolvedPositionsTable([])   # populated after wallet fetch
+        self._resolved_tab = ResolvedPositionsTable(resolved, label="Redeemable Positions")
+        self._closed_tab   = ResolvedPositionsTable([], label="Closed Positions — most recent 100")
 
         overview.positions_changed.connect(self._on_positions_changed)
 

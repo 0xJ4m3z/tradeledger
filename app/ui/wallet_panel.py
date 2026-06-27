@@ -22,6 +22,12 @@ from app.adapters.wallet_adapter import WalletLookupError, fetch_wallet_usd_valu
 from app.models import ActivePosition, ResolvedPosition
 
 _POLY_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+_MASK_RE = re.compile(r"^0x[0-9a-fA-F]{4}\.{3}[0-9a-fA-F]{5}$")  # e.g. 0x99d0...Aa67e
+
+
+def _mask_address(addr: str) -> str:
+    """Return a privacy-safe display version: 0x99d0...Aa67e"""
+    return f"{addr[:6]}...{addr[-5:]}"
 
 _GREEN  = "#3fb950"
 _RED    = "#f85149"
@@ -71,8 +77,8 @@ class WalletPanel(QWidget):
     Read-only wallet panel.
 
     Signals:
-      wallet_value_changed(float)       — new USD wallet value
-      positions_fetched(list, list)     — (active positions, redeemable positions)
+      wallet_value_changed(float)             — new USD wallet value
+      positions_fetched(list, list, list)     — (active, redeemable, closed positions)
 
     Never requests private keys, seed phrases, or wallet permissions.
     """
@@ -84,7 +90,8 @@ class WalletPanel(QWidget):
         super().__init__()
         self._thread: _FetchThread | None = None
         self._current_value  = 0.0
-        self._pending_value  = 0.0   # wallet value buffered until status can be updated
+        self._pending_value  = 0.0
+        self._full_address   = ""    # unmasked address kept for re-fetch
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -139,10 +146,13 @@ class WalletPanel(QWidget):
     # ── Slots ──────────────────────────────────────────────────────────────
 
     def _on_fetch(self) -> None:
-        address = self._addr_input.text().strip()
+        raw = self._addr_input.text().strip()
+        # If the field shows a masked address, reuse the stored full address
+        address = self._full_address if _MASK_RE.match(raw) else raw
         if not _POLY_RE.match(address):
             self._set_status("Invalid address — must be 0x followed by 40 hex characters.", _RED)
             return
+        self._full_address = address
         self._fetch_btn.setEnabled(False)
         self._fetch_btn.setText("Fetching…")
         self._set_status("Fetching wallet value and positions…", _MUTED)
@@ -158,6 +168,8 @@ class WalletPanel(QWidget):
     def _on_wallet_ok(self, value: float) -> None:
         self._current_value = value
         self._pending_value = value
+        # Mask the address in the input field so screenshots don't expose the full address
+        self._addr_input.setText(_mask_address(self._full_address))
         self._set_status(f"Wallet: ${value:,.2f}  ·  Loading positions…", _MUTED)
         self.wallet_value_changed.emit(value)
 

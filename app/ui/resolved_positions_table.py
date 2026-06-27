@@ -38,13 +38,14 @@ def _pnl_cell(val: float, fmt: str = "${:,.2f}") -> QTableWidgetItem:
 
 
 class ResolvedPositionsTable(QWidget):
-    def __init__(self, positions: List[ResolvedPosition]):
+    def __init__(self, positions: List[ResolvedPosition], label: str = "Resolved Positions"):
         super().__init__()
+        self._label = label
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        self._header = QLabel(f"Resolved Positions  ({len(positions)})")
+        self._header = QLabel(f"{label}  ({len(positions)})")
         self._header.setStyleSheet("color: #c9d1d9; font-size: 14px; font-weight: 600;")
         layout.addWidget(self._header)
 
@@ -89,7 +90,7 @@ class ResolvedPositionsTable(QWidget):
         layout.addWidget(table)
 
     def update_positions(self, positions: List[ResolvedPosition]) -> None:
-        self._header.setText(f"Resolved Positions  ({len(positions)})")
+        self._header.setText(f"{self._label}  ({len(positions)})")
         self._table.setRowCount(len(positions))
         for row, p in enumerate(positions):
             outcome_item = _cell(p.outcome_held)
