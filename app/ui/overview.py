@@ -215,7 +215,15 @@ class OverviewWidget(QWidget):
         main.setSpacing(0)
         self._content_layout = main   # stored for dynamic section replacement
 
-        # ── Top: cards (left) + Total Tracked Value chart (right) ─────
+        # ── Wallet panel ───────────────────────────────────────────────
+        self._wallet_panel = WalletPanel()
+        self._wallet_panel.wallet_value_changed.connect(self._on_wallet_value_changed)
+        self._wallet_panel.positions_fetched.connect(self._on_positions_fetched)
+        main.addWidget(self._wallet_panel)
+
+        main.addSpacing(14)
+
+        # ── Cards (left) + Total Tracked Value chart (right) ──────────
         top = QWidget()
         top.setMinimumHeight(280)
         top_row = QHBoxLayout(top)
@@ -230,14 +238,6 @@ class OverviewWidget(QWidget):
         top_row.addWidget(self._chart, 58)
 
         main.addWidget(top)
-        main.addSpacing(14)
-
-        # ── Wallet panel ───────────────────────────────────────────────
-        self._wallet_panel = WalletPanel()
-        self._wallet_panel.wallet_value_changed.connect(self._on_wallet_value_changed)
-        self._wallet_panel.positions_fetched.connect(self._on_positions_fetched)  # (active, redeemable, closed)
-        main.addWidget(self._wallet_panel)
-
         main.addSpacing(20)
         main.addWidget(_divider())
         main.addSpacing(16)
