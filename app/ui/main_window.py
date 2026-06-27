@@ -1,12 +1,12 @@
-from PySide6.QtWidgets import QMainWindow, QStatusBar, QTabWidget
+from PySide6.QtWidgets import QMainWindow, QStatusBar, QTabWidget, QVBoxLayout, QWidget
 
 from app.adapters.sample_adapter import load_all
-from app.database import save_snapshot
+from app.database import load_wallet_snapshots, save_snapshot
 from app.services.metrics import compute_dashboard_metrics
 from app.ui.active_positions_table import ActivePositionsTable
 from app.ui.overview import OverviewWidget
-from app.ui.pnl_chart import PnlChartWidget
 from app.ui.resolved_positions_table import ResolvedPositionsTable
+from app.ui.total_value_chart import TotalValueChartWidget
 
 _STYLE = """
 QMainWindow, QWidget {
@@ -118,12 +118,20 @@ class MainWindow(QMainWindow):
 
         overview.positions_changed.connect(self._on_positions_changed)
 
+        # Full-size Total Tracked Value tab (same data as overview mini chart, bigger canvas)
+        self._tv_tab_chart = TotalValueChartWidget(load_wallet_snapshots(), figsize=(10, 5))
+        overview.snapshots_changed.connect(self._tv_tab_chart.update_snapshots)
+        tv_tab = QWidget()
+        tv_layout = QVBoxLayout(tv_tab)
+        tv_layout.setContentsMargins(20, 20, 20, 20)
+        tv_layout.addWidget(self._tv_tab_chart)
+
         tabs = QTabWidget()
-        tabs.addTab(overview,                 "Overview")
-        tabs.addTab(self._active_tab,         "Active Positions")
-        tabs.addTab(self._resolved_tab,       "Redeemable Positions")
-        tabs.addTab(self._closed_tab,         "Closed Positions")
-        tabs.addTab(PnlChartWidget(resolved), "P/L Chart")
+        tabs.addTab(overview,                  "Overview")
+        tabs.addTab(self._active_tab,          "Active Positions")
+        tabs.addTab(self._resolved_tab,        "Redeemable Positions")
+        tabs.addTab(self._closed_tab,          "Closed Positions")
+        tabs.addTab(tv_tab,                    "Total Tracked Value")
         self.setCentralWidget(tabs)
 
         self._status_bar = QStatusBar()

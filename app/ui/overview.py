@@ -190,6 +190,7 @@ def _resolved_section(positions: List[ResolvedPosition]) -> QWidget:
 
 class OverviewWidget(QWidget):
     positions_changed = Signal(list, list, list)   # (active, redeemable, closed) — for main_window tabs
+    snapshots_changed = Signal(list)               # updated snapshot list — for the full-size tab chart
 
     def __init__(
         self,
@@ -304,7 +305,9 @@ class OverviewWidget(QWidget):
             unrealized_pnl=self._unrealized_pnl,
             realized_pnl=self._realized_pnl,
         )
-        self._chart.update_snapshots(load_wallet_snapshots())
+        snaps = load_wallet_snapshots()
+        self._chart.update_snapshots(snaps)
+        self.snapshots_changed.emit(snaps)
 
     # ── Live positions update ──────────────────────────────────────────────────
 

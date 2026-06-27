@@ -1,10 +1,10 @@
-from typing import List
+from typing import List, Tuple
 
 import matplotlib
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
-from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from app.services.chart_ranges import _DEFAULT_RANGE, _RANGES, filter_snapshots_by_range  # noqa: F401
 
@@ -51,10 +51,11 @@ class TotalValueChartWidget(QWidget):
       update_snapshots(snapshots)  — refresh with new snapshot list
     """
 
-    def __init__(self, snapshots: List[dict]):
+    def __init__(self, snapshots: List[dict], figsize: Tuple[float, float] = (5, 2.8)):
         super().__init__()
         self._all_snapshots = snapshots
         self._range_key     = _DEFAULT_RANGE
+        self._figsize       = figsize
         self._build_ui()
         self._redraw()
 
@@ -80,8 +81,9 @@ class TotalValueChartWidget(QWidget):
         layout.addLayout(btn_row)
 
         # Matplotlib canvas
-        fig = Figure(figsize=(5, 2.8), tight_layout=True)
+        fig = Figure(figsize=self._figsize, tight_layout=True)
         self._canvas = FigureCanvas(fig)
+        self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._ax = fig.add_subplot(111)
         layout.addWidget(self._canvas)
 
