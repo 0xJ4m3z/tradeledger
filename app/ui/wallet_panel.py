@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 from app.adapters.polymarket_adapter import (
     PolymarketLookupError,
     fetch_active_positions,
+    fetch_closed_positions,
     fetch_redeemable_positions,
 )
 from app.adapters.wallet_adapter import WalletLookupError, fetch_wallet_usd_value
@@ -34,7 +35,7 @@ _BORDER = "#30363d"
 class _FetchThread(QThread):
     wallet_ok      = Signal(float)
     wallet_err     = Signal(str)
-    positions_ok   = Signal(list, list)   # (active, redeemable)
+    positions_ok   = Signal(list, list, list)   # (active, redeemable, closed)
     positions_err  = Signal(str)
 
     def __init__(self, address: str):
@@ -57,7 +58,8 @@ class _FetchThread(QThread):
         try:
             active     = fetch_active_positions(self._address)
             redeemable = fetch_redeemable_positions(self._address)
-            self.positions_ok.emit(active, redeemable)
+            closed     = fetch_closed_positions(self._address)
+            self.positions_ok.emit(active, redeemable, closed)
         except PolymarketLookupError as exc:
             self.positions_err.emit(str(exc))
         except Exception as exc:
@@ -76,7 +78,7 @@ class WalletPanel(QWidget):
     """
 
     wallet_value_changed = Signal(float)
-    positions_fetched    = Signal(list, list)
+    positions_fetched    = Signal(list, list, list)   # (active, redeemable, closed)
 
     def __init__(self):
         super().__init__()
@@ -162,14 +164,13 @@ class WalletPanel(QWidget):
     def _on_wallet_err(self, msg: str) -> None:
         self._set_status(f"Lookup failed: {msg}", _RED)
 
-    def _on_positions_ok(self, active: list, redeemable: list) -> None:
-        n_act = len(active)
-        n_rdm = len(redeemable)
+    def _on_positions_ok(self, active: list, redeemable: list, closed: list) -> None:
         self._set_status(
-            f"Wallet: ${self._pending_value:,.2f}  ·  {n_act} active  ·  {n_rdm} redeemable",
+            f"Wallet: ${self._pending_value:,.2f}  ·  {len(active)} active"
+            f"  ·  {len(redeemable)} redeemable  ·  {len(closed)} closed",
             _GREEN,
         )
-        self.positions_fetched.emit(active, redeemable)
+        self.positions_fetched.emit(active, redeemable, closed)
 
     def _on_positions_err(self, msg: str) -> None:
         self._set_status(

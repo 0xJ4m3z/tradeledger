@@ -114,13 +114,15 @@ class MainWindow(QMainWindow):
         overview           = OverviewWidget(active, resolved, metrics)
         self._active_tab   = ActivePositionsTable(active)
         self._resolved_tab = ResolvedPositionsTable(resolved)
+        self._closed_tab   = ResolvedPositionsTable([])   # populated after wallet fetch
 
         overview.positions_changed.connect(self._on_positions_changed)
 
         tabs = QTabWidget()
-        tabs.addTab(overview,              "Overview")
-        tabs.addTab(self._active_tab,      "Active Positions")
-        tabs.addTab(self._resolved_tab,    "Resolved Positions")
+        tabs.addTab(overview,                 "Overview")
+        tabs.addTab(self._active_tab,         "Active Positions")
+        tabs.addTab(self._resolved_tab,       "Redeemable Positions")
+        tabs.addTab(self._closed_tab,         "Closed Positions")
         tabs.addTab(PnlChartWidget(resolved), "P/L Chart")
         self.setCentralWidget(tabs)
 
@@ -130,9 +132,11 @@ class MainWindow(QMainWindow):
         )
         self.setStatusBar(self._status_bar)
 
-    def _on_positions_changed(self, active: list, redeemable: list) -> None:
+    def _on_positions_changed(self, active: list, redeemable: list, closed: list) -> None:
         self._active_tab.update_positions(active)
         self._resolved_tab.update_positions(redeemable)
+        self._closed_tab.update_positions(closed)
         self._status_bar.showMessage(
-            f"Live Polymarket data  •  {len(active)} active  •  {len(redeemable)} redeemable"
+            f"Live Polymarket data  •  {len(active)} active"
+            f"  •  {len(redeemable)} redeemable  •  {len(closed)} closed"
         )

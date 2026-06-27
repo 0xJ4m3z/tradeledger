@@ -189,7 +189,7 @@ def _resolved_section(positions: List[ResolvedPosition]) -> QWidget:
 # ── Overview widget ────────────────────────────────────────────────────────────
 
 class OverviewWidget(QWidget):
-    positions_changed = Signal(list, list)   # (active, redeemable) — for main_window tabs
+    positions_changed = Signal(list, list, list)   # (active, redeemable, closed) — for main_window tabs
 
     def __init__(
         self,
@@ -234,7 +234,7 @@ class OverviewWidget(QWidget):
         # ── Wallet panel ───────────────────────────────────────────────
         self._wallet_panel = WalletPanel()
         self._wallet_panel.wallet_value_changed.connect(self._on_wallet_value_changed)
-        self._wallet_panel.positions_fetched.connect(self._on_positions_fetched)
+        self._wallet_panel.positions_fetched.connect(self._on_positions_fetched)  # (active, redeemable, closed)
         main.addWidget(self._wallet_panel)
 
         main.addSpacing(20)
@@ -308,13 +308,12 @@ class OverviewWidget(QWidget):
 
     # ── Live positions update ──────────────────────────────────────────────────
 
-    def _on_positions_fetched(self, active: list, redeemable: list) -> None:
+    def _on_positions_fetched(self, active: list, redeemable: list, closed: list) -> None:
         metrics = compute_dashboard_metrics(active, redeemable)
         self._active_value   = metrics["active_positions_value"]
         self._unrealized_pnl = metrics["unrealized_pnl"]
         self._realized_pnl   = metrics["realized_pnl"]
 
-        # Recompute total with current wallet value
         total = compute_total_tracked_value(self._active_value, self._wallet_usd_value)
         self._total_card.update_value(f"${total:,.2f}", _BLUE)
         self._active_card.update_value(f"${self._active_value:,.2f}", _BLUE)
@@ -322,11 +321,10 @@ class OverviewWidget(QWidget):
         self._win_card.update_value(str(metrics["win_count"]), _GREEN)
         self._loss_card.update_value(str(metrics["loss_count"]), _RED)
 
-        # Swap section widgets in-place
         self._replace_section("_act_section", _active_section(active))
         self._replace_section("_res_section", _resolved_section(redeemable))
 
-        self.positions_changed.emit(active, redeemable)
+        self.positions_changed.emit(active, redeemable, closed)
 
     def _replace_section(self, attr: str, new_widget: QWidget) -> None:
         old = getattr(self, attr)

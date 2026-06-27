@@ -11,6 +11,7 @@ import requests
 from app.adapters.polymarket_adapter import (
     PolymarketLookupError,
     fetch_active_positions,
+    fetch_closed_positions,
     fetch_redeemable_positions,
 )
 
@@ -161,6 +162,128 @@ class TestFetchRedeemablePositions:
 
 
 # ── Pagination ─────────────────────────────────────────────────────────────────
+
+# ── fetch_closed_positions ─────────────────────────────────────────────────────
+
+_CLOSED_ROW = {
+    "title": "Was Z true?",
+    "outcome": "YES",
+    "oppositeOutcome": "NO",
+    "avgPrice": 0.5,
+    "totalBought": 50.0,
+    "realizedPnl": 50.0,
+    "curPrice": 1.0,
+    "endDate": "2025-03-01",
+}
+
+_CLOSED_LOSS_ROW = {
+    "title": "Was W true?",
+    "outcome": "YES",
+    "oppositeOutcome": "NO",
+    "avgPrice": 0.7,
+    "totalBought": 70.0,
+    "realizedPnl": -70.0,
+    "curPrice": 0.0,
+    "endDate": "2025-04-01",
+}
+
+
+class TestFetchClosedPositions:
+    def test_returns_closed_positions(self):
+        with patch("requests.get", return_value=_mock_response([_CLOSED_ROW])):
+            result = fetch_closed_positions(_FAKE_WALLET)
+        assert len(result) == 1
+        p = result[0]
+        assert p.market       == "Was Z true?"
+        assert p.outcome_held == "YES"
+        assert p.redeemed     is True
+        assert p.resolved_date == "2025-03-01"
+
+    def test_winning_position_sets_winning_outcome_to_held(self):
+        with patch("requests.get", return_value=_mock_response([_CLOSED_ROW])):
+            p = fetch_closed_positions(_FAKE_WALLET)[0]
+        assert p.is_win          is True
+        assert p.winning_outcome == "YES"
+
+    def test_losing_position_sets_winning_outcome_to_opposite(self):
+        with patch("requests.get", return_value=_mock_response([_CLOSED_LOSS_ROW])):
+            p = fetch_closed_positions(_FAKE_WALLET)[0]
+        assert p.is_win          is False
+        assert p.winning_outcome == "NO"
+
+    def test_stop_loss_sell_at_loss_treated_as_loss(self):
+        # Bought at 0.70, stop-loss sold at 0.30 (mid-market, not a resolved price)
+        sold_row = {
+            "title": "Volatile market",
+            "outcome": "YES",
+            "oppositeOutcome": "NO",
+            "avgPrice": 0.70,
+            "totalBought": 70.0,
+            "realizedPnl": -40.0,   # sold for $30, paid $70 → -$40
+            "curPrice": 0.30,       # mid-market at time of sell (NOT resolution price)
+            "endDate": None,
+        }
+        with patch("requests.get", return_value=_mock_response([sold_row])):
+            p = fetch_closed_positions(_FAKE_WALLET)[0]
+        # curPrice=0.30 would wrongly look like a loss via threshold,
+        # but realizedPnl=-40 correctly identifies it as a loss
+        assert p.is_win is False
+        assert p.realized_pnl == pytest.approx(-40.0)
+        assert p.redeem_value == pytest.approx(30.0)  # proceeds received
+
+    def test_stop_loss_sell_at_profit_treated_as_win(self):
+        sold_row = {
+            "title": "Another market",
+            "outcome": "NO",
+            "oppositeOutcome": "YES",
+            "avgPrice": 0.30,
+            "totalBought": 30.0,
+            "realizedPnl": 20.0,   # sold for $50, paid $30 → +$20
+            "curPrice": 0.50,
+            "endDate": None,
+        }
+        with patch("requests.get", return_value=_mock_response([sold_row])):
+            p = fetch_closed_positions(_FAKE_WALLET)[0]
+        assert p.is_win is True
+        assert p.realized_pnl == pytest.approx(20.0)
+
+    def test_cost_basis_maps_to_total_bought(self):
+        with patch("requests.get", return_value=_mock_response([_CLOSED_ROW])):
+            p = fetch_closed_positions(_FAKE_WALLET)[0]
+        assert p.cost_basis == pytest.approx(50.0)
+
+    def test_redeem_value_is_cost_plus_pnl(self):
+        # totalBought=50, realizedPnl=50 → proceeds=100
+        with patch("requests.get", return_value=_mock_response([_CLOSED_ROW])):
+            p = fetch_closed_positions(_FAKE_WALLET)[0]
+        assert p.redeem_value == pytest.approx(100.0)
+
+    def test_realized_pnl_correct(self):
+        with patch("requests.get", return_value=_mock_response([_CLOSED_ROW])):
+            p = fetch_closed_positions(_FAKE_WALLET)[0]
+        assert p.realized_pnl == pytest.approx(50.0)
+
+    def test_quantity_derived_from_total_bought_and_avg_price(self):
+        # totalBought=50, avgPrice=0.5 → 100 shares
+        with patch("requests.get", return_value=_mock_response([_CLOSED_ROW])):
+            p = fetch_closed_positions(_FAKE_WALLET)[0]
+        assert p.quantity == pytest.approx(100.0)
+
+    def test_empty_response_returns_empty_list(self):
+        with patch("requests.get", return_value=_mock_response([])):
+            assert fetch_closed_positions(_FAKE_WALLET) == []
+
+    def test_network_error_raises(self):
+        with patch("requests.get", side_effect=requests.RequestException("timeout")):
+            with pytest.raises(PolymarketLookupError):
+                fetch_closed_positions(_FAKE_WALLET)
+
+    def test_hits_closed_positions_endpoint(self):
+        with patch("requests.get", return_value=_mock_response([])) as mock_get:
+            fetch_closed_positions(_FAKE_WALLET)
+        url = mock_get.call_args[0][0]
+        assert "closed-positions" in url
+
 
 class TestPagination:
     def test_fetches_second_page_when_first_is_full(self):
