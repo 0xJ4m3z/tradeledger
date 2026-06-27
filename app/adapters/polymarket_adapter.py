@@ -14,8 +14,8 @@ import requests
 from app.models import ActivePosition, ResolvedPosition
 
 _DATA_API = "https://data-api.polymarket.com"
-_TIMEOUT  = 30
-_PAGE_SIZE = 100
+_TIMEOUT   = 30
+_PAGE_SIZE = 50
 
 
 class PolymarketLookupError(Exception):
@@ -82,6 +82,10 @@ def fetch_active_positions(wallet: str) -> List[ActivePosition]:
 
 
 def fetch_redeemable_positions(wallet: str) -> List[ResolvedPosition]:
-    """Return positions that are resolved and pending redemption."""
-    rows = _paginate({"user": wallet, "sizeThreshold": "0", "redeemable": "true"})
+    """Return positions that are resolved and pending redemption.
+
+    sizeThreshold omitted intentionally — redeemable positions always
+    have size > 0, and including the param causes server-side timeouts.
+    """
+    rows = _paginate({"user": wallet, "redeemable": "true"})
     return [_to_redeemable(r) for r in rows]

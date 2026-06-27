@@ -166,10 +166,10 @@ class TestPagination:
     def test_fetches_second_page_when_first_is_full(self):
         page1 = [
             {**_ACTIVE_ROW, "title": f"Market {i}"}
-            for i in range(100)
+            for i in range(50)
         ]
         page2 = [
-            {**_ACTIVE_ROW, "title": f"Market {i+100}"}
+            {**_ACTIVE_ROW, "title": f"Market {i+50}"}
             for i in range(3)
         ]
         with patch("requests.get") as mock_get:
@@ -179,10 +179,10 @@ class TestPagination:
                 _mock_response([]),
             ]
             result = fetch_active_positions(_FAKE_WALLET)
-        assert len(result) == 103
+        assert len(result) == 53
 
     def test_stops_after_partial_page(self):
-        page = [_ACTIVE_ROW] * 10   # fewer than PAGE_SIZE=500
+        page = [_ACTIVE_ROW] * 10   # fewer than PAGE_SIZE=50
         with patch("requests.get") as mock_get:
             mock_get.return_value = _mock_response(page)
             result = fetch_active_positions(_FAKE_WALLET)
@@ -201,3 +201,5 @@ class TestPagination:
             fetch_redeemable_positions(_FAKE_WALLET)
         params = mock_get.call_args[1]["params"]
         assert params["redeemable"] == "true"
+        # sizeThreshold omitted to avoid server-side 408 timeouts
+        assert "sizeThreshold" not in params
