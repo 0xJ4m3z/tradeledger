@@ -23,11 +23,15 @@ class PolymarketLookupError(Exception):
     pass
 
 
-def _paginate(path: str, params: dict, page_size: int) -> List[dict]:
-    """Fetch all pages from a Polymarket Data API endpoint."""
+def _paginate(path: str, params: dict, page_size: int, max_pages: int = 0) -> List[dict]:
+    """Fetch pages from a Polymarket Data API endpoint.
+
+    max_pages: stop after this many pages (0 = no limit).
+    """
     params = dict(params)
     results: List[dict] = []
     offset = 0
+    pages  = 0
     while True:
         params["limit"]  = page_size
         params["offset"] = offset
@@ -40,7 +44,10 @@ def _paginate(path: str, params: dict, page_size: int) -> List[dict]:
         if not page:
             break
         results.extend(page)
+        pages += 1
         if len(page) < page_size:
+            break
+        if max_pages and pages >= max_pages:
             break
         offset += page_size
     return results
@@ -125,6 +132,15 @@ def fetch_redeemable_positions(wallet: str) -> List[ResolvedPosition]:
 
 
 def fetch_closed_positions(wallet: str) -> List[ResolvedPosition]:
-    """Return fully closed positions (redeemed or sold)."""
-    rows = _paginate("closed-positions", {"user": wallet}, _CLOSED_PAGE_SIZE)
+    """Return the 100 most-recent fully closed positions (redeemed or sold).
+
+    Capped at 2 pages to avoid server-side 408 timeouts on wallets with
+    thousands of historical trades. Sorted by timestamp (newest first).
+    """
+    rows = _paginate(
+        "closed-positions",
+        {"user": wallet, "sortBy": "TIMESTAMP", "sortDirection": "DESC"},
+        _CLOSED_PAGE_SIZE,
+        max_pages=2,
+    )
     return [_to_closed(r) for r in rows]
