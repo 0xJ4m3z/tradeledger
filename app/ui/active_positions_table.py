@@ -5,6 +5,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
+    QLineEdit,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -46,6 +47,11 @@ class ActivePositionsTable(QWidget):
         header.setStyleSheet("color: #c9d1d9; font-size: 14px; font-weight: 600;")
         layout.addWidget(header)
 
+        search = QLineEdit()
+        search.setPlaceholderText("Filter by market, outcome...")
+        search.setMaximumWidth(420)
+        layout.addWidget(search)
+
         table = QTableWidget(len(positions), len(COLUMNS))
         table.setHorizontalHeaderLabels(COLUMNS)
         table.setAlternatingRowColors(True)
@@ -57,9 +63,9 @@ class ActivePositionsTable(QWidget):
         for row, p in enumerate(positions):
             table.setItem(row, 0, _cell(p.market))
             table.setItem(row, 1, _cell(p.outcome))
-            table.setItem(row, 2, _cell(f"{p.quantity:,.0f}", Qt.AlignmentFlag.AlignRight))
-            table.setItem(row, 3, _cell(f"${p.avg_cost:.4f}", Qt.AlignmentFlag.AlignRight))
-            table.setItem(row, 4, _cell(f"${p.current_price:.4f}", Qt.AlignmentFlag.AlignRight))
+            table.setItem(row, 2, _cell(f"{p.quantity:,.0f}",       Qt.AlignmentFlag.AlignRight))
+            table.setItem(row, 3, _cell(f"${p.avg_cost:.4f}",       Qt.AlignmentFlag.AlignRight))
+            table.setItem(row, 4, _cell(f"${p.current_price:.4f}",  Qt.AlignmentFlag.AlignRight))
             table.setItem(row, 5, _cell(f"${p.current_value:,.2f}", Qt.AlignmentFlag.AlignRight))
             table.setItem(row, 6, _pnl_cell(p.unrealized_pnl))
             table.setItem(row, 7, _pnl_cell(p.unrealized_pnl_pct, "{:+.1f}%"))
@@ -69,4 +75,17 @@ class ActivePositionsTable(QWidget):
         for col in range(1, len(COLUMNS)):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
 
+        self._table = table
+        search.textChanged.connect(self._apply_filter)
+
         layout.addWidget(table)
+
+    def _apply_filter(self, text: str) -> None:
+        text = text.strip().lower()
+        for row in range(self._table.rowCount()):
+            visible = not text or any(
+                text in (self._table.item(row, col).text().lower()
+                         if self._table.item(row, col) else "")
+                for col in range(self._table.columnCount())
+            )
+            self._table.setRowHidden(row, not visible)

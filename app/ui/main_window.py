@@ -85,6 +85,17 @@ QStatusBar {
     font-size: 12px;
     padding: 2px 8px;
 }
+QLineEdit {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    color: #c9d1d9;
+    padding: 6px 10px;
+    font-size: 13px;
+}
+QLineEdit:focus {
+    border-color: #58a6ff;
+}
 """
 
 
