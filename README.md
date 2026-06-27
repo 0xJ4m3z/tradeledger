@@ -8,9 +8,9 @@ TradeLedger helps you track open positions, review realized and unrealized P/L, 
 
 It loads position data from local files (v0.1) or read-only external APIs (future versions):
 
-- **Active positions** — current value, unrealized P/L per position
-- **Resolved positions** — realized P/L, win/loss status, redemption tracking
-- **Dashboard summary** — eight key metrics at a glance
+- **Overview dashboard** — metric cards, cumulative P/L chart, and position lists on one page
+- **Active positions** — current value and unrealized P/L per position
+- **Resolved positions** — realized P/L, win/loss status, and redemption tracking
 - **P/L chart** — cumulative performance over time
 
 **Read-only by design.** This app never requests or stores private keys, seed phrases, wallet signatures, or login credentials. Wallet lookup by address only — no order placement, no transactions, no trading execution.
@@ -89,9 +89,9 @@ tradeledger/
 │   │   └── chain_adapter.py            # Stub for future read-only API
 │   └── ui/
 │       ├── main_window.py              # QMainWindow, tabs, global styles
-│       ├── dashboard.py                # Summary metric cards
-│       ├── active_positions_table.py   # Active positions with unrealized P/L
-│       ├── resolved_positions_table.py # Resolved positions with realized P/L
+│       ├── overview.py                 # Overview tab: metric cards, chart, position lists
+│       ├── active_positions_table.py   # Active positions tab with search filter
+│       ├── resolved_positions_table.py # Resolved positions tab with search filter
 │       └── pnl_chart.py               # Cumulative P/L chart (matplotlib)
 ├── tests/
 │   ├── test_pnl.py                     # P/L calculation tests
@@ -108,30 +108,34 @@ tradeledger/
 
 ---
 
-## Dashboard cards
+## Overview cards
 
 | Card | Description |
 |------|-------------|
 | Active Positions Value | Current market value of all open positions |
 | Realized P/L | Total profit/loss from resolved positions |
-| Unrealized P/L | Floating profit/loss on active positions |
-| Total Estimated Value | Active value + realized P/L |
 | Win Count | Number of resolved positions that paid out |
 | Loss Count | Number of resolved positions that paid zero |
-| Largest Win | Highest single realized P/L |
-| Largest Loss | Lowest single realized P/L |
+| Unrealized P/L | Floating profit/loss on active positions |
 
 ---
 
-## v0.1 scope
+## Roadmap
 
-- [x] Sample data mode (no live API)
-- [x] Dashboard summary cards
-- [x] Active positions table with unrealized P/L
-- [x] Resolved positions table with realized P/L and redemption status
-- [x] Cumulative P/L chart
-- [x] SQLite snapshot storage
-- [x] pytest test suite
-- [ ] Live API integration (planned for v0.2)
-- [ ] Wallet address input (planned for v0.2)
-- [ ] CSV export (planned)
+**v0.1 — Sample dashboard (current)**
+- Sample data mode (no live API or wallet required)
+- Overview tab: metric cards, cumulative P/L chart, active and resolved position lists
+- Individual tabs for Active Positions and Resolved Positions with search filter
+- P/L Chart tab
+- Local SQLite snapshot storage on each launch
+- pytest test suite
+
+**v0.2 — Portfolio value tracking**
+- Total Tracked Value across all positions
+- Wallet USD value display
+- Account value snapshots over time
+
+**v0.3 — Read-only live data**
+- Read-only live wallet lookup by address
+- Read-only live market lookup
+- No trading execution, no order placement, no private key storage
