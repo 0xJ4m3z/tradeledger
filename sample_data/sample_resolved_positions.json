@@ -1,0 +1,102 @@
+[
+  {
+    "market": "US Q1 2025 GDP Growth Above 2%",
+    "outcome_held": "YES",
+    "winning_outcome": "YES",
+    "quantity": 300,
+    "cost_basis": 126.00,
+    "redeem_value": 300.00,
+    "redeemed": true,
+    "resolved_date": "2025-04-15"
+  },
+  {
+    "market": "Federal Reserve Rate Cut — Mar 2025",
+    "outcome_held": "YES",
+    "winning_outcome": "NO",
+    "quantity": 400,
+    "cost_basis": 228.00,
+    "redeem_value": 0.00,
+    "redeemed": false,
+    "resolved_date": "2025-03-20"
+  },
+  {
+    "market": "Nasdaq 100 Above 21000 — Jan 2025",
+    "outcome_held": "YES",
+    "winning_outcome": "YES",
+    "quantity": 500,
+    "cost_basis": 185.00,
+    "redeem_value": 500.00,
+    "redeemed": true,
+    "resolved_date": "2025-01-31"
+  },
+  {
+    "market": "US Unemployment Rate Below 4% — Feb 2025",
+    "outcome_held": "YES",
+    "winning_outcome": "YES",
+    "quantity": 600,
+    "cost_basis": 312.00,
+    "redeem_value": 600.00,
+    "redeemed": true,
+    "resolved_date": "2025-02-07"
+  },
+  {
+    "market": "BTC Price Above $100k — Dec 2024",
+    "outcome_held": "YES",
+    "winning_outcome": "YES",
+    "quantity": 250,
+    "cost_basis": 162.50,
+    "redeem_value": 250.00,
+    "redeemed": true,
+    "resolved_date": "2024-12-19"
+  },
+  {
+    "market": "US Debt Ceiling Resolution Before Feb 2025",
+    "outcome_held": "YES",
+    "winning_outcome": "NO",
+    "quantity": 350,
+    "cost_basis": 280.00,
+    "redeem_value": 0.00,
+    "redeemed": false,
+    "resolved_date": "2025-01-15"
+  },
+  {
+    "market": "NVIDIA Earnings Beat Estimate — Q4 2024",
+    "outcome_held": "YES",
+    "winning_outcome": "YES",
+    "quantity": 800,
+    "cost_basis": 400.00,
+    "redeem_value": 800.00,
+    "redeemed": true,
+    "resolved_date": "2025-02-26"
+  },
+  {
+    "market": "UK General Election — Labour Win",
+    "outcome_held": "YES",
+    "winning_outcome": "YES",
+    "quantity": 450,
+    "cost_basis": 198.00,
+    "redeem_value": 450.00,
+    "redeemed": true,
+    "resolved_date": "2024-07-05"
+  },
+  {
+    "market": "Bank of England Rate Cut — Aug 2024",
+    "outcome_held": "NO",
+    "winning_outcome": "YES",
+    "quantity": 300,
+    "cost_basis": 198.00,
+    "redeem_value": 0.00,
+    "redeemed": false,
+    "resolved_date": "2024-08-01"
+  },
+  {
+    "market": "US Retail Sales Growth Positive — Q3 2024",
+    "outcome_held": "YES",
+    "winning_outcome": "NO",
+    "quantity": 200,
+    "cost_basis": 130.00,
+    "redeem_value": 0.00,
+    "redeemed": false,
+    "resolved_date": "2024-10-17"
+  }
+]
