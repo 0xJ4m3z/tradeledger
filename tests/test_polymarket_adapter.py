@@ -166,10 +166,10 @@ class TestPagination:
     def test_fetches_second_page_when_first_is_full(self):
         page1 = [
             {**_ACTIVE_ROW, "title": f"Market {i}"}
-            for i in range(500)
+            for i in range(100)
         ]
         page2 = [
-            {**_ACTIVE_ROW, "title": f"Market {i+500}"}
+            {**_ACTIVE_ROW, "title": f"Market {i+100}"}
             for i in range(3)
         ]
         with patch("requests.get") as mock_get:
@@ -179,7 +179,7 @@ class TestPagination:
                 _mock_response([]),
             ]
             result = fetch_active_positions(_FAKE_WALLET)
-        assert len(result) == 503
+        assert len(result) == 103
 
     def test_stops_after_partial_page(self):
         page = [_ACTIVE_ROW] * 10   # fewer than PAGE_SIZE=500

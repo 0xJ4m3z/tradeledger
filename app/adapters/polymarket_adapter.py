@@ -15,7 +15,7 @@ from app.models import ActivePosition, ResolvedPosition
 
 _DATA_API = "https://data-api.polymarket.com"
 _TIMEOUT  = 30
-_PAGE_SIZE = 500
+_PAGE_SIZE = 100
 
 
 class PolymarketLookupError(Exception):
