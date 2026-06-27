@@ -1,7 +1,6 @@
 import re
-from typing import List
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -28,6 +27,7 @@ _MASK_RE = re.compile(r"^0x[0-9a-fA-F]{4}\.{3}[0-9a-fA-F]{5}$")  # e.g. 0x99d0..
 def _mask_address(addr: str) -> str:
     """Return a privacy-safe display version: 0x99d0...Aa67e"""
     return f"{addr[:6]}...{addr[-5:]}"
+
 
 _GREEN  = "#3fb950"
 _RED    = "#f85149"
@@ -60,7 +60,7 @@ class _FetchThread(QThread):
             self.wallet_err.emit(f"Unexpected error: {exc}")
             return
 
-        # Step 2: Polymarket positions (wallet succeeded; run regardless)
+        # Step 2: Polymarket positions
         try:
             active     = fetch_active_positions(self._address)
             redeemable = fetch_redeemable_positions(self._address)
@@ -84,14 +84,16 @@ class WalletPanel(QWidget):
     """
 
     wallet_value_changed = Signal(float)
-    positions_fetched    = Signal(list, list, list)   # (active, redeemable, closed)
+    positions_fetched    = Signal(list, list, list)
 
     def __init__(self):
         super().__init__()
         self._thread: _FetchThread | None = None
-        self._current_value  = 0.0
-        self._pending_value  = 0.0
-        self._full_address   = ""    # unmasked address kept for re-fetch
+        self._current_value = 0.0
+        self._pending_value = 0.0
+        self._full_address  = ""     # unmasked address kept for re-fetch
+        self._has_fetched   = False  # True after first successful wallet fetch
+
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -107,6 +109,7 @@ class WalletPanel(QWidget):
         vbox.setContentsMargins(14, 10, 14, 12)
         vbox.setSpacing(8)
 
+        # Header
         title = QLabel("WALLET  (READ-ONLY · POLYGON)")
         title.setStyleSheet(
             f"color: {_MUTED}; font-size: 11px; font-weight: 600; letter-spacing: 0.8px;"
@@ -136,14 +139,14 @@ class WalletPanel(QWidget):
         addr_row.addWidget(self._fetch_btn)
         vbox.addLayout(addr_row)
 
-        # Status row
+        # Status label
         self._status = QLabel("Enter your Polygon wallet address and click Fetch.")
         self._status.setStyleSheet(
             f"color: {_MUTED}; font-size: 12px; border: none; background: transparent;"
         )
         vbox.addWidget(self._status)
 
-    # ── Slots ──────────────────────────────────────────────────────────────
+    # ── Fetch flow ─────────────────────────────────────────────────────────
 
     def _on_fetch(self) -> None:
         raw = self._addr_input.text().strip()
@@ -166,9 +169,10 @@ class WalletPanel(QWidget):
         self._thread.start()
 
     def _on_wallet_ok(self, value: float) -> None:
+        self._has_fetched   = True
         self._current_value = value
         self._pending_value = value
-        # Mask the address in the input field so screenshots don't expose the full address
+        # Mask address in the input field for screenshot privacy
         self._addr_input.setText(_mask_address(self._full_address))
         self._set_status(f"Wallet: ${value:,.2f}  ·  Loading positions…", _MUTED)
         self.wallet_value_changed.emit(value)
@@ -192,7 +196,7 @@ class WalletPanel(QWidget):
 
     def _on_fetch_done(self) -> None:
         self._fetch_btn.setEnabled(True)
-        self._fetch_btn.setText("Fetch Wallet Value")
+        self._fetch_btn.setText("Refresh" if self._has_fetched else "Fetch Wallet Value")
 
     def _set_status(self, text: str, color: str) -> None:
         weight = "600" if color == _GREEN else "normal"
