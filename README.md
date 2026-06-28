@@ -6,7 +6,7 @@ A local, read-only desktop application for tracking Polymarket positions, wallet
 
 TradeLedger lets you monitor your open positions, redeemable winnings, closed trade history, and activity feed — all locally, using public read-only APIs. No account login, no API key, no wallet connection required.
 
-- **Overview** — wallet lookup, metric cards (Total Tracked Value, Positions Value, Wallet USD Value, Unrealized P/L, Win/Loss counts), Total Tracked Value mini chart
+- **Overview** — wallet lookup, metric cards (Total Tracked Value, Wallet USD Value, Positions Value, Loss Watch, Realized P/L Today, Redeemable Count), Total Tracked Value mini chart
 - **Active Positions** — all open positions currently exposed to market movement
 - **Redeemable Positions** — won/resolved positions not yet claimed
 - **Closed Positions** — redeemed or sold positions, most recent 100, with Refresh button
@@ -158,11 +158,11 @@ tradeledger/
 | Card | Description |
 |------|-------------|
 | Total Tracked Value | Wallet USD Value + Positions Value |
-| Positions Value | Current value of all Active + Redeemable positions |
 | Wallet USD Value | Polygon wallet USDC.e + pUSD balance (live, read-only) |
-| Unrealized P/L | Floating profit/loss on active/open positions |
-| Win Count | Number of resolved positions that paid out |
-| Loss Count | Number of resolved positions that paid zero |
+| Positions Value | Current value of all Active + Redeemable positions |
+| Loss Watch | Count of open positions with negative unrealized P/L, minus acknowledged. "Acknowledge All" button marks current losers as known; new losers still appear. |
+| Realized P/L Today | Net USDC cash flow for the current calendar day in Central Time (SELL proceeds + REDEEM + rebates − BUY costs). Resets at midnight CT. |
+| Redeemable Count | Number of won positions pending redemption |
 
 ---
 
@@ -176,7 +176,7 @@ TradeLedger fetches data using public, read-only APIs — no authentication requ
 - **Closed positions** — most recent 100 fully closed trades (redeemed, sold, or stop-loss triggered), via `data-api.polymarket.com/closed-positions`
 - **Activity feed** — most recent 100 activity events (trades, redeems, rewards, deposits, etc.), via `data-api.polymarket.com/activity`
 
-Tries multiple public Polygon RPCs automatically if one fails. Wallet address is masked in the UI after a successful fetch — the full address is only held in memory for the current session and never stored in any file.
+Tries multiple public Polygon RPCs automatically if one fails. Wallet address is masked in the UI after a successful fetch. The last-used address is saved locally (gitignored SQLite DB) so it prefills on the next launch. A background thread slowly fetches additional pages of closed position history and caches them locally.
 
 ---
 
@@ -198,7 +198,7 @@ Tries multiple public Polygon RPCs automatically if one fails. Wallet address is
 - Local SQLite snapshot storage
 - pytest test suite
 
-**v0.2 — Live wallet + position + activity tracking (current)**
+**v0.2 — Live wallet + position + activity tracking** ✓
 - Read-only Polygon wallet value (USDC.e + pUSD, no API key required)
 - Live Polymarket position lookup: active, redeemable, closed (most recent 100)
 - Activity tab: full activity feed (trades, redeems, rewards, etc.), searchable
@@ -209,8 +209,17 @@ Tries multiple public Polygon RPCs automatically if one fails. Wallet address is
 - Wallet address masked in UI after fetch for privacy
 - 130 passing tests
 
-**v0.3 — Deeper analytics (planned)**
-- Deeper closed position history and cumulative realized P/L
+**v0.3 — Daily monitoring (current)**
+- Remember last wallet address: prefills masked on next launch (gitignored local DB)
+- Auto-refresh every 5 min checkbox (default off); shows "Last updated HH:MM:SS"
+- Loss Watch card: count of unacknowledged open losing positions; "Acknowledge All" button
+- Realized P/L Today card: net USDC flow for the current CT calendar day
+- Redeemable Count card replacing Win/Loss/Unrealized P/L cards
+- Closed positions background cache: backfill thread fetches pages 3-7 slowly (2s delays)
+- 175 passing tests
+
+**v0.4 — Planned**
+- Notes per market
 - Export to CSV
-- Alerts or watchlist
+- Cumulative realized P/L chart
 - No trading execution, no order placement, no private key storage

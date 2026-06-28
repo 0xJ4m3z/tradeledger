@@ -6,14 +6,22 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
-from app.database import load_wallet_snapshots, save_wallet_snapshot
-from app.models import ActivePosition, ResolvedPosition
+from app.database import (
+    load_loss_watch_acknowledged,
+    load_wallet_snapshots,
+    save_loss_watch_acknowledged,
+    save_wallet_snapshot,
+)
+from app.models import ActivePosition, ResolvedPosition, UserActivity
+from app.services.loss_watch import compute_loss_watch_count
 from app.services.metrics import compute_dashboard_metrics, compute_total_tracked_value
+from app.services.pnl_today import compute_pnl_today
 from app.ui.total_value_chart import TotalValueChartWidget
 from app.ui.wallet_panel import WalletPanel
 
@@ -63,7 +71,54 @@ class _MetricCard(QFrame):
         self._val.setStyleSheet(f"color: {color}; font-size: 20px; font-weight: 700;")
 
 
-# ── Grid-based flat table (no internal scroll) ─────────────────────────────────
+# ── Loss Watch card (with Acknowledge button) ──────────────────────────────────
+
+class _LossWatchCard(QFrame):
+    def __init__(self):
+        super().__init__()
+        self.setStyleSheet(_CARD_FRAME_S)
+        vbox = QVBoxLayout(self)
+        vbox.setContentsMargins(14, 12, 14, 12)
+        vbox.setSpacing(4)
+
+        t = QLabel("LOSS WATCH")
+        t.setStyleSheet(_METRIC_TITLE_S)
+
+        self._val = QLabel("—")
+        self._val.setStyleSheet(f"color: {_MUTED}; font-size: 20px; font-weight: 700;")
+        self._val.setAlignment(_L | _V)
+
+        self._sub = QLabel("unacknowledged losing positions")
+        self._sub.setStyleSheet(f"color: {_MUTED}; font-size: 11px;")
+
+        self._btn = QPushButton("Acknowledge All")
+        self._btn.setStyleSheet(
+            f"background-color: #21262d; border: 1px solid {_BORDER}; border-radius: 4px;"
+            f" color: {_MUTED}; padding: 3px 10px; font-size: 11px; margin-top: 4px;"
+        )
+        self._btn.setEnabled(False)
+
+        vbox.addWidget(t)
+        vbox.addWidget(self._val)
+        vbox.addWidget(self._sub)
+        vbox.addWidget(self._btn)
+
+    def update_count(self, count: int) -> None:
+        if count > 0:
+            self._val.setText(str(count))
+            self._val.setStyleSheet(f"color: {_RED}; font-size: 20px; font-weight: 700;")
+            self._btn.setEnabled(True)
+        else:
+            self._val.setText("0")
+            self._val.setStyleSheet(f"color: {_MUTED}; font-size: 20px; font-weight: 700;")
+            self._btn.setEnabled(False)
+
+    @property
+    def acknowledge_btn(self) -> QPushButton:
+        return self._btn
+
+
+# ── Grid-based flat table ──────────────────────────────────────────────────────
 
 def _col_hdr(text: str, align=_L) -> QLabel:
     lbl = QLabel(text.upper())
@@ -189,9 +244,9 @@ def _resolved_section(positions: List[ResolvedPosition]) -> QWidget:
 # ── Overview widget ────────────────────────────────────────────────────────────
 
 class OverviewWidget(QWidget):
-    positions_changed = Signal(list, list, list)   # (active, redeemable, closed) — for main_window tabs
-    snapshots_changed = Signal(list)               # updated snapshot list — for the full-size tab chart
-    activity_changed  = Signal(list)               # activity feed — for the Activity tab
+    positions_changed = Signal(list, list, list)   # (active, redeemable, closed)
+    snapshots_changed = Signal(list)               # updated snapshot list
+    activity_changed  = Signal(list)               # activity feed
 
     def __init__(
         self,
@@ -201,10 +256,12 @@ class OverviewWidget(QWidget):
     ):
         super().__init__()
 
-        self._active_value    = metrics["active_positions_value"]
-        self._unrealized_pnl  = metrics["unrealized_pnl"]
-        self._realized_pnl    = metrics["realized_pnl"]
-        self._wallet_usd_value = 0.0
+        self._active_value         = metrics["active_positions_value"]
+        self._unrealized_pnl       = metrics["unrealized_pnl"]
+        self._realized_pnl         = metrics["realized_pnl"]
+        self._wallet_usd_value     = 0.0
+        self._active_positions     = list(active)
+        self._acknowledged_markets = load_loss_watch_acknowledged()
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -214,13 +271,13 @@ class OverviewWidget(QWidget):
         main = QVBoxLayout(content)
         main.setContentsMargins(16, 16, 16, 20)
         main.setSpacing(0)
-        self._content_layout = main   # stored for dynamic section replacement
+        self._content_layout = main
 
         # ── Wallet panel ───────────────────────────────────────────────
         self._wallet_panel = WalletPanel()
         self._wallet_panel.wallet_value_changed.connect(self._on_wallet_value_changed)
         self._wallet_panel.positions_fetched.connect(self._on_positions_fetched)
-        self._wallet_panel.activity_fetched.connect(self.activity_changed)
+        self._wallet_panel.activity_fetched.connect(self._on_activity_fetched)
         main.addWidget(self._wallet_panel)
 
         main.addSpacing(14)
@@ -232,7 +289,7 @@ class OverviewWidget(QWidget):
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(14)
 
-        cards_panel = self._build_cards_panel(metrics)
+        cards_panel = self._build_cards_panel(metrics, active, resolved)
         top_row.addWidget(cards_panel, 42)
 
         snapshots = load_wallet_snapshots()
@@ -263,34 +320,57 @@ class OverviewWidget(QWidget):
 
     # ── Card panel ─────────────────────────────────────────────────────────────
 
-    def _build_cards_panel(self, m: dict) -> QWidget:
+    def _build_cards_panel(
+        self,
+        m: dict,
+        active: List[ActivePosition],
+        resolved: List[ResolvedPosition],
+    ) -> QWidget:
         panel = QWidget()
         vbox = QVBoxLayout(panel)
         vbox.setContentsMargins(0, 0, 0, 0)
         vbox.setSpacing(10)
 
-        self._total_card  = _MetricCard("Total Tracked Value",    f"${m['total_tracked_value']:,.2f}", _BLUE)
-        self._active_card = _MetricCard("Positions Value",          f"${m['active_positions_value']:,.2f}", _BLUE)
-        self._wallet_card = _MetricCard("Wallet USD Value",        "$0.00", _MUTED)
-        self._unreal_card = _MetricCard("Unrealized P/L",          f"${m['unrealized_pnl']:,.2f}", _pnl_color(m["unrealized_pnl"]))
-        self._win_card    = _MetricCard("Win Count",                str(m["win_count"]), _GREEN)
-        self._loss_card   = _MetricCard("Loss Count",               str(m["loss_count"]), _RED)
+        # Row 1: Total Tracked Value | Wallet USD Value | Positions Value
+        self._total_card  = _MetricCard("Total Tracked Value", f"${m['total_tracked_value']:,.2f}", _BLUE)
+        self._wallet_card = _MetricCard("Wallet USD Value",    "$0.00", _MUTED)
+        self._active_card = _MetricCard("Positions Value",     f"${m['active_positions_value']:,.2f}", _BLUE)
+
+        # Row 2: Loss Watch | Realized P/L Today | Redeemable Count
+        self._loss_watch_card = _LossWatchCard()
+        initial_lw = compute_loss_watch_count(active, self._acknowledged_markets)
+        self._loss_watch_card.update_count(initial_lw)
+        self._loss_watch_card.acknowledge_btn.clicked.connect(self._on_acknowledge)
+
+        self._pnl_today_card   = _MetricCard("Realized P/L Today", "—", _MUTED)
+        self._redeem_count_card = _MetricCard("Redeemable Count",  str(len(resolved)), _TEXT)
 
         row1 = QHBoxLayout()
         row1.setSpacing(10)
         row1.addWidget(self._total_card)
-        row1.addWidget(self._active_card)
         row1.addWidget(self._wallet_card)
+        row1.addWidget(self._active_card)
 
         row2 = QHBoxLayout()
         row2.setSpacing(10)
-        row2.addWidget(self._unreal_card)
-        row2.addWidget(self._win_card)
-        row2.addWidget(self._loss_card)
+        row2.addWidget(self._loss_watch_card)
+        row2.addWidget(self._pnl_today_card)
+        row2.addWidget(self._redeem_count_card)
 
         vbox.addLayout(row1)
         vbox.addLayout(row2)
         return panel
+
+    # ── Loss Watch acknowledge ─────────────────────────────────────────────────
+
+    def _on_acknowledge(self) -> None:
+        losing_markets = [
+            p.market for p in self._active_positions if p.unrealized_pnl < 0
+        ]
+        self._acknowledged_markets = losing_markets
+        save_loss_watch_acknowledged(self._acknowledged_markets)
+        count = compute_loss_watch_count(self._active_positions, self._acknowledged_markets)
+        self._loss_watch_card.update_count(count)
 
     # ── Wallet value update ────────────────────────────────────────────────────
 
@@ -314,6 +394,7 @@ class OverviewWidget(QWidget):
     # ── Live positions update ──────────────────────────────────────────────────
 
     def _on_positions_fetched(self, active: list, redeemable: list, closed: list) -> None:
+        self._active_positions = list(active)
         metrics = compute_dashboard_metrics(active, redeemable)
         self._active_value   = metrics["active_positions_value"]
         self._unrealized_pnl = metrics["unrealized_pnl"]
@@ -322,14 +403,27 @@ class OverviewWidget(QWidget):
         total = compute_total_tracked_value(self._active_value, self._wallet_usd_value)
         self._total_card.update_value(f"${total:,.2f}", _BLUE)
         self._active_card.update_value(f"${self._active_value:,.2f}", _BLUE)
-        self._unreal_card.update_value(f"${self._unrealized_pnl:,.2f}", _pnl_color(self._unrealized_pnl))
-        self._win_card.update_value(str(metrics["win_count"]), _GREEN)
-        self._loss_card.update_value(str(metrics["loss_count"]), _RED)
+
+        lw_count = compute_loss_watch_count(active, self._acknowledged_markets)
+        self._loss_watch_card.update_count(lw_count)
+
+        self._redeem_count_card.update_value(str(len(redeemable)), _TEXT)
 
         self._replace_section("_act_section", _active_section(active))
         self._replace_section("_res_section", _resolved_section(redeemable))
 
         self.positions_changed.emit(active, redeemable, closed)
+
+    # ── Activity update ────────────────────────────────────────────────────────
+
+    def _on_activity_fetched(self, activity: list) -> None:
+        self.activity_changed.emit(activity)
+        pnl = compute_pnl_today(activity)
+        color = _GREEN if pnl > 0 else (_RED if pnl < 0 else _MUTED)
+        display = f"${pnl:+,.2f}" if pnl != 0 else "$0.00"
+        self._pnl_today_card.update_value(display, color)
+
+    # ── Public ─────────────────────────────────────────────────────────────────
 
     def request_refresh(self) -> None:
         """Trigger a full data refresh — called by other tabs' Refresh buttons."""

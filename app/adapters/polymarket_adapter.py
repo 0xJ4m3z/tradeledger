@@ -155,6 +155,27 @@ def fetch_activity(wallet: str) -> List[UserActivity]:
     return [_to_activity(r) for r in rows]
 
 
+def fetch_closed_positions_page(wallet: str, offset: int, limit: int = 50) -> List[ResolvedPosition]:
+    """Fetch one page of closed positions at the given offset (used by the backfill thread)."""
+    try:
+        r = requests.get(
+            f"{_DATA_API}/closed-positions",
+            params={
+                "user": wallet,
+                "sortBy": "TIMESTAMP",
+                "sortDirection": "DESC",
+                "limit": limit,
+                "offset": offset,
+            },
+            timeout=_TIMEOUT,
+        )
+        r.raise_for_status()
+    except requests.RequestException as exc:
+        raise PolymarketLookupError(f"Network error: {exc}") from exc
+    page = r.json()
+    return [_to_closed(row) for row in page] if page else []
+
+
 def fetch_closed_positions(wallet: str) -> List[ResolvedPosition]:
     """Return the 100 most-recent fully closed positions (redeemed or sold).
 
