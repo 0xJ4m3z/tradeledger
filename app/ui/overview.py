@@ -22,7 +22,7 @@ from app.database import (
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 from app.services.loss_watch import compute_loss_watch_count
 from app.services.metrics import compute_dashboard_metrics, compute_total_tracked_value
-from app.services.pnl_today import compute_pnl_today
+from app.services.pnl_today import compute_pnl_today, count_trades_today
 from app.ui.total_value_chart import TotalValueChartWidget
 from app.ui.wallet_panel import WalletPanel
 
@@ -338,14 +338,14 @@ class OverviewWidget(QWidget):
         self._wallet_card = _MetricCard("Wallet USD Value",    "$0.00", _MUTED)
         self._active_card = _MetricCard("Positions Value",     f"${m['active_positions_value']:,.2f}", _BLUE)
 
-        # Row 2: Loss Watch | Realized P/L Today | Redeemable Count
+        # Row 2: Loss Watch | Realized P/L Today | Trades Today
         self._loss_watch_card = _LossWatchCard()
         initial_lw = compute_loss_watch_count(active, self._acknowledged_markets)
         self._loss_watch_card.update_count(initial_lw)
         self._loss_watch_card.acknowledge_btn.clicked.connect(self._on_acknowledge)
 
-        self._pnl_today_card   = _MetricCard("Realized P/L Today", "—", _MUTED)
-        self._redeem_count_card = _MetricCard("Redeemable Count",  str(len(resolved)), _TEXT)
+        self._pnl_today_card    = _MetricCard("Realized P/L Today", "—", _MUTED)
+        self._trades_today_card = _MetricCard("Trades Today",        "—", _TEXT)
 
         row1 = QHBoxLayout()
         row1.setSpacing(10)
@@ -357,7 +357,7 @@ class OverviewWidget(QWidget):
         row2.setSpacing(10)
         row2.addWidget(self._loss_watch_card)
         row2.addWidget(self._pnl_today_card)
-        row2.addWidget(self._redeem_count_card)
+        row2.addWidget(self._trades_today_card)
 
         vbox.addLayout(row1)
         vbox.addLayout(row2)
@@ -421,8 +421,6 @@ class OverviewWidget(QWidget):
         lw_count = compute_loss_watch_count(active, self._acknowledged_markets)
         self._loss_watch_card.update_count(lw_count)
 
-        self._redeem_count_card.update_value(str(len(redeemable)), _TEXT)
-
         self._replace_section("_act_section", _active_section(active))
         self._replace_section("_res_section", _resolved_section(redeemable))
 
@@ -437,11 +435,20 @@ class OverviewWidget(QWidget):
         display = f"${pnl:+,.2f}" if pnl != 0 else "$0.00"
         self._pnl_today_card.update_value(display, color)
 
+        trades = count_trades_today(activity)
+        self._trades_today_card.update_value(str(trades) if trades else "0", _TEXT)
+
     # ── Public ─────────────────────────────────────────────────────────────────
 
     def request_refresh(self) -> None:
         """Trigger a full data refresh — called by other tabs' Refresh buttons."""
         self._wallet_panel.request_refresh()
+
+    def reload_acknowledged(self) -> None:
+        """Reload acknowledged list from DB (called after Loss Watch tab updates it)."""
+        self._acknowledged_markets = load_loss_watch_acknowledged()
+        count = compute_loss_watch_count(self._active_positions, self._acknowledged_markets)
+        self._loss_watch_card.update_count(count)
 
     def _replace_section(self, attr: str, new_widget: QWidget) -> None:
         old = getattr(self, attr)

@@ -5,6 +5,7 @@ from app.database import load_wallet_snapshots, save_snapshot
 from app.services.metrics import compute_dashboard_metrics
 from app.ui.active_positions_table import ActivePositionsTable
 from app.ui.activity_table import ActivityTable
+from app.ui.loss_watch_tab import LossWatchTab
 from app.ui.overview import OverviewWidget
 from app.ui.resolved_positions_table import ResolvedPositionsTable
 from app.ui.total_value_chart import TotalValueChartWidget
@@ -112,20 +113,25 @@ class MainWindow(QMainWindow):
         save_snapshot("sample", active, resolved)
         metrics = compute_dashboard_metrics(active, resolved)
 
-        overview           = OverviewWidget(active, resolved, metrics)
-        self._active_tab   = ActivePositionsTable(active)
-        self._resolved_tab = ResolvedPositionsTable(resolved, label="Redeemable Positions")
-        self._closed_tab   = ResolvedPositionsTable(
+        overview               = OverviewWidget(active, resolved, metrics)
+        self._loss_watch_tab   = LossWatchTab()
+        self._active_tab       = ActivePositionsTable(active)
+        self._resolved_tab     = ResolvedPositionsTable(resolved, label="Redeemable Positions")
+        self._closed_tab       = ResolvedPositionsTable(
             [], label="Closed Positions — most recent 100", show_refresh=True
         )
-        self._activity_tab = ActivityTable([])
+        self._activity_tab     = ActivityTable([])
 
+        # ── Signal wiring ───────────────────────────────────────────────────────
         overview.positions_changed.connect(self._on_positions_changed)
         overview.activity_changed.connect(self._activity_tab.update_activity)
         self._closed_tab.refresh_requested.connect(overview.request_refresh)
         self._activity_tab.refresh_requested.connect(overview.request_refresh)
 
-        # Full-size Total Tracked Value tab (same data as overview mini chart, bigger canvas)
+        # Loss Watch tab ↔ Overview card stay in sync via DB
+        self._loss_watch_tab.acknowledged_changed.connect(overview.reload_acknowledged)
+
+        # ── Total Tracked Value full-size chart tab ─────────────────────────────
         self._tv_tab_chart = TotalValueChartWidget(load_wallet_snapshots(), figsize=(10, 5))
         overview.snapshots_changed.connect(self._tv_tab_chart.update_snapshots)
         tv_tab = QWidget()
@@ -133,8 +139,10 @@ class MainWindow(QMainWindow):
         tv_layout.setContentsMargins(20, 20, 20, 20)
         tv_layout.addWidget(self._tv_tab_chart)
 
+        # ── Tabs ────────────────────────────────────────────────────────────────
         tabs = QTabWidget()
         tabs.addTab(overview,                  "Overview")
+        tabs.addTab(self._loss_watch_tab,      "Loss Watch")
         tabs.addTab(self._active_tab,          "Active Positions")
         tabs.addTab(self._resolved_tab,        "Redeemable Positions")
         tabs.addTab(self._closed_tab,          "Closed Positions")
@@ -152,6 +160,7 @@ class MainWindow(QMainWindow):
         self._active_tab.update_positions(active)
         self._resolved_tab.update_positions(redeemable)
         self._closed_tab.update_positions(closed)
+        self._loss_watch_tab.update_positions(active)
         self._status_bar.showMessage(
             f"Live Polymarket data  •  {len(active)} active"
             f"  •  {len(redeemable)} redeemable  •  {len(closed)} closed"

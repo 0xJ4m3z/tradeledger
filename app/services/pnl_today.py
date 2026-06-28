@@ -132,6 +132,29 @@ def compute_pnl_today(
     return round(total, 2)
 
 
+def count_trades_today(
+    activity: List[UserActivity],
+    tz_name: str = "America/Chicago",
+) -> int:
+    """Count TRADE-type activity events for today (CT by default).
+
+    Each BUY or SELL row with type=="TRADE" counts as one trade.
+    REDEEMs and rebates are excluded — those aren't trades.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        from datetime import timezone, timedelta
+        tz = timezone(timedelta(hours=-6))
+    today = datetime.now(tz).date()
+    return sum(
+        1 for a in activity
+        if a.type == "TRADE"
+        and datetime.fromtimestamp(a.timestamp, tz=tz).date() == today
+    )
+
+
 def today_date_ct() -> "datetime.date":
     """Return today's date in Central Time (for testing/display)."""
     try:
