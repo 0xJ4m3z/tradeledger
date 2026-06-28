@@ -8,10 +8,10 @@ Calculation:
   + SELL trade proceeds   (usdcSize where side == SELL)
   + REDEEM proceeds       (usdcSize where type == REDEEM)
   + Rewards / rebates     (usdcSize where type in REWARD, MAKER_REBATE, TAKER_REBATE, REFERRAL_REWARD)
-  − BUY costs             (usdcSize where side == BUY)
 
-This is net USDC cash flow for the day, which approximates realized P/L for
-daily monitoring purposes.  Cost-basis accounting per position is left for v0.4.
+BUY costs are intentionally excluded: an open position is unrealized until sold or
+redeemed, so subtracting its cost would mix unrealized exposure into a realized metric.
+Cost-basis accounting per position (to show true realized P/L) is left for v0.4.
 """
 
 from datetime import datetime
@@ -48,8 +48,7 @@ def compute_pnl_today(
             continue
         if a.side == "SELL" or a.type in _CREDIT_TYPES:
             total += a.usdc_size
-        elif a.side == "BUY":
-            total -= a.usdc_size
+        # BUY costs excluded: position may still be open (unrealized)
     return round(total, 2)
 
 

@@ -138,7 +138,8 @@ class WalletPanel(QWidget):
     Never requests private keys, seed phrases, or wallet permissions.
     """
 
-    wallet_value_changed = Signal(float)
+    wallet_value_changed  = Signal(float)
+    wallet_address_changed = Signal(str)   # emitted when the wallet address actually changes
     positions_fetched    = Signal(list, list, list)
     activity_fetched     = Signal(list)
 
@@ -146,11 +147,12 @@ class WalletPanel(QWidget):
         super().__init__()
         self._thread: _FetchThread | None = None
         self._backfill: _BackfillThread | None = None
-        self._current_value  = 0.0
-        self._pending_value  = 0.0
-        self._full_address   = ""
-        self._has_fetched    = False
-        self._positions_ok   = False   # True when last fetch emitted positions_ok
+        self._current_value      = 0.0
+        self._pending_value      = 0.0
+        self._full_address       = ""
+        self._confirmed_address  = ""   # address of the last *successful* wallet fetch
+        self._has_fetched        = False
+        self._positions_ok       = False
 
         init_db()
         self._build_ui()
@@ -236,6 +238,8 @@ class WalletPanel(QWidget):
         if addr and _POLY_RE.match(addr):
             self._full_address = addr
             self._addr_input.setText(_mask_address(addr))
+            # Defer auto-fetch until the event loop starts so all signals are connected
+            QTimer.singleShot(0, self._on_fetch)
 
     # ── Auto-refresh ───────────────────────────────────────────────────────
 
@@ -280,6 +284,9 @@ class WalletPanel(QWidget):
         self._pending_value = value
         self._addr_input.setText(_mask_address(self._full_address))
         self._set_status(f"Wallet: ${value:,.2f}  ·  Loading positions…", _MUTED)
+        if self._full_address != self._confirmed_address:
+            self._confirmed_address = self._full_address
+            self.wallet_address_changed.emit(self._full_address)
         self.wallet_value_changed.emit(value)
 
     def _on_wallet_err(self, msg: str) -> None:

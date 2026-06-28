@@ -253,6 +253,13 @@ def load_closed_positions_cache(limit: int = 500) -> List[ResolvedPosition]:
     ]
 
 
+def clear_wallet_snapshots() -> None:
+    """Delete all wallet snapshots (used when wallet address changes to avoid mixing data)."""
+    with get_connection() as conn:
+        conn.execute("DELETE FROM wallet_snapshots")
+        conn.commit()
+
+
 def count_closed_positions_cache() -> int:
     with get_connection() as conn:
         row = conn.execute("SELECT COUNT(*) AS n FROM closed_positions_cache").fetchone()

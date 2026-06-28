@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.database import (
+    clear_wallet_snapshots,
     load_loss_watch_acknowledged,
     load_wallet_snapshots,
     save_loss_watch_acknowledged,
@@ -275,6 +276,7 @@ class OverviewWidget(QWidget):
 
         # ── Wallet panel ───────────────────────────────────────────────
         self._wallet_panel = WalletPanel()
+        self._wallet_panel.wallet_address_changed.connect(self._on_wallet_address_changed)
         self._wallet_panel.wallet_value_changed.connect(self._on_wallet_value_changed)
         self._wallet_panel.positions_fetched.connect(self._on_positions_fetched)
         self._wallet_panel.activity_fetched.connect(self._on_activity_fetched)
@@ -371,6 +373,18 @@ class OverviewWidget(QWidget):
         save_loss_watch_acknowledged(self._acknowledged_markets)
         count = compute_loss_watch_count(self._active_positions, self._acknowledged_markets)
         self._loss_watch_card.update_count(count)
+
+    # ── Wallet address change (clears stale snapshot history) ─────────────────
+
+    def _on_wallet_address_changed(self, _address: str) -> None:
+        """Called when the wallet address changes (including on first successful fetch).
+
+        Wipes wallet snapshots so the chart starts fresh for the new wallet instead of
+        mixing data from sample mode or a previous wallet.
+        """
+        clear_wallet_snapshots()
+        self._chart.update_snapshots([])
+        self.snapshots_changed.emit([])
 
     # ── Wallet value update ────────────────────────────────────────────────────
 

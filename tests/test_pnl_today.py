@@ -46,9 +46,10 @@ class TestComputePnlToday:
     def test_empty_activity_returns_zero(self):
         assert compute_pnl_today([]) == 0.0
 
-    def test_buy_is_debit(self):
+    def test_buy_is_ignored(self):
+        # BUY costs are excluded: the position is still open (unrealized)
         a = _make("BUY", "TRADE", 50.0)
-        assert compute_pnl_today([a]) == -50.0
+        assert compute_pnl_today([a]) == 0.0
 
     def test_sell_is_credit(self):
         a = _make("SELL", "TRADE", 80.0)
@@ -74,37 +75,38 @@ class TestComputePnlToday:
         a = _make("", "REFERRAL_REWARD", 2.00)
         assert compute_pnl_today([a]) == 2.00
 
-    def test_net_buy_sell(self):
+    def test_buy_and_sell_same_day_only_sell_counts(self):
+        # BUY is excluded; only the SELL proceeds count
         activity = [
             _make("BUY",  "TRADE", 100.0),
             _make("SELL", "TRADE", 120.0),
         ]
-        assert compute_pnl_today(activity) == 20.0
+        assert compute_pnl_today(activity) == 120.0
 
-    def test_negative_net(self):
+    def test_multiple_sells(self):
         activity = [
-            _make("BUY",  "TRADE", 200.0),
+            _make("SELL", "TRADE", 200.0),
             _make("SELL", "TRADE", 150.0),
         ]
-        assert compute_pnl_today(activity) == -50.0
+        assert compute_pnl_today(activity) == 350.0
 
     def test_yesterday_events_excluded(self):
         yesterday = _yesterday_ts()
         activity = [
-            _make("SELL", "TRADE", 100.0, ts=yesterday),
-            _make("BUY",  "TRADE",  50.0),
+            _make("SELL", "TRADE", 100.0, ts=yesterday),   # excluded (yesterday)
+            _make("BUY",  "TRADE",  50.0),                  # excluded (BUY)
         ]
-        assert compute_pnl_today(activity) == -50.0
+        assert compute_pnl_today(activity) == 0.0
 
     def test_mixed_today_and_yesterday(self):
         yesterday = _yesterday_ts()
         activity = [
-            _make("BUY",  "TRADE", 100.0, ts=yesterday),   # excluded
+            _make("BUY",  "TRADE", 100.0, ts=yesterday),   # excluded (yesterday + BUY)
             _make("SELL", "TRADE",  60.0),                  # +60
-            _make("BUY",  "TRADE",  20.0),                  # -20
+            _make("BUY",  "TRADE",  20.0),                  # excluded (BUY)
             _make("",     "REDEEM", 15.0),                  # +15
         ]
-        assert compute_pnl_today(activity) == 55.0
+        assert compute_pnl_today(activity) == 75.0
 
     def test_rounding_to_two_decimals(self):
         activity = [
