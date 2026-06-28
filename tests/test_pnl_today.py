@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 import pytest
 
 from app.models import UserActivity
-from app.services.pnl_today import compute_pnl_today, today_date_ct
+from app.services.pnl_today import compute_pnl_today, count_trades_today, today_date_ct
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -230,6 +230,60 @@ class TestComputePnlToday:
             _make("",     "MAKER_REBATE", 0.50),           # +0.50
         ]
         assert compute_pnl_today(activity) == 20.50
+
+
+class TestCountTradesToday:
+    def test_empty_returns_zero(self):
+        assert count_trades_today([]) == 0
+
+    def test_multiple_buys_same_market_count_as_one(self):
+        # 4 BUYs for the same market window = 1 distinct market traded
+        activity = [
+            _make("BUY", "TRADE", 27.30,  size=27.86,  title="BTC Up or Down 1:50-1:55"),
+            _make("BUY", "TRADE",  4.90,  size=5.00,   title="BTC Up or Down 1:50-1:55"),
+            _make("BUY", "TRADE", 422.80, size=431.43, title="BTC Up or Down 1:50-1:55"),
+            _make("BUY", "TRADE",  49.00, size=50.00,  title="BTC Up or Down 1:50-1:55"),
+        ]
+        assert count_trades_today(activity) == 1
+
+    def test_buy_and_redeem_same_market_count_as_one(self):
+        activity = [
+            _make("BUY", "TRADE",   504.0, size=514.29, title="BTC Up or Down 1:50-1:55"),
+            _make("",    "REDEEM",  514.29, size=514.29, title="BTC Up or Down 1:50-1:55"),
+        ]
+        assert count_trades_today(activity) == 1
+
+    def test_two_different_markets_count_as_two(self):
+        activity = [
+            _make("BUY", "TRADE", 100.0, size=100.0, title="BTC Up or Down 1:50-1:55"),
+            _make("BUY", "TRADE", 200.0, size=200.0, title="BTC Up or Down 1:05-1:10"),
+        ]
+        assert count_trades_today(activity) == 2
+
+    def test_five_markets_with_multiple_events_each(self):
+        markets = [f"BTC Window {i}" for i in range(5)]
+        activity = [
+            _make("BUY",    "TRADE",  100.0, title=m)
+            for m in markets
+            for _ in range(3)   # 3 BUYs per market
+        ] + [
+            _make("", "REDEEM", 110.0, title=m) for m in markets
+        ]
+        assert count_trades_today(activity) == 5
+
+    def test_yesterday_markets_excluded(self):
+        activity = [
+            _make("BUY", "TRADE", 100.0, title="Yesterday Market", ts=_ts_yesterday()),
+            _make("BUY", "TRADE", 100.0, title="Today Market"),
+        ]
+        assert count_trades_today(activity) == 1
+
+    def test_events_with_no_title_excluded(self):
+        activity = [
+            _make("", "MAKER_REBATE", 0.50, title=""),  # rebate, no market title
+            _make("BUY", "TRADE", 100.0, title="Real Market"),
+        ]
+        assert count_trades_today(activity) == 1
 
 
 class TestTodayDateCt:

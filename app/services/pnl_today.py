@@ -136,10 +136,10 @@ def count_trades_today(
     activity: List[UserActivity],
     tz_name: str = "America/Chicago",
 ) -> int:
-    """Count TRADE-type activity events for today (CT by default).
+    """Count distinct markets traded today (CT by default).
 
-    Each BUY or SELL row with type=="TRADE" counts as one trade.
-    REDEEMs and rebates are excluded — those aren't trades.
+    All activity for "Bitcoin Up or Down - June 28, 1:50PM-1:55PM ET" —
+    whether BUY, SELL, or REDEEM — counts as one trade for that window.
     """
     try:
         from zoneinfo import ZoneInfo
@@ -148,11 +148,11 @@ def count_trades_today(
         from datetime import timezone, timedelta
         tz = timezone(timedelta(hours=-6))
     today = datetime.now(tz).date()
-    return sum(
-        1 for a in activity
-        if a.type == "TRADE"
-        and datetime.fromtimestamp(a.timestamp, tz=tz).date() == today
-    )
+    return len({
+        a.title for a in activity
+        if datetime.fromtimestamp(a.timestamp, tz=tz).date() == today
+        and a.title  # skip events with no market title
+    })
 
 
 def today_date_ct() -> "datetime.date":
