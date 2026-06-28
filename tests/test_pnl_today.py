@@ -35,7 +35,7 @@ def _make(
     size: float = 0.0,
     ts: int | None = None,
     title: str = "Test Market",
-    outcome: str = "Yes",
+    outcome: str = "Yes",   # pass "" to simulate Polymarket REDEEM (no outcome in API)
 ) -> UserActivity:
     return UserActivity(
         timestamp=ts if ts is not None else _ts_today(),
@@ -128,13 +128,50 @@ class TestComputePnlToday:
         # No BUY for Market B → skipped
         assert compute_pnl_today(activity) == 0.0
 
-    def test_different_outcomes_not_mixed(self):
-        # BUY Yes should not cover SELL No
+    def test_different_outcomes_not_mixed_for_sell(self):
+        # BUY "Yes" should not cover SELL "No" (different outcome keys, no fallback for SELL)
         activity = [
             UserActivity(_ts_today(), "TRADE", "Market X", "Yes", "BUY",  1000.0, 100.0, 0.10),
             UserActivity(_ts_today(), "TRADE", "Market X", "No",  "SELL",  500.0,  60.0, 0.12),
         ]
         assert compute_pnl_today(activity) == 0.0
+
+    # ── REDEEM with empty outcome (real Polymarket API behaviour) ──────────────
+
+    def test_redeem_empty_outcome_matches_by_title(self):
+        # Polymarket REDEEM events return outcome="" in the API response.
+        # Should match BUYs for the same title regardless of outcome field.
+        activity = [
+            _make("BUY",  "TRADE", 504.0, size=514.29, outcome="Up"),
+            _make("",     "REDEEM", 514.29, size=514.29, outcome=""),   # empty outcome
+        ]
+        # P/L = 514.29 - 504.0 = 10.29
+        assert compute_pnl_today(activity) == round(514.29 - 504.0, 2)
+
+    def test_redeem_empty_outcome_uses_all_buys_for_title(self):
+        # Multiple BUYs at different prices; REDEEM has no outcome.
+        activity = [
+            _make("BUY", "TRADE",  27.30, size=27.86,  outcome="Up"),
+            _make("BUY", "TRADE",   4.90, size=5.00,   outcome="Up"),
+            _make("BUY", "TRADE", 422.80, size=431.43, outcome="Up"),
+            _make("BUY", "TRADE",  49.00, size=50.00,  outcome="Up"),
+            _make("",    "REDEEM", 514.29, size=514.29, outcome=""),
+        ]
+        total_qty  = 27.86 + 5.00 + 431.43 + 50.00   # 514.29
+        total_cost = 27.30 + 4.90 + 422.80 + 49.00   # 504.00
+        avg_price  = total_cost / total_qty
+        expected   = round(514.29 - 514.29 * avg_price, 2)
+        assert compute_pnl_today(activity) == expected
+
+    def test_sell_with_outcome_still_uses_outcome_key(self):
+        # SELL events have an outcome — should use (title, outcome) not title-only
+        activity = [
+            UserActivity(_ts_today(), "TRADE", "Market X", "Yes", "BUY",  1000.0, 100.0, 0.10),
+            UserActivity(_ts_today(), "TRADE", "Market X", "No",  "BUY",   500.0,  60.0, 0.12),
+            UserActivity(_ts_today(), "TRADE", "Market X", "Yes", "SELL",  500.0,  55.0, 0.11),
+        ]
+        # SELL is "Yes" → only Yes BUY costs used: avg = 100/1000 = 0.10, cost = 50
+        assert compute_pnl_today(activity) == round(55.0 - 50.0, 2)  # 5.0
 
     def test_yesterday_sell_excluded(self):
         # SELL from yesterday should not count even if BUY is in feed
