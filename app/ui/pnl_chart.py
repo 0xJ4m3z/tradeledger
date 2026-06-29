@@ -101,10 +101,10 @@ class PnlChartWidget(QWidget):
             self._draw_empty()
             return
 
-        x_nums = mdates.date2num(x_dates)
+        x_nums = list(mdates.date2num(x_dates))
         self._x_nums = x_nums
-        self._y_data = y_vals
-        self._x_data = x_dates
+        self._y_data = list(y_vals)
+        self._x_data = list(x_dates)
 
         final = y_vals[-1] if len(y_vals) > 1 else 0.0
         line_color = _GREEN if final >= 0 else _RED
