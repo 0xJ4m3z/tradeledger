@@ -1,65 +1,142 @@
 """
-Realized P/L Today — net realized profit for the current calendar day in Central Time.
+Range-aware realized P/L from closed positions.
 
-"Today" resets at midnight CT (America/Chicago), which handles both CST (UTC-6)
-and CDT (UTC-5) automatically via the system timezone database.
+Timezone: America/New_York (ET — handles EST/EDT automatically).
 
-For each SELL or REDEEM event today:
-  realized_pnl = proceeds − (qty_closed × avg_buy_price_for_that_market+outcome)
+Range definitions:
+  1d  = current calendar day from midnight ET to now
+  1w  = trailing 7 days from now
+  1m  = trailing 30 days from now
+  1y  = trailing 365 days from now
+  ytd = January 1 midnight ET to now
+  all = all loaded data (never partial by definition)
 
-avg_buy_price is derived from ALL BUY events in the activity feed (any date),
-weighted by quantity:  avg = total_buy_usdc / total_buy_qty.
+Source of truth for P/L: closed positions (ResolvedPosition.realized_pnl).
+Losses are correctly counted because losing redemptions have redeem_value=0,
+so realized_pnl = redeem_value − cost_basis = −cost_basis.
 
-Matching strategy:
-  - SELL events include an outcome field → matched by (title, outcome)
-  - REDEEM events often have an empty outcome in the API response → matched by
-    title alone (you can only redeem the winning side, so aggregating all BUYs
-    for the market is correct)
-  - Fallback: if (title, outcome) has no matching BUY, retry with title only
-
-If no matching BUY is found in the feed at all (position opened outside the
-100-event window), that close is skipped — showing partial data is more honest
-than adding gross proceeds as if cost were zero.
-
-Rebates and rewards (MAKER_REBATE, TAKER_REBATE, REWARD, REFERRAL_REWARD) have no
-matching BUY and are added as direct credits.
+Partial data: when the oldest loaded closed position falls within the range
+window, there may be older records in that window not yet loaded. Cards show
+a "~" prefix to signal the number may be understated.
 """
 
-from datetime import datetime
-from typing import Dict, List, Tuple
+from datetime import date, datetime, timedelta
+from typing import Dict, List, Optional, Tuple
 
-from app.models import UserActivity
+from app.models import ResolvedPosition, UserActivity
 
-# Credited directly — no cost-basis matching needed
+_ET = "America/New_York"
+
 _REBATE_TYPES = frozenset(
     {"REWARD", "MAKER_REBATE", "TAKER_REBATE", "REFERRAL_REWARD"}
 )
 
 
+def _et_zone():
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(_ET)
+    except Exception:
+        from datetime import timezone, timedelta as td
+        return timezone(td(hours=-5))
+
+
+def today_date_et() -> date:
+    """Return today's date in Eastern Time."""
+    return datetime.now(_et_zone()).date()
+
+
+def today_date_ct() -> date:
+    """Deprecated alias for today_date_et() — kept for backward compatibility."""
+    return today_date_et()
+
+
+def range_cutoff_et(range_: str) -> Optional[date]:
+    """Return the inclusive start date for a range key (ET calendar dates).
+
+    Returns None for 'all' (no cutoff — include everything).
+    """
+    tz = _et_zone()
+    today = datetime.now(tz).date()
+    if range_ == "1d":
+        return today
+    if range_ == "1w":
+        return today - timedelta(days=7)
+    if range_ == "1m":
+        return today - timedelta(days=30)
+    if range_ == "1y":
+        return today - timedelta(days=365)
+    if range_ == "ytd":
+        return date(today.year, 1, 1)
+    return None  # "all"
+
+
+def is_data_partial(closed: List[ResolvedPosition], range_: str) -> bool:
+    """Return True if loaded closed positions may be incomplete for the range.
+
+    Partial: the oldest loaded record still falls within the range window —
+    there could be older records in the same window not yet fetched.
+    'all' is never partial (it means all loaded data by definition).
+    """
+    if range_ == "all" or not closed:
+        return False
+    cutoff = range_cutoff_et(range_)
+    if cutoff is None:
+        return False
+    valid_dates = [
+        date.fromisoformat(p.resolved_date[:10])
+        for p in closed
+        if p.resolved_date
+        and len(p.resolved_date) >= 10
+    ]
+    if not valid_dates:
+        return False
+    oldest = min(valid_dates)
+    return oldest >= cutoff
+
+
+def filter_closed_by_range(
+    closed: List[ResolvedPosition], range_: str
+) -> List[ResolvedPosition]:
+    """Filter closed positions to those within the given range (ET calendar dates).
+
+    Uses resolved_date (ISO date string) from each ResolvedPosition.
+    Records with missing or unparseable resolved_date are excluded.
+    """
+    if range_ == "all":
+        return closed
+    cutoff = range_cutoff_et(range_)
+    if cutoff is None:
+        return closed
+    result = []
+    for p in closed:
+        if not p.resolved_date:
+            continue
+        try:
+            d = date.fromisoformat(p.resolved_date[:10])
+            if d >= cutoff:
+                result.append(p)
+        except (ValueError, TypeError):
+            pass
+    return result
+
+
+# ── Activity-based helpers (not used by UI cards; retained for tests) ──────────
+
 def _build_buy_index(
     activity: List[UserActivity],
 ) -> Tuple[Dict, Dict, Dict, Dict]:
-    """Aggregate all BUY events in the feed (any date) into two indexes.
-
-    Returns:
-      qty_by_key   — (title, outcome) → total tokens bought
-      cost_by_key  — (title, outcome) → total USDC spent
-      qty_by_title — title → total tokens bought (all outcomes combined)
-      cost_by_title— title → total USDC spent   (all outcomes combined)
-    """
     qty_by_key:    Dict[tuple, float] = {}
     cost_by_key:   Dict[tuple, float] = {}
     qty_by_title:  Dict[str,   float] = {}
     cost_by_title: Dict[str,   float] = {}
-
     for a in activity:
         if a.side == "BUY":
             k = (a.title, a.outcome)
-            qty_by_key[k]    = qty_by_key.get(k, 0.0)    + a.size
-            cost_by_key[k]   = cost_by_key.get(k, 0.0)   + a.usdc_size
+            qty_by_key[k]   = qty_by_key.get(k, 0.0)   + a.size
+            cost_by_key[k]  = cost_by_key.get(k, 0.0)  + a.usdc_size
             qty_by_title[a.title]  = qty_by_title.get(a.title, 0.0)  + a.size
             cost_by_title[a.title] = cost_by_title.get(a.title, 0.0) + a.usdc_size
-
     return qty_by_key, cost_by_key, qty_by_title, cost_by_title
 
 
@@ -71,121 +148,89 @@ def _lookup_buy(
     qty_by_title:  Dict[str,   float],
     cost_by_title: Dict[str,   float],
 ) -> Tuple[float, float]:
-    """Return (qty_bought, cost_bought) for a close event.
-
-    - Non-empty outcome (SELL): match exactly on (title, outcome); no fallback.
-      If the BUY isn't in the feed, return (0, 0) so the close is skipped.
-    - Empty outcome (REDEEM from Polymarket API): match by title only, aggregating
-      all outcomes — you can only redeem the winning side, so this is safe.
-    """
     if outcome:
         k = (title, outcome)
         return qty_by_key.get(k, 0.0), cost_by_key.get(k, 0.0)
-    # Empty outcome → title-only (REDEEM events have no outcome in the API response)
     return qty_by_title.get(title, 0.0), cost_by_title.get(title, 0.0)
 
 
 def compute_pnl_today(
     activity: List[UserActivity],
-    tz_name: str = "America/Chicago",
+    tz_name: str = _ET,
 ) -> float:
-    """Return realized P/L for today (CT by default).
-
-    Falls back to UTC-6 fixed offset if zoneinfo is unavailable.
-    Returns 0.0 when no closes with known cost basis occurred today.
-    Retroactively calculates from whatever activity is in the feed, so
-    starting the app mid-day still gives the correct day-so-far figure.
-    """
+    """Realized P/L for the current calendar day in ET (activity-based)."""
     try:
         from zoneinfo import ZoneInfo
         tz = ZoneInfo(tz_name)
     except Exception:
-        from datetime import timezone, timedelta
-        tz = timezone(timedelta(hours=-6))
-
+        from datetime import timezone, timedelta as td
+        tz = timezone(td(hours=-5))
     today = datetime.now(tz).date()
     qty_by_key, cost_by_key, qty_by_title, cost_by_title = _build_buy_index(activity)
-
     total = 0.0
     for a in activity:
         ts_local = datetime.fromtimestamp(a.timestamp, tz=tz)
         if ts_local.date() != today:
             continue
-
         if a.side == "SELL" or a.type == "REDEEM":
             q_bought, c_bought = _lookup_buy(
                 a.title, a.outcome,
-                qty_by_key, cost_by_key,
-                qty_by_title, cost_by_title,
+                qty_by_key, cost_by_key, qty_by_title, cost_by_title,
             )
             q_close = a.size
-
             if q_bought > 0 and q_close > 0:
                 avg_price      = c_bought / q_bought
                 allocated_cost = min(q_close, q_bought) * avg_price
                 total += a.usdc_size - allocated_cost
-            # else: BUY not in feed or size unknown — skip to avoid counting raw volume
-
         elif a.type in _REBATE_TYPES:
             total += a.usdc_size
-
     return round(total, 2)
 
 
 def count_trades_today(
     activity: List[UserActivity],
-    tz_name: str = "America/Chicago",
+    tz_name: str = _ET,
 ) -> int:
-    """Count distinct markets traded today (CT by default).
-
-    All activity for "Bitcoin Up or Down - June 28, 1:50PM-1:55PM ET" —
-    whether BUY, SELL, or REDEEM — counts as one trade for that window.
-    """
+    """Count distinct market titles with any activity today (ET)."""
     try:
         from zoneinfo import ZoneInfo
         tz = ZoneInfo(tz_name)
     except Exception:
-        from datetime import timezone, timedelta
-        tz = timezone(timedelta(hours=-6))
+        from datetime import timezone, timedelta as td
+        tz = timezone(td(hours=-5))
     today = datetime.now(tz).date()
     return len({
         a.title for a in activity
-        if datetime.fromtimestamp(a.timestamp, tz=tz).date() == today
-        and a.title  # skip events with no market title
+        if a.title and datetime.fromtimestamp(a.timestamp, tz=tz).date() == today
     })
 
 
 def compute_pnl_range(
     activity: List[UserActivity],
     cutoff_date=None,
-    tz_name: str = "America/Chicago",
+    tz_name: str = _ET,
 ) -> float:
-    """Return realized P/L for close events on or after cutoff_date (CT).
+    """Realized P/L for close events on or after cutoff_date in ET (activity-based).
 
-    cutoff_date=None means all time (no date filter).
-    Uses the same cost-basis matching as compute_pnl_today.
+    cutoff_date=None means all time.
     """
     try:
         from zoneinfo import ZoneInfo
         tz = ZoneInfo(tz_name)
     except Exception:
-        from datetime import timezone, timedelta
-        tz = timezone(timedelta(hours=-6))
-
+        from datetime import timezone, timedelta as td
+        tz = timezone(td(hours=-5))
     qty_by_key, cost_by_key, qty_by_title, cost_by_title = _build_buy_index(activity)
-
     total = 0.0
     for a in activity:
         if cutoff_date is not None:
             ts_local = datetime.fromtimestamp(a.timestamp, tz=tz)
             if ts_local.date() < cutoff_date:
                 continue
-
         if a.side == "SELL" or a.type == "REDEEM":
             q_bought, c_bought = _lookup_buy(
                 a.title, a.outcome,
-                qty_by_key, cost_by_key,
-                qty_by_title, cost_by_title,
+                qty_by_key, cost_by_key, qty_by_title, cost_by_title,
             )
             q_close = a.size
             if q_bought > 0 and q_close > 0:
@@ -198,39 +243,24 @@ def compute_pnl_range(
                 if ts_local.date() < cutoff_date:
                     continue
             total += a.usdc_size
-
     return round(total, 2)
 
 
 def count_trades_range(
     activity: List[UserActivity],
     cutoff_date=None,
-    tz_name: str = "America/Chicago",
+    tz_name: str = _ET,
 ) -> int:
-    """Count distinct markets with activity on or after cutoff_date (CT).
-
-    cutoff_date=None means all time.
-    """
+    """Count distinct market titles with activity on or after cutoff_date (ET)."""
     if cutoff_date is None:
         return len({a.title for a in activity if a.title})
     try:
         from zoneinfo import ZoneInfo
         tz = ZoneInfo(tz_name)
     except Exception:
-        from datetime import timezone, timedelta
-        tz = timezone(timedelta(hours=-6))
+        from datetime import timezone, timedelta as td
+        tz = timezone(td(hours=-5))
     return len({
         a.title for a in activity
         if a.title and datetime.fromtimestamp(a.timestamp, tz=tz).date() >= cutoff_date
     })
-
-
-def today_date_ct() -> "datetime.date":
-    """Return today's date in Central Time (for testing/display)."""
-    try:
-        from zoneinfo import ZoneInfo
-        tz = ZoneInfo("America/Chicago")
-    except Exception:
-        from datetime import timezone, timedelta
-        tz = timezone(timedelta(hours=-6))
-    return datetime.now(tz).date()

@@ -6,7 +6,7 @@ A local, read-only desktop application for tracking Polymarket positions, wallet
 
 TradeLedger lets you monitor your open positions, resolved winnings, closed trade history, and activity feed — all locally, using public read-only APIs. No account login, no API key, no wallet connection required.
 
-- **Overview** — wallet lookup, time-range filter (1D / 1W / 1M / All), metric cards (Total Tracked Value, Wallet USD Value, Positions Value, Loss Watch, Realized P/L, Trades), Total Tracked Value mini chart, live positions grid
+- **Overview** — wallet lookup, time-range filter (1D / 1W / 1M / 1Y / YTD / All), metric cards (Total Tracked Value, Wallet USD Value, Positions Value, Loss Watch, Realized P/L, Trades), daily P/L bar chart, live positions grid
 - **Loss Watch** — list of open positions with negative unrealized P/L; acknowledge known losers to track new ones
 - **Active Positions** — all open positions currently exposed to market movement
 - **Resolved Positions** — won/resolved markets not yet redeemed; still counted in Positions Value
@@ -134,6 +134,7 @@ tradeledger/
 │       ├── overview.py                 # Overview tab: range filter, cards, chart, positions grid
 │       ├── wallet_panel.py             # Wallet input, fetch/refresh, auto-refresh, background threads
 │       ├── total_value_chart.py        # Total Tracked Value chart widget (with range buttons)
+│       ├── pnl_chart.py                # Daily realized P/L bar chart widget (Overview mini-chart)
 │       ├── active_positions_table.py   # Active Positions tab with search filter
 │       ├── resolved_positions_table.py # Resolved / Closed Positions tabs with infinite scroll
 │       ├── activity_table.py           # Activity tab with infinite scroll and color-coded types
@@ -150,7 +151,8 @@ tradeledger/
 │   ├── test_polymarket_adapter.py      # Polymarket position + activity lookup tests (mocked)
 │   ├── test_closed_cache.py            # Closed positions cache: upsert, dedup, limit tests
 │   ├── test_loss_watch.py              # Loss Watch filter and count tests
-│   └── test_chart_ranges.py            # Chart range filter tests
+│   ├── test_chart_ranges.py            # Chart range filter tests
+│   └── test_pnl_ranges.py             # Range/timezone logic, partial data detection
 ├── sample_data/
 │   ├── sample_wallet_positions.json    # Example active positions
 │   └── sample_resolved_positions.json  # Example resolved positions
@@ -174,10 +176,43 @@ tradeledger/
 | Wallet USD Value | Polygon wallet USDC.e + pUSD balance (live, read-only) |
 | Positions Value | Current value of all Active + Resolved positions |
 | Loss Watch | Count of open positions with negative unrealized P/L that have not been acknowledged. "Acknowledge All" marks current losers as known; new losers still appear. |
-| Realized P/L | Net profit/loss from closed positions in the selected time range (1D / 1W / 1M / All). Uses `redeem_value − cost_basis` so losses (redeem at $0) are correctly counted. |
-| Trades | Number of closed positions in the selected time range |
+| Realized P/L | Net profit/loss from closed positions in the selected time range. Uses `redeem_value − cost_basis` so losses (redeem at $0) are correctly counted. Prefixed with `~` when loaded data may be incomplete for the range. |
+| Trades | Count of closed positions in the selected time range. Prefixed with `~` when loaded data may be incomplete. |
 
-The **1D / 1W / 1M / All** range buttons above the cards and chart control all three at once: the closed positions grid in the overview, the Realized P/L card, and the Trades card.
+The **1D / 1W / 1M / 1Y / YTD / All** range buttons above the cards and chart control all three at once: the closed positions grid in the overview, the Realized P/L card, and the Trades card, and the daily P/L bar chart.
+
+---
+
+## P/L calculation rules
+
+### Source of truth
+
+Realized P/L uses **closed positions** (`ResolvedPosition.realized_pnl`), not activity events. This ensures losses are correctly counted: when a position expires worthless, `redeem_value = 0`, so `realized_pnl = redeem_value − cost_basis = −cost_basis`.
+
+Activity events (BUY/SELL/REDEEM) are used only in the legacy activity-based functions retained for backward compatibility. They are not used for the Overview cards.
+
+### Timezone
+
+All calendar-day boundaries use **America/New_York (ET)** — Eastern Time, handles EST (UTC-5) and EDT (UTC-4) automatically via the system timezone database.
+
+### Range definitions
+
+| Button | Definition |
+|--------|-----------|
+| **1D** | Current calendar day from midnight ET to now |
+| **1W** | Trailing 7 days from now |
+| **1M** | Trailing 30 days from now |
+| **1Y** | Trailing 365 days from now |
+| **YTD** | January 1 midnight ET to now |
+| **All** | All loaded data (no date filter) |
+
+### Partial data detection
+
+Closed positions are loaded newest-first (most recent 100 on initial fetch, then page-by-page via scroll or background backfill). If the **oldest loaded record** still falls within the selected range window, there may be older records in the same window not yet fetched.
+
+When partial data is detected, the Realized P/L and Trades cards are prefixed with **`~`** to indicate the number may be understated. Scrolling down in the Closed Positions tab loads more history and will eventually clear the `~` prefix once data extends beyond the range cutoff.
+
+`All` is never marked partial — it means "all currently loaded data" by definition.
 
 ---
 
@@ -243,8 +278,16 @@ Tries multiple public Polygon RPCs automatically if one fails. Wallet address is
 - **Wallet-address-tagged snapshots** — chart never shows data from a different wallet; stale same-day snapshots are cleared on first fetch
 - 196 passing tests
 
+**v0.3.1 — P/L accuracy audit** ✓
+- **ET timezone** — all calendar-day calculations use America/New_York (was: Chicago); 1D = today ET midnight to now
+- **1Y and YTD ranges** — added to range bar alongside 1D / 1W / 1M / All
+- **Partial data detection** — Realized P/L and Trades cards show `~` prefix when loaded data may not cover the full range
+- **Closed positions as P/L source** — explicitly documented; `filter_closed_by_range` extracted to service layer
+- **Daily P/L bar chart** — Overview mini-chart replaced with daily realized P/L bars (green/red per day)
+- **Comprehensive range/timezone tests** — 36 new tests covering all ranges, edge cases, partial detection, timezone
+- 232 passing tests
+
 **v0.4 — Planned**
 - Notes per market
 - Export to CSV
-- Cumulative realized P/L chart
 - No trading execution, no order placement, no private key storage

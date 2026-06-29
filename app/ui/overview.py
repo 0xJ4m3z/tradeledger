@@ -1,4 +1,3 @@
-from datetime import date, timedelta
 from typing import List
 
 from PySide6.QtCore import Qt, Signal
@@ -24,7 +23,8 @@ from app.database import (
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 from app.services.loss_watch import compute_loss_watch_count
 from app.services.metrics import compute_dashboard_metrics, compute_total_tracked_value
-from app.ui.total_value_chart import TotalValueChartWidget
+from app.services.pnl_today import filter_closed_by_range, is_data_partial
+from app.ui.pnl_chart import PnlChartWidget
 from app.ui.wallet_panel import WalletPanel
 
 # ── Palette ────────────────────────────────────────────────────────────────────
@@ -299,33 +299,14 @@ def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") 
 
 # ── Date-range filtering ───────────────────────────────────────────────────────
 
-_RANGE_LABELS = {"1d": "1D", "1w": "1W", "1m": "1M", "all": "All"}
-
-
-def _filter_closed_by_range(closed: List[ResolvedPosition], range_: str) -> List[ResolvedPosition]:
-    if range_ == "all" or not closed:
-        return closed
-    today = date.today()
-    if range_ == "1d":
-        cutoff = today
-    elif range_ == "1w":
-        cutoff = today - timedelta(days=7)
-    elif range_ == "1m":
-        cutoff = today - timedelta(days=30)
-    else:
-        return closed
-
-    result = []
-    for p in closed:
-        if not p.resolved_date:
-            continue
-        try:
-            d = date.fromisoformat(p.resolved_date[:10])
-            if d >= cutoff:
-                result.append(p)
-        except (ValueError, TypeError):
-            pass
-    return result
+_RANGE_LABELS = {
+    "1d":  "1D",
+    "1w":  "1W",
+    "1m":  "1M",
+    "1y":  "1Y",
+    "ytd": "YTD",
+    "all": "All",
+}
 
 
 # ── Overview widget ────────────────────────────────────────────────────────────
@@ -397,9 +378,7 @@ class OverviewWidget(QWidget):
         cards_panel = self._build_cards_panel(metrics, active, resolved)
         top_row.addWidget(cards_panel, 42)
 
-        # Load only this wallet's history (empty for new wallets; never shows dummy data)
-        snapshots = load_wallet_snapshots(self._confirmed_wallet)
-        self._chart = TotalValueChartWidget(snapshots, show_range_buttons=False)
+        self._chart = PnlChartWidget([], range_=self._range)
         top_row.addWidget(self._chart, 58)
 
         main.addWidget(top)
@@ -456,9 +435,10 @@ class OverviewWidget(QWidget):
         self._range = range_
         for key, btn in self._range_btns.items():
             btn.setStyleSheet(_RANGE_BTN_ACTIVE if key == range_ else _RANGE_BTN_IDLE)
-        filtered = _filter_closed_by_range(self._closed_positions, range_)
+        filtered = filter_closed_by_range(self._closed_positions, range_)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[range_]))
         self._update_metric_cards()
+        self._chart.update(self._closed_positions, range_)
 
     # ── Card panel ─────────────────────────────────────────────────────────────
 
@@ -518,8 +498,9 @@ class OverviewWidget(QWidget):
 
     def _on_wallet_address_changed(self, address: str) -> None:
         self._confirmed_wallet = address
+        # Clear P/L chart — new wallet's positions not yet loaded
+        self._chart.update([], self._range)
         snaps = load_wallet_snapshots(address)
-        self._chart.update_snapshots(snaps)
         self.snapshots_changed.emit(snaps)
 
     # ── Wallet value update ────────────────────────────────────────────────────
@@ -559,9 +540,10 @@ class OverviewWidget(QWidget):
         self._replace_section("_act_section", _active_section(active))
         self._replace_section("_res_section", _resolved_section(resolved))
 
-        filtered = _filter_closed_by_range(self._closed_positions, self._range)
+        filtered = filter_closed_by_range(self._closed_positions, self._range)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
         self._update_metric_cards()
+        self._chart.update(self._closed_positions, self._range)
 
         # Save snapshot now that both wallet USD and real positions values are settled.
         # On the first fetch of each session, wipe today's snapshots first — any that
@@ -578,7 +560,6 @@ class OverviewWidget(QWidget):
                 realized_pnl=self._realized_pnl,
             )
             snaps = load_wallet_snapshots(self._confirmed_wallet)
-            self._chart.update_snapshots(snaps)
             self.snapshots_changed.emit(snaps)
 
         self.positions_changed.emit(active, resolved, closed)
@@ -594,25 +575,26 @@ class OverviewWidget(QWidget):
         self.more_activity.emit(page)
 
     def _update_metric_cards(self) -> None:
-        """Recompute Realized P/L and Trades cards from closed positions for the current range.
+        filtered = filter_closed_by_range(self._closed_positions, self._range)
+        partial  = is_data_partial(self._closed_positions, self._range)
+        prefix   = "~" if partial else ""
 
-        Uses closed positions (not activity) so true losses — where redeem_value is $0
-        because the outcome went against the position — are correctly counted as negative P/L.
-        """
-        filtered = _filter_closed_by_range(self._closed_positions, self._range)
-        pnl = sum(p.realized_pnl for p in filtered)
+        pnl   = sum(p.realized_pnl for p in filtered)
         color = _GREEN if pnl > 0 else (_RED if pnl < 0 else _MUTED)
-        display = f"${pnl:+,.2f}" if pnl != 0 else "$0.00"
+        display = f"{prefix}${pnl:+,.2f}" if pnl != 0 else f"{prefix}$0.00"
         self._pnl_today_card.update_value(display, color)
-        self._trades_today_card.update_value(str(len(filtered)) if filtered else "0", _TEXT)
+        self._trades_today_card.update_value(
+            f"{prefix}{len(filtered)}" if filtered else "0", _TEXT
+        )
 
     # ── Closed cache updates (backfill pages) ─────────────────────────────────
 
     def _on_closed_cache_updated(self, all_closed: list) -> None:
         self._closed_positions = list(all_closed)
-        filtered = _filter_closed_by_range(all_closed, self._range)
+        filtered = filter_closed_by_range(all_closed, self._range)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
         self._update_metric_cards()
+        self._chart.update(all_closed, self._range)
         self.closed_cache_updated.emit(all_closed)
 
     # ── Public ─────────────────────────────────────────────────────────────────
