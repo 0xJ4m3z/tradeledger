@@ -155,6 +155,76 @@ def count_trades_today(
     })
 
 
+def compute_pnl_range(
+    activity: List[UserActivity],
+    cutoff_date=None,
+    tz_name: str = "America/Chicago",
+) -> float:
+    """Return realized P/L for close events on or after cutoff_date (CT).
+
+    cutoff_date=None means all time (no date filter).
+    Uses the same cost-basis matching as compute_pnl_today.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        from datetime import timezone, timedelta
+        tz = timezone(timedelta(hours=-6))
+
+    qty_by_key, cost_by_key, qty_by_title, cost_by_title = _build_buy_index(activity)
+
+    total = 0.0
+    for a in activity:
+        if cutoff_date is not None:
+            ts_local = datetime.fromtimestamp(a.timestamp, tz=tz)
+            if ts_local.date() < cutoff_date:
+                continue
+
+        if a.side == "SELL" or a.type == "REDEEM":
+            q_bought, c_bought = _lookup_buy(
+                a.title, a.outcome,
+                qty_by_key, cost_by_key,
+                qty_by_title, cost_by_title,
+            )
+            q_close = a.size
+            if q_bought > 0 and q_close > 0:
+                avg_price      = c_bought / q_bought
+                allocated_cost = min(q_close, q_bought) * avg_price
+                total += a.usdc_size - allocated_cost
+        elif a.type in _REBATE_TYPES:
+            if cutoff_date is not None:
+                ts_local = datetime.fromtimestamp(a.timestamp, tz=tz)
+                if ts_local.date() < cutoff_date:
+                    continue
+            total += a.usdc_size
+
+    return round(total, 2)
+
+
+def count_trades_range(
+    activity: List[UserActivity],
+    cutoff_date=None,
+    tz_name: str = "America/Chicago",
+) -> int:
+    """Count distinct markets with activity on or after cutoff_date (CT).
+
+    cutoff_date=None means all time.
+    """
+    if cutoff_date is None:
+        return len({a.title for a in activity if a.title})
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        from datetime import timezone, timedelta
+        tz = timezone(timedelta(hours=-6))
+    return len({
+        a.title for a in activity
+        if a.title and datetime.fromtimestamp(a.timestamp, tz=tz).date() >= cutoff_date
+    })
+
+
 def today_date_ct() -> "datetime.date":
     """Return today's date in Central Time (for testing/display)."""
     try:

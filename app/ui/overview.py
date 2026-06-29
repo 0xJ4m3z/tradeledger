@@ -24,7 +24,13 @@ from app.database import (
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 from app.services.loss_watch import compute_loss_watch_count
 from app.services.metrics import compute_dashboard_metrics, compute_total_tracked_value
-from app.services.pnl_today import compute_pnl_today, count_trades_today
+from app.services.pnl_today import (
+    compute_pnl_range,
+    compute_pnl_today,
+    count_trades_range,
+    count_trades_today,
+    today_date_ct,
+)
 from app.ui.total_value_chart import TotalValueChartWidget
 from app.ui.wallet_panel import WalletPanel
 
@@ -353,6 +359,7 @@ class OverviewWidget(QWidget):
         self._wallet_usd_value     = 0.0
         self._active_positions     = list(active)
         self._closed_positions: List[ResolvedPosition] = []
+        self._activity: list       = []
         self._acknowledged_markets = load_loss_watch_acknowledged()
         self._range                = "1d"
         # Wallet address for tagging snapshots — updated on confirmed fetch
@@ -458,6 +465,7 @@ class OverviewWidget(QWidget):
             btn.setStyleSheet(_RANGE_BTN_ACTIVE if key == range_ else _RANGE_BTN_IDLE)
         filtered = _filter_closed_by_range(self._closed_positions, range_)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[range_]))
+        self._update_activity_cards()
 
     # ── Card panel ─────────────────────────────────────────────────────────────
 
@@ -577,13 +585,28 @@ class OverviewWidget(QWidget):
     # ── Activity update ────────────────────────────────────────────────────────
 
     def _on_activity_fetched(self, activity: list) -> None:
+        self._activity = activity
         self.activity_changed.emit(activity)
-        pnl = compute_pnl_today(activity)
+        self._update_activity_cards()
+
+    def _update_activity_cards(self) -> None:
+        """Recompute Realized P/L and Trades cards for the current range."""
+        today = today_date_ct()
+        if self._range == "1d":
+            cutoff = today
+        elif self._range == "1w":
+            cutoff = today - timedelta(days=7)
+        elif self._range == "1m":
+            cutoff = today - timedelta(days=30)
+        else:
+            cutoff = None  # All time
+
+        pnl = compute_pnl_range(self._activity, cutoff)
         color = _GREEN if pnl > 0 else (_RED if pnl < 0 else _MUTED)
         display = f"${pnl:+,.2f}" if pnl != 0 else "$0.00"
         self._pnl_today_card.update_value(display, color)
 
-        trades = count_trades_today(activity)
+        trades = count_trades_range(self._activity, cutoff)
         self._trades_today_card.update_value(str(trades) if trades else "0", _TEXT)
 
     # ── Closed cache updates (backfill pages) ─────────────────────────────────

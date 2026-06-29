@@ -352,7 +352,7 @@ class WalletPanel(QWidget):
         self._set_status(
             f"Wallet: ${self._pending_value:,.2f}  ·  {len(active)} active"
             f"  ·  {len(resolved)} resolved",
-            _GREEN,
+            _TEXT,
         )
         # Upsert the main-fetch closed positions so they're in the cache alongside backfill data
         try:
