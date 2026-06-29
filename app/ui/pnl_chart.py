@@ -2,8 +2,8 @@
 
 For 1D: intraday series driven by closed_at timestamps on closed positions.
          Works for any close type (REDEEM, SELL, MERGE, etc.).
-         Steps-post line so the value stays flat between events.
-For 1W+: daily rollup from closed positions, normal line.
+         Continuous line connecting actual event points.
+For 1W+: daily rollup from closed positions, same continuous line style.
 
 Interactive hover: vertical crosshair, dot on the line, tooltip showing
 time (1D) or date (1W+) and the cumulative P/L at that point.
@@ -140,23 +140,18 @@ class PnlChartWidget(QWidget):
         final = y_vals[-1] if len(y_vals) > 1 else 0.0
         color = _GREEN if final >= 0 else _RED
 
-        is_1d = (self._range == "1d")
-        draw_style = "steps-post" if is_1d else "default"
-        fill_step  = "post"       if is_1d else None
-
-        ax.plot(x_nums, y_vals, color=color, linewidth=1.8,
-                drawstyle=draw_style, zorder=3)
+        ax.plot(x_nums, y_vals, color=color, linewidth=1.8, zorder=3)
         ax.axhline(0, color=_MUTED, linewidth=0.5, alpha=0.5, zorder=1)
 
         ax.fill_between(
             x_nums, 0, y_vals,
             where=[v >= 0 for v in y_vals],
-            color=_GREEN, alpha=0.12, step=fill_step, zorder=2,
+            color=_GREEN, alpha=0.12, zorder=2,
         )
         ax.fill_between(
             x_nums, 0, y_vals,
             where=[v < 0 for v in y_vals],
-            color=_RED, alpha=0.12, step=fill_step, zorder=2,
+            color=_RED, alpha=0.12, zorder=2,
         )
 
         # X-axis: convert float date numbers back to ET datetimes for labels
