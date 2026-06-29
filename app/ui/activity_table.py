@@ -25,17 +25,20 @@ _BLUE   = QColor("#58a6ff")
 _YELLOW = QColor("#e3b341")
 
 _TYPE_COLORS = {
-    "TRADE":          None,
-    "REDEEM":         _GREEN,
-    "REWARD":         _YELLOW,
-    "MAKER_REBATE":   _YELLOW,
-    "TAKER_REBATE":   _YELLOW,
+    "TRADE":           None,
+    "REDEEM":          _GREEN,
+    "REWARD":          _GREEN,
+    "MAKER_REBATE":    _YELLOW,
+    "TAKER_REBATE":    _YELLOW,
     "REFERRAL_REWARD": _YELLOW,
-    "SPLIT":          _BLUE,
-    "MERGE":          _BLUE,
-    "DEPOSIT":        _GREEN,
-    "WITHDRAWAL":     _RED,
+    "SPLIT":           _BLUE,
+    "MERGE":           _BLUE,
+    "DEPOSIT":         _GREEN,
+    "WITHDRAWAL":      _RED,
 }
+
+# Trigger a load when this many pixels remain before the very bottom of the scroll
+_SCROLL_THRESHOLD_PX = 80
 
 
 def _cell(text: str, align=Qt.AlignmentFlag.AlignLeft) -> QTableWidgetItem:
@@ -61,26 +64,34 @@ def _populate_row(table: QTableWidget, row: int, a: UserActivity) -> None:
     table.setItem(row, 2, _cell(a.title or "—"))
     table.setItem(row, 3, _cell(a.outcome or "—"))
     table.setItem(row, 4, side_item)
-    table.setItem(row, 5, _cell(f"{a.size:,.2f}"      if a.size      else "—", Qt.AlignmentFlag.AlignRight))
+    table.setItem(row, 5, _cell(f"{a.size:,.2f}"       if a.size      else "—", Qt.AlignmentFlag.AlignRight))
     table.setItem(row, 6, _cell(f"${a.usdc_size:,.2f}" if a.usdc_size else "—", Qt.AlignmentFlag.AlignRight))
     table.setItem(row, 7, _cell(f"{a.price:.4f}"       if a.price     else "—", Qt.AlignmentFlag.AlignRight))
 
 
 class ActivityTable(QWidget):
-    refresh_requested = Signal()
+    refresh_requested  = Signal()
+    load_more_requested = Signal(int)   # emits the current row count as the next offset
 
     def __init__(self, activity: List[UserActivity]):
         super().__init__()
+        self._all_activity: List[UserActivity] = list(activity)
+        self._has_more  = True   # assume there might be more until proven otherwise
+        self._loading   = False
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        # Header row with Refresh button
+        # Header row
         header_row = QHBoxLayout()
         self._header = QLabel(f"Activity  ({len(activity)})")
         self._header.setStyleSheet("color: #c9d1d9; font-size: 14px; font-weight: 600;")
         header_row.addWidget(self._header)
         header_row.addStretch()
+        self._load_status = QLabel("")
+        self._load_status.setStyleSheet("color: #8b949e; font-size: 12px;")
+        header_row.addWidget(self._load_status)
         refresh_btn = QPushButton("Refresh")
         refresh_btn.setStyleSheet(
             "background-color: #21262d; border: 1px solid #30363d; border-radius: 4px;"
@@ -107,18 +118,65 @@ class ActivityTable(QWidget):
             _populate_row(self._table, row, a)
 
         hdr = self._table.horizontalHeader()
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)   # Market column stretches
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         for col in [0, 1, 3, 4, 5, 6, 7]:
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+
+        # Scroll-to-bottom detection
+        self._table.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
         search.textChanged.connect(self._apply_filter)
         layout.addWidget(self._table)
 
     def update_activity(self, activity: List[UserActivity]) -> None:
+        """Replace the full activity list (called on initial/refresh fetch)."""
+        self._all_activity = list(activity)
+        self._has_more     = len(activity) >= 100   # full page → probably more
+        self._loading      = False
+        self._load_status.setText("")
         self._header.setText(f"Activity  ({len(activity)})")
         self._table.setRowCount(len(activity))
         for row, a in enumerate(activity):
             _populate_row(self._table, row, a)
+
+    def append_activity(self, new_records: List[UserActivity]) -> None:
+        """Append a page of older activity records (called on scroll-triggered load-more)."""
+        self._loading = False
+        if not new_records:
+            self._has_more = False
+            self._load_status.setText("All activity loaded")
+            return
+
+        # Deduplicate by (timestamp, type, side, size) — the API can overlap
+        seen = {(a.timestamp, a.type, a.side, a.size) for a in self._all_activity}
+        fresh = [a for a in new_records if (a.timestamp, a.type, a.side, a.size) not in seen]
+
+        if not fresh:
+            self._has_more = False
+            self._load_status.setText("All activity loaded")
+            return
+
+        self._all_activity.extend(fresh)
+        self._has_more = len(new_records) >= 100
+        self._load_status.setText("" if self._has_more else "All activity loaded")
+        self._header.setText(f"Activity  ({len(self._all_activity)})")
+
+        start_row = self._table.rowCount()
+        self._table.setRowCount(start_row + len(fresh))
+        for i, a in enumerate(fresh):
+            _populate_row(self._table, start_row + i, a)
+
+    def _on_scroll(self, value: int) -> None:
+        sb = self._table.verticalScrollBar()
+        if (
+            self._has_more
+            and not self._loading
+            and sb.maximum() > 0
+            and value >= sb.maximum() - _SCROLL_THRESHOLD_PX
+        ):
+            self._loading = True
+            self._load_status.setText("Loading…")
+            self.load_more_requested.emit(len(self._all_activity))
 
     def _apply_filter(self, text: str) -> None:
         text = text.strip().lower()

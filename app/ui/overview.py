@@ -332,9 +332,11 @@ def _filter_closed_by_range(closed: List[ResolvedPosition], range_: str) -> List
 # ── Overview widget ────────────────────────────────────────────────────────────
 
 class OverviewWidget(QWidget):
-    positions_changed = Signal(list, list, list)   # (active, resolved, closed)
-    snapshots_changed = Signal(list)               # updated snapshot list
-    activity_changed  = Signal(list)               # activity feed
+    positions_changed    = Signal(list, list, list)  # (active, resolved, closed)
+    snapshots_changed    = Signal(list)              # updated snapshot list
+    activity_changed     = Signal(list)              # activity feed
+    closed_cache_updated = Signal(list)              # full closed history as backfill lands
+    more_activity        = Signal(list)              # next activity page for infinite scroll
 
     def __init__(
         self,
@@ -373,6 +375,8 @@ class OverviewWidget(QWidget):
         self._wallet_panel.wallet_value_changed.connect(self._on_wallet_value_changed)
         self._wallet_panel.positions_fetched.connect(self._on_positions_fetched)
         self._wallet_panel.activity_fetched.connect(self._on_activity_fetched)
+        self._wallet_panel.closed_cache_updated.connect(self._on_closed_cache_updated)
+        self._wallet_panel.more_activity_fetched.connect(self.more_activity.emit)
         main.addWidget(self._wallet_panel)
 
         main.addSpacing(12)
@@ -580,10 +584,22 @@ class OverviewWidget(QWidget):
         trades = count_trades_today(activity)
         self._trades_today_card.update_value(str(trades) if trades else "0", _TEXT)
 
+    # ── Closed cache updates (backfill pages) ─────────────────────────────────
+
+    def _on_closed_cache_updated(self, all_closed: list) -> None:
+        self._closed_positions = list(all_closed)
+        filtered = _filter_closed_by_range(all_closed, self._range)
+        self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
+        self.closed_cache_updated.emit(all_closed)
+
     # ── Public ─────────────────────────────────────────────────────────────────
 
     def request_refresh(self) -> None:
         self._wallet_panel.request_refresh()
+
+    def on_load_more_activity(self, offset: int) -> None:
+        """Called by the Activity tab's scroll handler to request the next page."""
+        self._wallet_panel.fetch_activity_page(offset)
 
     def reload_acknowledged(self) -> None:
         self._acknowledged_markets = load_loss_watch_acknowledged()

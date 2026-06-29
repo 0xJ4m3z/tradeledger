@@ -118,7 +118,7 @@ class MainWindow(QMainWindow):
         self._active_tab       = ActivePositionsTable(active)
         self._resolved_tab     = ResolvedPositionsTable(resolved, label="Resolved Positions")
         self._closed_tab       = ResolvedPositionsTable(
-            [], label="Closed Positions — most recent 100", show_refresh=True
+            [], label="Closed Positions", show_refresh=True
         )
         self._activity_tab     = ActivityTable([])
 
@@ -130,6 +130,13 @@ class MainWindow(QMainWindow):
 
         # Loss Watch tab ↔ Overview card stay in sync via DB
         self._loss_watch_tab.acknowledged_changed.connect(overview.reload_acknowledged)
+
+        # Closed positions: backfill pages arrive incrementally → push to Closed tab
+        overview.closed_cache_updated.connect(self._on_closed_cache_updated)
+
+        # Activity: scroll-to-bottom → fetch next page → append rows
+        self._activity_tab.load_more_requested.connect(overview.on_load_more_activity)
+        overview.more_activity.connect(self._activity_tab.append_activity)
 
         # ── Total Tracked Value full-size chart tab ─────────────────────────────
         initial_wallet = load_last_wallet()
@@ -164,5 +171,11 @@ class MainWindow(QMainWindow):
         self._loss_watch_tab.update_positions(active)
         self._status_bar.showMessage(
             f"Live Polymarket data  •  {len(active)} active"
-            f"  •  {len(resolved)} resolved  •  {len(closed)} closed"
+            f"  •  {len(resolved)} resolved  •  {len(closed)} closed (loading more…)"
+        )
+
+    def _on_closed_cache_updated(self, all_closed: list) -> None:
+        self._closed_tab.update_positions(all_closed)
+        self._status_bar.showMessage(
+            f"Live Polymarket data  •  {len(all_closed)} closed positions loaded"
         )

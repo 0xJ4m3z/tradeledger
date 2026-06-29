@@ -159,6 +159,27 @@ def fetch_activity(wallet: str) -> List[UserActivity]:
     return [_to_activity(r) for r in rows]
 
 
+def fetch_activity_page(wallet: str, offset: int, limit: int = 100) -> List[UserActivity]:
+    """Fetch one page of activity at the given offset (for infinite-scroll load-more)."""
+    try:
+        r = requests.get(
+            f"{_DATA_API}/activity",
+            params={
+                "user":          wallet,
+                "sortBy":        "TIMESTAMP",
+                "sortDirection": "DESC",
+                "limit":         limit,
+                "offset":        offset,
+            },
+            timeout=_TIMEOUT,
+        )
+        r.raise_for_status()
+    except requests.RequestException as exc:
+        raise PolymarketLookupError(f"Network error: {exc}") from exc
+    rows = r.json()
+    return [_to_activity(row) for row in rows] if rows else []
+
+
 def fetch_closed_positions_page(wallet: str, offset: int, limit: int = 50) -> List[ResolvedPosition]:
     """Fetch one page of closed positions at the given offset (used by the backfill thread)."""
     try:

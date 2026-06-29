@@ -17,6 +17,7 @@ from app.adapters.polymarket_adapter import (
     PolymarketLookupError,
     fetch_active_positions,
     fetch_activity,
+    fetch_activity_page,
     fetch_closed_positions,
     fetch_closed_positions_page,
     fetch_resolved_positions,
@@ -24,6 +25,7 @@ from app.adapters.polymarket_adapter import (
 from app.adapters.wallet_adapter import WalletLookupError, fetch_wallet_usd_value
 from app.database import (
     init_db,
+    load_closed_positions_cache,
     load_last_wallet,
     save_last_wallet,
     upsert_closed_positions_cache,
@@ -42,7 +44,6 @@ _BG     = "#0d1117"
 _BORDER = "#30363d"
 
 _AUTO_REFRESH_MS = 5 * 60 * 1000  # 5 minutes
-_BACKFILL_PAGES  = 5
 _BACKFILL_START  = 100             # offset after the 2-page main fetch (pages 1-2 = offsets 0-99)
 
 
@@ -101,11 +102,14 @@ class _FetchThread(QThread):
 
 
 class _BackfillThread(QThread):
-    """Slowly fetch additional pages of closed positions and upsert them into the local cache.
+    """Fetch ALL remaining pages of closed positions and upsert into the local cache.
 
-    Starts at offset _BACKFILL_START (after the 2-page main fetch) and fetches up to
-    _BACKFILL_PAGES more pages with 2-second pauses. Stops silently on any API error.
+    Starts at _BACKFILL_START (after the 2-page main fetch) and runs until the API
+    returns an empty or partial page. Emits page_done after each page so the UI can
+    show progressive updates, and done when all pages have been fetched.
     """
+    page_done = Signal()  # emitted after each page is successfully upserted
+    done      = Signal()  # emitted when backfill is fully complete
 
     def __init__(self, address: str):
         super().__init__()
@@ -113,7 +117,7 @@ class _BackfillThread(QThread):
 
     def run(self) -> None:
         offset = _BACKFILL_START
-        for _ in range(_BACKFILL_PAGES):
+        while True:
             try:
                 page = fetch_closed_positions_page(self._address, offset)
             except (PolymarketLookupError, Exception):
@@ -122,12 +126,34 @@ class _BackfillThread(QThread):
                 break
             try:
                 upsert_closed_positions_cache(page)
+                self.page_done.emit()
             except Exception:
                 pass
             if len(page) < 50:
                 break
             offset += len(page)
             self.msleep(2000)
+        self.done.emit()
+
+
+class _ActivityPageThread(QThread):
+    """Fetch one additional page of activity for the infinite-scroll load-more."""
+    done = Signal(list)
+    err  = Signal(str)
+
+    def __init__(self, address: str, offset: int):
+        super().__init__()
+        self._address = address
+        self._offset  = offset
+
+    def run(self) -> None:
+        try:
+            page = fetch_activity_page(self._address, self._offset)
+            self.done.emit(page)
+        except PolymarketLookupError as exc:
+            self.err.emit(str(exc))
+        except Exception as exc:
+            self.err.emit(f"Unexpected error: {exc}")
 
 
 class WalletPanel(QWidget):
@@ -142,15 +168,18 @@ class WalletPanel(QWidget):
     Never requests private keys, seed phrases, or wallet permissions.
     """
 
-    wallet_value_changed  = Signal(float)
-    wallet_address_changed = Signal(str)   # emitted when the wallet address actually changes
-    positions_fetched    = Signal(list, list, list)   # (active, resolved, closed)
-    activity_fetched     = Signal(list)
+    wallet_value_changed   = Signal(float)
+    wallet_address_changed = Signal(str)         # emitted when the wallet address changes
+    positions_fetched      = Signal(list, list, list)  # (active, resolved, closed)
+    activity_fetched       = Signal(list)
+    closed_cache_updated   = Signal(list)        # full closed history after backfill pages
+    more_activity_fetched  = Signal(list)        # next page for infinite-scroll
 
     def __init__(self):
         super().__init__()
         self._thread: _FetchThread | None = None
         self._backfill: _BackfillThread | None = None
+        self._activity_page_thread: _ActivityPageThread | None = None
         self._current_value      = 0.0
         self._pending_value      = 0.0
         self._full_address       = ""
@@ -303,6 +332,11 @@ class WalletPanel(QWidget):
             f"  ·  {len(resolved)} resolved  ·  {len(closed)} closed",
             _GREEN,
         )
+        # Upsert the main-fetch closed positions so they're in the cache alongside backfill data
+        try:
+            upsert_closed_positions_cache(closed)
+        except Exception:
+            pass
         self.positions_fetched.emit(active, resolved, closed)
 
     def _on_positions_err(self, msg: str) -> None:
@@ -324,7 +358,25 @@ class WalletPanel(QWidget):
         if self._backfill and self._backfill.isRunning():
             return
         self._backfill = _BackfillThread(self._full_address)
+        self._backfill.page_done.connect(self._on_backfill_page)
+        self._backfill.done.connect(self._on_backfill_done)
         self._backfill.start()
+
+    def _on_backfill_page(self) -> None:
+        """Emit an incremental update after each backfill page lands in the cache."""
+        try:
+            all_closed = load_closed_positions_cache()
+            self.closed_cache_updated.emit(all_closed)
+        except Exception:
+            pass
+
+    def _on_backfill_done(self) -> None:
+        """Final reload after all backfill pages are complete."""
+        try:
+            all_closed = load_closed_positions_cache()
+            self.closed_cache_updated.emit(all_closed)
+        except Exception:
+            pass
 
     def _set_status(self, text: str, color: str) -> None:
         weight = "600" if color == _GREEN else "normal"
@@ -343,3 +395,13 @@ class WalletPanel(QWidget):
         """Trigger a refresh programmatically (e.g. from another tab's Refresh button)."""
         if self._full_address and not (self._thread and self._thread.isRunning()):
             self._on_fetch()
+
+    def fetch_activity_page(self, offset: int) -> None:
+        """Fetch the next activity page at offset (called by the Activity tab's scroll handler)."""
+        if not self._full_address:
+            return
+        if self._activity_page_thread and self._activity_page_thread.isRunning():
+            return
+        self._activity_page_thread = _ActivityPageThread(self._full_address, offset)
+        self._activity_page_thread.done.connect(self.more_activity_fetched.emit)
+        self._activity_page_thread.start()
