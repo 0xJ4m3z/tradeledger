@@ -49,6 +49,7 @@ def _cell(text: str, align=Qt.AlignmentFlag.AlignLeft) -> QTableWidgetItem:
 
 
 def _populate_row(table: QTableWidget, row: int, a: UserActivity) -> None:
+    is_redeem = a.type == "REDEEM"
     side_color = _GREEN if a.side == "BUY" else (_RED if a.side == "SELL" else _MUTED)
     type_color = _TYPE_COLORS.get(a.type, _MUTED)
 
@@ -56,13 +57,27 @@ def _populate_row(table: QTableWidget, row: int, a: UserActivity) -> None:
     if type_color:
         type_item.setForeground(type_color)
 
-    side_item = _cell(a.side or "—")
-    side_item.setForeground(side_color)
+    # For REDEEM events: side column shows "REDEEM"; outcome shows Win/Loss
+    if is_redeem:
+        side_item = _cell("REDEEM")
+        side_item.setForeground(_MUTED)
+        if a.usdc_size > 0:
+            outcome_text = "Win"
+            outcome_color = _GREEN
+        else:
+            outcome_text = "Loss"
+            outcome_color = _RED
+        outcome_item = _cell(outcome_text)
+        outcome_item.setForeground(outcome_color)
+    else:
+        side_item = _cell(a.side or "—")
+        side_item.setForeground(side_color)
+        outcome_item = _cell(a.outcome or "—")
 
     table.setItem(row, 0, _cell(a.datetime_utc))
     table.setItem(row, 1, type_item)
     table.setItem(row, 2, _cell(a.title or "—"))
-    table.setItem(row, 3, _cell(a.outcome or "—"))
+    table.setItem(row, 3, outcome_item)
     table.setItem(row, 4, side_item)
     table.setItem(row, 5, _cell(f"{a.size:,.2f}"       if a.size      else "—", Qt.AlignmentFlag.AlignRight))
     table.setItem(row, 6, _cell(f"${a.usdc_size:,.2f}" if a.usdc_size else "—", Qt.AlignmentFlag.AlignRight))

@@ -136,15 +136,6 @@ def fetch_resolved_positions(wallet: str) -> List[ResolvedPosition]:
 
 
 def _to_activity(row: dict) -> UserActivity:
-    if row.get("type") == "REDEEM":
-        import json, pathlib
-        log = pathlib.Path(__file__).parent.parent.parent / "redeem_debug.json"
-        try:
-            existing = json.loads(log.read_text()) if log.exists() else []
-            existing.append(row)
-            log.write_text(json.dumps(existing, indent=2))
-        except Exception:
-            pass
     return UserActivity(
         timestamp = int(row.get("timestamp") or 0),
         type      = row.get("type") or "",
