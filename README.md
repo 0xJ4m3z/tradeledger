@@ -20,7 +20,7 @@ TradeLedger lets you monitor your open positions, resolved winnings, closed trad
 
 ## Screenshots
 
-![TradeLedger v0.2 Overview](docs/screenshots/tradeledger_v0.2_overview.png)
+![TradeLedger v0.3 Overview](docs/screenshots/tradeledger_v0.3_overview.png)
 
 ---
 
