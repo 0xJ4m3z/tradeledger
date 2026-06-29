@@ -229,6 +229,138 @@ class TestBuild1DDataSource:
         assert len(event_points) == 0
 
 
+# ── 1D: SELL event handling (CLOB position exits) ────────────────────────────
+
+def _sell(ts_dt, usdc_size, title="Market A"):
+    """CLOB sell event (type='SELL', side='SELL')."""
+    return UserActivity(
+        timestamp=_unix(ts_dt),
+        type="SELL",
+        title=title,
+        outcome="Yes",
+        side="SELL",
+        size=100.0,
+        usdc_size=usdc_size,
+        price=0.0,
+    )
+
+
+def _trade_sell(ts_dt, usdc_size, title="Market A"):
+    """CLOB sell as TRADE event with side=SELL (alternate API format)."""
+    return UserActivity(
+        timestamp=_unix(ts_dt),
+        type="TRADE",
+        title=title,
+        outcome="Yes",
+        side="SELL",
+        size=100.0,
+        usdc_size=usdc_size,
+        price=0.0,
+    )
+
+
+class TestBuild1DSellEvents:
+    """CLOB sell events must create intraday chart points, just like REDEEM events."""
+
+    def test_sell_event_creates_chart_point(self):
+        t = _et(10, 30)
+        act = _sell(t, usdc_size=75.0)
+        cp  = _closed(25.0, 75.0)
+        points, _ = build_cumulative_pnl_points([act], [cp], "1d")
+        # anchor + sell event + now = 3
+        assert len(points) == 3
+        mid_local = points[1]["timestamp"].astimezone(_ET)
+        assert mid_local.hour == 10
+        assert mid_local.minute == 30
+
+    def test_trade_sell_event_creates_chart_point(self):
+        """type='TRADE', side='SELL' is also a close event."""
+        t = _et(14, 0)
+        act = _trade_sell(t, usdc_size=90.0)
+        cp  = _closed(40.0, 90.0)
+        points, _ = build_cumulative_pnl_points([act], [cp], "1d")
+        assert len(points) == 3
+        assert abs(points[1]["value"] - 40.0) < 0.01
+
+    def test_trade_buy_event_still_ignored(self):
+        """type='TRADE', side='BUY' must NOT create a chart point."""
+        buy = UserActivity(
+            timestamp=_unix(_et(9, 0)),
+            type="TRADE", title="Market A", outcome="Yes",
+            side="BUY", size=100.0, usdc_size=50.0, price=0.5,
+        )
+        cp = _closed(25.0, 75.0)
+        points, _ = build_cumulative_pnl_points([buy], [cp], "1d")
+        assert len(points) == 2   # anchor + now only (no event point)
+
+    def test_sell_and_redeem_mixed_both_create_points(self):
+        """A mix of SELL and REDEEM events should each create an intraday point."""
+        acts = [
+            _redeem(_et(9, 30), 75.0, title="Market A"),
+            _sell(_et(11, 0),   90.0, title="Market B"),
+        ]
+        cps = [
+            _closed(25.0, 75.0),
+            _closed(40.0, 90.0),
+        ]
+        points, is_partial = build_cumulative_pnl_points(acts, cps, "1d")
+        # anchor + 2 events + now = 4
+        assert len(points) == 4
+        assert not is_partial
+        assert abs(points[1]["value"] - 25.0) < 0.01
+        assert abs(points[2]["value"] - 65.0) < 0.01
+
+    def test_title_based_match_avoids_ambiguity(self):
+        """When two positions have identical redeem_value, title match picks the right one."""
+        t1 = _et(9, 0)
+        t2 = _et(10, 0)
+        # Both positions have redeem_value=75.0 — title disambiguates
+        acts = [
+            _sell(t1, 75.0, title="Market A"),
+            _sell(t2, 75.0, title="Market B"),
+        ]
+        cp_a = ResolvedPosition(
+            market="Market A", outcome_held="Yes", winning_outcome="Yes",
+            quantity=100.0, cost_basis=50.0, redeem_value=75.0,
+            redeemed=True, resolved_date=str(_today()),
+        )
+        cp_b = ResolvedPosition(
+            market="Market B", outcome_held="No", winning_outcome="No",
+            quantity=100.0, cost_basis=60.0, redeem_value=75.0,
+            redeemed=True, resolved_date=str(_today()),
+        )
+        points, is_partial = build_cumulative_pnl_points(acts, [cp_a, cp_b], "1d")
+        assert not is_partial
+        assert len(points) == 4  # anchor + 2 events + now
+        # First event should match cp_a (pnl = 75 - 50 = 25)
+        assert abs(points[1]["value"] - 25.0) < 0.01
+        # Second event should match cp_b (pnl = 75 - 60 = 15, cumulative = 40)
+        assert abs(points[2]["value"] - 40.0) < 0.01
+
+    def test_partial_when_sell_has_no_matching_closed_position(self):
+        """An unmatched SELL event marks the data as partial."""
+        acts = [_sell(_et(10, 0), 999.0)]  # no closed position with redeem_value=999
+        _, is_partial = build_cumulative_pnl_points(acts, [], "1d")
+        assert is_partial
+
+    def test_sell_value_within_tolerance_still_matches(self):
+        """Minor floating-point difference (< _MATCH_TOL) must not break matching."""
+        t = _et(11, 0)
+        # usdc_size = 75.009, redeem_value = 75.0 → diff = 0.009 < 0.02 tolerance
+        act_titled = UserActivity(
+            timestamp=_unix(t), type="SELL", title="Market A", outcome="Yes",
+            side="SELL", size=100.0, usdc_size=75.009, price=0.0,
+        )
+        cp_exact = ResolvedPosition(
+            market="Market A", outcome_held="Yes", winning_outcome="Yes",
+            quantity=100.0, cost_basis=50.0, redeem_value=75.0,
+            redeemed=True, resolved_date=str(_today()),
+        )
+        points, is_partial = build_cumulative_pnl_points([act_titled], [cp_exact], "1d")
+        assert not is_partial
+        assert len(points) == 3
+
+
 # ── 1W / 1M / 1Y / YTD / All ─────────────────────────────────────────────────
 
 class TestBuildRanges:

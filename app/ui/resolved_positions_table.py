@@ -176,6 +176,24 @@ class ResolvedPositionsTable(QWidget):
         for i, p in enumerate(fresh):
             _populate_row(self._table, start_row + i, p)
 
+    def load_from_cache(self, positions: List[ResolvedPosition]) -> None:
+        """Append cached rows not already in the table.
+
+        Called after backfill completes so the table shows the full cached
+        history without resetting scroll state or the infinite-scroll flag.
+        Unlike append_positions, this does NOT modify _loading or _has_more.
+        """
+        seen  = {(p.market, p.outcome_held, p.cost_basis) for p in self._all_positions}
+        fresh = [p for p in positions if (p.market, p.outcome_held, p.cost_basis) not in seen]
+        if not fresh:
+            return
+        self._all_positions.extend(fresh)
+        self._header.setText(f"{self._label}  ({len(self._all_positions)})")
+        start_row = self._table.rowCount()
+        self._table.setRowCount(start_row + len(fresh))
+        for i, p in enumerate(fresh):
+            _populate_row(self._table, start_row + i, p)
+
     def _on_scroll(self, value: int) -> None:
         sb = self._table.verticalScrollBar()
         if (

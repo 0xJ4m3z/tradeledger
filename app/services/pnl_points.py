@@ -23,10 +23,13 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from app.debug import _dlog
 from app.models import ResolvedPosition, UserActivity
 from app.services.pnl_today import filter_closed_by_range, range_cutoff_et
 
-_MATCH_TOL = 0.01  # USDC tolerance for matching a REDEEM to a closed position
+# USDC tolerance for matching a close event to a closed position.
+# Slightly above 0.01 to absorb minor floating-point rounding in API responses.
+_MATCH_TOL = 0.02
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -43,19 +46,50 @@ def _cp_date_str(cp: ResolvedPosition) -> Optional[str]:
     return cp.resolved_date[:10] if cp.resolved_date else None
 
 
+def _is_close_event(a: UserActivity) -> bool:
+    """True if this activity event represents a fully-realized position exit.
+
+    Covers three close paths on Polymarket:
+      REDEEM  — market-resolution redemption (a.type == "REDEEM")
+      SELL    — CLOB full-position sell (a.type == "SELL")
+      TRADE   — some API responses use type="TRADE" with side="SELL"
+
+    BUY / TRADE+BUY / SPLIT / MERGE etc. are NOT close events.
+    """
+    if a.type == "REDEEM":
+        return True
+    if a.type == "SELL":
+        return True
+    if a.type == "TRADE" and a.side == "SELL":
+        return True
+    return False
+
+
 def _find_match(
     act: UserActivity,
-    act_date_str: str,
     pool: List[ResolvedPosition],
 ) -> Optional[ResolvedPosition]:
+    """Find the best-matching closed position for a close event.
+
+    The pool is assumed to be pre-filtered to the relevant date range.
+
+    Matching strategy (greedy, one-to-one):
+      Primary  : market title == activity title  AND  usdc_size ≈ redeem_value
+      Fallback : usdc_size ≈ redeem_value  (title absent or differs slightly)
+
+    For REDEEM events: usdc_size = redemption proceeds = redeem_value ✓
+    For SELL   events: usdc_size = sell proceeds      = cost_basis + realized_pnl
+                                                      = redeem_value ✓
+
+    Caller must remove the returned item from pool.
     """
-    Find the first closed position whose redeem_value ≈ activity usdc_size
-    and whose resolved_date matches act_date_str.
-    Caller must remove the returned item from pool (greedy, one-to-one).
-    """
+    # Primary: title + value (reduces ambiguity when multiple positions have similar sizes)
+    if act.title:
+        for cp in pool:
+            if cp.market == act.title and abs(cp.redeem_value - act.usdc_size) < _MATCH_TOL:
+                return cp
+    # Fallback: value only (handles minor title mismatches)
     for cp in pool:
-        if _cp_date_str(cp) != act_date_str:
-            continue
         if abs(cp.redeem_value - act.usdc_size) < _MATCH_TOL:
             return cp
     return None
@@ -73,34 +107,59 @@ def _build_1d_points(
     today_str = today.isoformat()
     midnight = _midnight(today, tz)
 
-    # REDEEM events today only, sorted chronologically by actual timestamp
-    redeem_events = sorted(
-        [a for a in activity if a.type == "REDEEM" and _act_dt(a, tz).date() == today],
+    # All position-close events today (REDEEM + SELL + TRADE/SELL), sorted chronologically
+    close_events = sorted(
+        [a for a in activity if _is_close_event(a) and _act_dt(a, tz).date() == today],
         key=lambda a: a.timestamp,
     )
 
-    # All closed positions that resolved today
+    # All closed positions that resolved today (by resolved_date)
     today_closed = [cp for cp in closed if _cp_date_str(cp) == today_str]
     full_total = round(sum(cp.realized_pnl for cp in today_closed), 2)
+
+    # Diagnostics — visible only when TRADELEDGER_DEBUG=1
+    if close_events or today_closed:
+        type_dist: Dict[str, int] = {}
+        for a in activity:
+            if _act_dt(a, tz).date() == today:
+                key = f"{a.type}:{a.side}" if a.side else a.type
+                type_dist[key] = type_dist.get(key, 0) + 1
+        _dlog("chart1d",
+              "range=1d | activity=%d total | today types: %s",
+              len(activity), type_dist)
+        _dlog("chart1d",
+              "today close_events=%d | today_closed=%d | full_total=%.2f",
+              len(close_events), len(today_closed), full_total)
 
     pool = list(today_closed)
     points: List[Dict[str, Any]] = [{"timestamp": midnight, "value": 0.0}]
     cumulative = 0.0
+    matched = 0
     is_partial = False
 
-    for act in redeem_events:
-        match = _find_match(act, today_str, pool)
+    for act in close_events:
+        match = _find_match(act, pool)
         if match is None:
             # Cannot determine cost basis for this event → skip, mark partial
             is_partial = True
             continue
         pool.remove(match)
+        matched += 1
         cumulative = round(cumulative + match.realized_pnl, 2)
         points.append({"timestamp": _act_dt(act, tz), "value": cumulative})
 
-    # Closed positions that couldn't be matched to a REDEEM (expired worthless, etc.)
+    # Closed positions that couldn't be matched to any close event (expired worthless, etc.)
     if pool:
         is_partial = True
+
+    _dlog("chart1d",
+          "matched=%d | unmatched_events=%d | unmatched_closed=%d | "
+          "cumulative=%.2f | full_total=%.2f | points=%d",
+          matched,
+          len(close_events) - matched,
+          len(pool),
+          cumulative, full_total,
+          len(points) + 1)  # +1 for the "now" point we're about to add
 
     # Always end at "now" using the authoritative total from all closed positions
     points.append({"timestamp": now, "value": full_total})
