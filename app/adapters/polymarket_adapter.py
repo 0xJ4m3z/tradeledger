@@ -1,7 +1,7 @@
 """
 Read-only Polymarket position lookup via data-api.polymarket.com.
 
-Fetches active, redeemable, and closed positions for a wallet address.
+Fetches active, resolved, and closed positions for a wallet address.
 No authentication required — public API only.
 
 Safety: read-only. No private keys, signatures, or transactions ever.
@@ -66,7 +66,7 @@ def _to_active(row: dict) -> ActivePosition:
     )
 
 
-def _to_redeemable(row: dict) -> ResolvedPosition:
+def _to_resolved(row: dict) -> ResolvedPosition:
     size          = float(row.get("size") or row.get("quantity") or 0)
     avg_price     = float(row.get("avgPrice") or 0)
     current_value = float(row.get("currentValue") or 0)
@@ -74,7 +74,7 @@ def _to_redeemable(row: dict) -> ResolvedPosition:
     return ResolvedPosition(
         market          = row.get("title") or "Unknown",
         outcome_held    = outcome,
-        winning_outcome = outcome,   # redeemable ⟹ user's outcome won
+        winning_outcome = outcome,   # resolved + not redeemed ⟹ user's outcome won
         quantity        = size,
         cost_basis      = avg_price * size,
         redeem_value    = current_value,
@@ -116,19 +116,23 @@ def _to_closed(row: dict) -> ResolvedPosition:
 
 
 def fetch_active_positions(wallet: str) -> List[ActivePosition]:
-    """Return all open positions, including redeemable (won but not yet claimed)."""
+    """Return all open positions from the /positions endpoint (includes resolved-not-yet-claimed).
+
+    Callers should deduplicate against fetch_resolved_positions to avoid showing the
+    same market in both lists.
+    """
     rows = _paginate("positions", {"user": wallet, "sizeThreshold": "0"}, _PAGE_SIZE)
     return [_to_active(r) for r in rows]
 
 
-def fetch_redeemable_positions(wallet: str) -> List[ResolvedPosition]:
+def fetch_resolved_positions(wallet: str) -> List[ResolvedPosition]:
     """Return positions that are resolved and pending redemption.
 
-    sizeThreshold omitted — redeemable positions always have size > 0,
+    sizeThreshold omitted — resolved positions always have size > 0,
     and including it causes server-side 408 timeouts.
     """
     rows = _paginate("positions", {"user": wallet, "redeemable": "true"}, _PAGE_SIZE)
-    return [_to_redeemable(r) for r in rows]
+    return [_to_resolved(r) for r in rows]
 
 
 def _to_activity(row: dict) -> UserActivity:

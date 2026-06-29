@@ -116,7 +116,7 @@ class MainWindow(QMainWindow):
         overview               = OverviewWidget(active, resolved, metrics)
         self._loss_watch_tab   = LossWatchTab()
         self._active_tab       = ActivePositionsTable(active)
-        self._resolved_tab     = ResolvedPositionsTable(resolved, label="Redeemable Positions")
+        self._resolved_tab     = ResolvedPositionsTable(resolved, label="Resolved Positions")
         self._closed_tab       = ResolvedPositionsTable(
             [], label="Closed Positions — most recent 100", show_refresh=True
         )
@@ -145,7 +145,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(overview,                  "Overview")
         tabs.addTab(self._loss_watch_tab,      "Loss Watch")
         tabs.addTab(self._active_tab,          "Active Positions")
-        tabs.addTab(self._resolved_tab,        "Redeemable Positions")
+        tabs.addTab(self._resolved_tab,        "Resolved Positions")
         tabs.addTab(self._closed_tab,          "Closed Positions")
         tabs.addTab(self._activity_tab,        "Activity")
         tabs.addTab(tv_tab,                    "Total Tracked Value")
@@ -153,16 +153,16 @@ class MainWindow(QMainWindow):
 
         self._status_bar = QStatusBar()
         self._status_bar.showMessage(
-            f"Sample data mode  •  {len(active)} active positions  •  {len(resolved)} resolved positions"
+            f"Sample data mode  •  {len(active)} active  •  {len(resolved)} resolved"
         )
         self.setStatusBar(self._status_bar)
 
-    def _on_positions_changed(self, active: list, redeemable: list, closed: list) -> None:
+    def _on_positions_changed(self, active: list, resolved: list, closed: list) -> None:
         self._active_tab.update_positions(active)
-        self._resolved_tab.update_positions(redeemable)
+        self._resolved_tab.update_positions(resolved)
         self._closed_tab.update_positions(closed)
         self._loss_watch_tab.update_positions(active)
         self._status_bar.showMessage(
             f"Live Polymarket data  •  {len(active)} active"
-            f"  •  {len(redeemable)} redeemable  •  {len(closed)} closed"
+            f"  •  {len(resolved)} resolved  •  {len(closed)} closed"
         )

@@ -70,7 +70,7 @@ class ResolvedPositionsTable(QWidget):
         layout.addLayout(header_row)
 
         search = QLineEdit()
-        search.setPlaceholderText("Filter by market, outcome, redeemed status...")
+        search.setPlaceholderText("Filter by market, outcome, result...")
         search.setMaximumWidth(480)
         layout.addWidget(search)
 

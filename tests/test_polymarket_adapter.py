@@ -13,7 +13,7 @@ from app.adapters.polymarket_adapter import (
     fetch_active_positions,
     fetch_activity,
     fetch_closed_positions,
-    fetch_redeemable_positions,
+    fetch_resolved_positions,
 )
 
 _FAKE_WALLET = "0x" + "a" * 40
@@ -64,8 +64,9 @@ class TestFetchActivePositions:
         assert p.avg_cost      == pytest.approx(0.6)
         assert p.current_price == pytest.approx(0.72)
 
-    def test_includes_redeemable_rows_as_active(self):
-        # Redeemable = won but not yet claimed — still shows as active until redeemed
+    def test_includes_resolved_rows_as_active(self):
+        # The raw /positions endpoint returns both active and resolved-not-yet-redeemed;
+        # dedup happens in the UI layer (wallet_panel), not in the adapter
         data = [_ACTIVE_ROW, _REDEEMABLE_ROW]
         with patch("requests.get", return_value=_mock_response(data)):
             result = fetch_active_positions(_FAKE_WALLET)
@@ -108,57 +109,57 @@ class TestFetchActivePositions:
         assert p.unrealized_pnl  == pytest.approx(12.0)
 
 
-# ── fetch_redeemable_positions ─────────────────────────────────────────────────
+# ── fetch_resolved_positions ───────────────────────────────────────────────────
 
-class TestFetchRedeemablePositions:
-    def test_returns_redeemable_positions(self):
+class TestFetchResolvedPositions:
+    def test_returns_resolved_positions(self):
         with patch("requests.get", return_value=_mock_response([_REDEEMABLE_ROW])):
-            result = fetch_redeemable_positions(_FAKE_WALLET)
+            result = fetch_resolved_positions(_FAKE_WALLET)
         assert len(result) == 1
         p = result[0]
         assert p.market          == "Did Y happen?"
         assert p.outcome_held    == "YES"
-        assert p.winning_outcome == "YES"   # redeemable ⟹ user's outcome won
+        assert p.winning_outcome == "YES"   # resolved + not redeemed ⟹ user's outcome won
         assert p.redeemed        is False
         assert p.resolved_date   == "2025-01-01"
 
     def test_cost_basis_is_avg_price_times_size(self):
         # 50 shares × $0.50 avg = $25 cost basis
         with patch("requests.get", return_value=_mock_response([_REDEEMABLE_ROW])):
-            p = fetch_redeemable_positions(_FAKE_WALLET)[0]
+            p = fetch_resolved_positions(_FAKE_WALLET)[0]
         assert p.cost_basis == pytest.approx(25.0)
 
     def test_redeem_value_maps_to_current_value(self):
         with patch("requests.get", return_value=_mock_response([_REDEEMABLE_ROW])):
-            p = fetch_redeemable_positions(_FAKE_WALLET)[0]
+            p = fetch_resolved_positions(_FAKE_WALLET)[0]
         assert p.redeem_value == pytest.approx(50.0)
 
     def test_empty_response_returns_empty_list(self):
         with patch("requests.get", return_value=_mock_response([])):
-            assert fetch_redeemable_positions(_FAKE_WALLET) == []
+            assert fetch_resolved_positions(_FAKE_WALLET) == []
 
     def test_network_error_raises(self):
         with patch("requests.get", side_effect=requests.RequestException("timeout")):
             with pytest.raises(PolymarketLookupError):
-                fetch_redeemable_positions(_FAKE_WALLET)
+                fetch_resolved_positions(_FAKE_WALLET)
 
     def test_missing_size_defaults_to_zero(self):
         row = {"title": "Test", "outcome": "NO", "avgPrice": 0.5,
                "currentValue": 0.0, "redeemable": True}
         with patch("requests.get", return_value=_mock_response([row])):
-            p = fetch_redeemable_positions(_FAKE_WALLET)[0]
+            p = fetch_resolved_positions(_FAKE_WALLET)[0]
         assert p.quantity   == pytest.approx(0.0)
         assert p.cost_basis == pytest.approx(0.0)
 
-    def test_is_win_true_for_all_redeemable(self):
+    def test_is_win_true_for_all_resolved(self):
         with patch("requests.get", return_value=_mock_response([_REDEEMABLE_ROW])):
-            p = fetch_redeemable_positions(_FAKE_WALLET)[0]
+            p = fetch_resolved_positions(_FAKE_WALLET)[0]
         assert p.is_win is True
 
     def test_realized_pnl_is_redeem_minus_cost(self):
         # 50 shares × $0.50 = $25 cost; current value $50 → P/L = +$25
         with patch("requests.get", return_value=_mock_response([_REDEEMABLE_ROW])):
-            p = fetch_redeemable_positions(_FAKE_WALLET)[0]
+            p = fetch_resolved_positions(_FAKE_WALLET)[0]
         assert p.realized_pnl == pytest.approx(25.0)
 
 
@@ -320,9 +321,9 @@ class TestPagination:
         params = call_kwargs[1]["params"]
         assert params["user"] == _FAKE_WALLET
 
-    def test_redeemable_filter_passed_for_redeemable_fetch(self):
+    def test_redeemable_filter_passed_for_resolved_fetch(self):
         with patch("requests.get", return_value=_mock_response([])) as mock_get:
-            fetch_redeemable_positions(_FAKE_WALLET)
+            fetch_resolved_positions(_FAKE_WALLET)
         params = mock_get.call_args[1]["params"]
         assert params["redeemable"] == "true"
         # sizeThreshold omitted to avoid server-side 408 timeouts

@@ -19,7 +19,7 @@ from app.adapters.polymarket_adapter import (
     fetch_activity,
     fetch_closed_positions,
     fetch_closed_positions_page,
-    fetch_redeemable_positions,
+    fetch_resolved_positions,
 )
 from app.adapters.wallet_adapter import WalletLookupError, fetch_wallet_usd_value
 from app.database import (
@@ -54,7 +54,7 @@ def _mask_address(addr: str) -> str:
 class _FetchThread(QThread):
     wallet_ok      = Signal(float)
     wallet_err     = Signal(str)
-    positions_ok   = Signal(list, list, list)   # (active, redeemable, closed)
+    positions_ok   = Signal(list, list, list)   # (active, resolved, closed)
     positions_err  = Signal(str)
     activity_ok    = Signal(list)
     activity_err   = Signal(str)
@@ -77,10 +77,14 @@ class _FetchThread(QThread):
 
         # Step 2: Polymarket positions
         try:
-            active     = fetch_active_positions(self._address)
-            redeemable = fetch_redeemable_positions(self._address)
-            closed     = fetch_closed_positions(self._address)
-            self.positions_ok.emit(active, redeemable, closed)
+            active   = fetch_active_positions(self._address)
+            resolved = fetch_resolved_positions(self._address)
+            closed   = fetch_closed_positions(self._address)
+            # A market is either active or resolved — strip resolved markets from active
+            # so the same position never appears in both lists simultaneously
+            resolved_titles = {p.market for p in resolved}
+            active = [p for p in active if p.market not in resolved_titles]
+            self.positions_ok.emit(active, resolved, closed)
         except PolymarketLookupError as exc:
             self.positions_err.emit(str(exc))
         except Exception as exc:
@@ -132,7 +136,7 @@ class WalletPanel(QWidget):
 
     Signals:
       wallet_value_changed(float)          — new USD wallet balance
-      positions_fetched(list, list, list)  — (active, redeemable, closed positions)
+      positions_fetched(list, list, list)  — (active, resolved, closed positions)
       activity_fetched(list)               — recent activity records
 
     Never requests private keys, seed phrases, or wallet permissions.
@@ -140,7 +144,7 @@ class WalletPanel(QWidget):
 
     wallet_value_changed  = Signal(float)
     wallet_address_changed = Signal(str)   # emitted when the wallet address actually changes
-    positions_fetched    = Signal(list, list, list)
+    positions_fetched    = Signal(list, list, list)   # (active, resolved, closed)
     activity_fetched     = Signal(list)
 
     def __init__(self):
@@ -292,14 +296,14 @@ class WalletPanel(QWidget):
     def _on_wallet_err(self, msg: str) -> None:
         self._set_status(f"Lookup failed: {msg}", _RED)
 
-    def _on_positions_ok(self, active: list, redeemable: list, closed: list) -> None:
+    def _on_positions_ok(self, active: list, resolved: list, closed: list) -> None:
         self._positions_ok = True
         self._set_status(
             f"Wallet: ${self._pending_value:,.2f}  ·  {len(active)} active"
-            f"  ·  {len(redeemable)} redeemable  ·  {len(closed)} closed",
+            f"  ·  {len(resolved)} resolved  ·  {len(closed)} closed",
             _GREEN,
         )
-        self.positions_fetched.emit(active, redeemable, closed)
+        self.positions_fetched.emit(active, resolved, closed)
 
     def _on_positions_err(self, msg: str) -> None:
         self._set_status(

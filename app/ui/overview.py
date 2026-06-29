@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 from typing import List
 
 from PySide6.QtCore import Qt, Signal
@@ -48,6 +49,15 @@ _COL_HDR_S = (
 _L = Qt.AlignmentFlag.AlignLeft
 _R = Qt.AlignmentFlag.AlignRight
 _V = Qt.AlignmentFlag.AlignVCenter
+
+_RANGE_BTN_ACTIVE = (
+    f"background-color: #1f2937; border: 1px solid {_BLUE}; border-radius: 4px;"
+    f" color: {_BLUE}; padding: 3px 14px; font-size: 12px; font-weight: 600;"
+)
+_RANGE_BTN_IDLE = (
+    f"background-color: #21262d; border: 1px solid {_BORDER}; border-radius: 4px;"
+    f" color: {_MUTED}; padding: 3px 14px; font-size: 12px;"
+)
 
 
 # ── Updatable metric card ──────────────────────────────────────────────────────
@@ -196,8 +206,8 @@ def _active_section(positions: List[ActivePosition]) -> QWidget:
 
 # ── Resolved positions section ─────────────────────────────────────────────────
 
-_RES_HDRS  = ["Market", "Outcome Held", "Winning Outcome", "Qty", "Cost Basis", "Redeem Value", "Realized P/L", "P/L %", "Redeemed"]
-_RES_ALIGN = [_L, _L, _L, _R, _R, _R, _R, _R, _L]
+_RES_HDRS  = ["Market", "Outcome", "Winning Outcome", "Qty", "Cost Basis", "Redeem Value", "Realized P/L", "P/L %"]
+_RES_ALIGN = [_L, _L, _L, _R, _R, _R, _R, _R]
 
 
 def _resolved_section(positions: List[ResolvedPosition]) -> QWidget:
@@ -222,7 +232,6 @@ def _resolved_section(positions: List[ResolvedPosition]) -> QWidget:
     for r, p in enumerate(positions, start=1):
         pc = _pnl_color(p.realized_pnl)
         oc = _GREEN if p.is_win else _RED
-        sc = _GREEN if p.redeemed else _MUTED
         cells = [
             (p.market,                          _L, _TEXT),
             (p.outcome_held,                    _L, oc),
@@ -232,7 +241,6 @@ def _resolved_section(positions: List[ResolvedPosition]) -> QWidget:
             (f"${p.redeem_value:,.2f}",         _R, _TEXT),
             (f"${p.realized_pnl:,.2f}",         _R, pc),
             (f"{p.realized_pnl_pct:+.1f}%",    _R, pc),
-            ("Yes" if p.redeemed else "Pending", _L, sc),
         ]
         for col, (text, align, color) in enumerate(cells):
             grid.addWidget(_row_cell(text, align, color), r, col)
@@ -242,10 +250,88 @@ def _resolved_section(positions: List[ResolvedPosition]) -> QWidget:
     return outer
 
 
+# ── Closed positions section ───────────────────────────────────────────────────
+
+_CLS_HDRS  = ["Market", "Outcome", "Result", "Cost Basis", "Proceeds", "Realized P/L", "P/L %", "Resolved"]
+_CLS_ALIGN = [_L, _L, _L, _R, _R, _R, _R, _L]
+
+
+def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") -> QWidget:
+    outer = QWidget()
+    vbox = QVBoxLayout(outer)
+    vbox.setContentsMargins(0, 0, 0, 0)
+    vbox.setSpacing(8)
+
+    lbl = QLabel(f"Closed Positions — {range_label}  ({len(positions)})")
+    lbl.setStyleSheet(_SECTION_HDR_S)
+    vbox.addWidget(lbl)
+
+    frame = QFrame()
+    frame.setStyleSheet(f"QFrame {{ background-color: {_BG}; border: 1px solid {_BORDER}; }}")
+    grid = QGridLayout(frame)
+    grid.setContentsMargins(0, 0, 0, 0)
+    grid.setSpacing(0)
+
+    for col, (h, a) in enumerate(zip(_CLS_HDRS, _CLS_ALIGN)):
+        grid.addWidget(_col_hdr(h, a), 0, col)
+
+    for r, p in enumerate(positions, start=1):
+        pc = _pnl_color(p.realized_pnl)
+        rc = _GREEN if p.is_win else _RED
+        resolved_str = (p.resolved_date or "")[:10] if p.resolved_date else "—"
+        cells = [
+            (p.market,                         _L, _TEXT),
+            (p.outcome_held,                   _L, _TEXT),
+            ("Win" if p.is_win else "Loss",    _L, rc),
+            (f"${p.cost_basis:,.2f}",          _R, _TEXT),
+            (f"${p.redeem_value:,.2f}",        _R, _TEXT),
+            (f"${p.realized_pnl:,.2f}",        _R, pc),
+            (f"{p.realized_pnl_pct:+.1f}%",   _R, pc),
+            (resolved_str,                     _L, _MUTED),
+        ]
+        for col, (text, align, color) in enumerate(cells):
+            grid.addWidget(_row_cell(text, align, color), r, col)
+
+    grid.setColumnStretch(0, 1)
+    vbox.addWidget(frame)
+    return outer
+
+
+# ── Date-range filtering ───────────────────────────────────────────────────────
+
+_RANGE_LABELS = {"1d": "1D", "1w": "1W", "1m": "1M", "all": "All"}
+
+
+def _filter_closed_by_range(closed: List[ResolvedPosition], range_: str) -> List[ResolvedPosition]:
+    if range_ == "all" or not closed:
+        return closed
+    today = date.today()
+    if range_ == "1d":
+        cutoff = today
+    elif range_ == "1w":
+        cutoff = today - timedelta(days=7)
+    elif range_ == "1m":
+        cutoff = today - timedelta(days=30)
+    else:
+        return closed
+
+    result = []
+    for p in closed:
+        if not p.resolved_date:
+            continue
+        try:
+            d = date.fromisoformat(p.resolved_date[:10])
+            if d >= cutoff:
+                result.append(p)
+        except (ValueError, TypeError):
+            pass
+    return result
+
+
 # ── Overview widget ────────────────────────────────────────────────────────────
 
 class OverviewWidget(QWidget):
-    positions_changed = Signal(list, list, list)   # (active, redeemable, closed)
+    positions_changed = Signal(list, list, list)   # (active, resolved, closed)
     snapshots_changed = Signal(list)               # updated snapshot list
     activity_changed  = Signal(list)               # activity feed
 
@@ -262,7 +348,9 @@ class OverviewWidget(QWidget):
         self._realized_pnl         = metrics["realized_pnl"]
         self._wallet_usd_value     = 0.0
         self._active_positions     = list(active)
+        self._closed_positions: List[ResolvedPosition] = []
         self._acknowledged_markets = load_loss_watch_acknowledged()
+        self._range                = "1d"
         # Wallet address for tagging snapshots — updated on confirmed fetch
         self._confirmed_wallet     = load_last_wallet()
 
@@ -284,6 +372,10 @@ class OverviewWidget(QWidget):
         self._wallet_panel.activity_fetched.connect(self._on_activity_fetched)
         main.addWidget(self._wallet_panel)
 
+        main.addSpacing(12)
+
+        # ── Time range filter ──────────────────────────────────────────
+        main.addWidget(self._build_range_bar())
         main.addSpacing(14)
 
         # ── Cards (left) + Total Tracked Value chart (right) ──────────
@@ -316,12 +408,47 @@ class OverviewWidget(QWidget):
         # ── Resolved positions ─────────────────────────────────────────
         self._res_section = _resolved_section(resolved)
         main.addWidget(self._res_section)
+        main.addSpacing(20)
+        main.addWidget(_divider())
+        main.addSpacing(16)
+
+        # ── Closed positions ───────────────────────────────────────────
+        self._cls_section = _closed_section([], _RANGE_LABELS[self._range])
+        main.addWidget(self._cls_section)
         main.addStretch(1)
 
         scroll.setWidget(content)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
+
+    # ── Range filter bar ───────────────────────────────────────────────────────
+
+    def _build_range_bar(self) -> QWidget:
+        bar = QWidget()
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+
+        self._range_btns: dict[str, QPushButton] = {}
+        for key, label in _RANGE_LABELS.items():
+            btn = QPushButton(label)
+            btn.setFixedHeight(26)
+            btn.setCheckable(False)
+            btn.setStyleSheet(_RANGE_BTN_ACTIVE if key == self._range else _RANGE_BTN_IDLE)
+            btn.clicked.connect(lambda _checked, k=key: self._on_range_changed(k))
+            self._range_btns[key] = btn
+            row.addWidget(btn)
+
+        row.addStretch(1)
+        return bar
+
+    def _on_range_changed(self, range_: str) -> None:
+        self._range = range_
+        for key, btn in self._range_btns.items():
+            btn.setStyleSheet(_RANGE_BTN_ACTIVE if key == range_ else _RANGE_BTN_IDLE)
+        filtered = _filter_closed_by_range(self._closed_positions, range_)
+        self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[range_]))
 
     # ── Card panel ─────────────────────────────────────────────────────────────
 
@@ -377,15 +504,9 @@ class OverviewWidget(QWidget):
         count = compute_loss_watch_count(self._active_positions, self._acknowledged_markets)
         self._loss_watch_card.update_count(count)
 
-    # ── Wallet address change (clears stale snapshot history) ─────────────────
+    # ── Wallet address change ──────────────────────────────────────────────────
 
     def _on_wallet_address_changed(self, address: str) -> None:
-        """Called when the confirmed wallet address changes (new wallet or first fetch).
-
-        Loads snapshot history for the new address so the chart only ever shows data
-        for the current wallet.  Old/sample snapshots (stored without an address) are
-        never returned for a real address lookup, so they can't pollute the chart.
-        """
         self._confirmed_wallet = address
         snaps = load_wallet_snapshots(address)
         self._chart.update_snapshots(snaps)
@@ -413,9 +534,10 @@ class OverviewWidget(QWidget):
 
     # ── Live positions update ──────────────────────────────────────────────────
 
-    def _on_positions_fetched(self, active: list, redeemable: list, closed: list) -> None:
+    def _on_positions_fetched(self, active: list, resolved: list, closed: list) -> None:
         self._active_positions = list(active)
-        metrics = compute_dashboard_metrics(active, redeemable)
+        self._closed_positions = list(closed)
+        metrics = compute_dashboard_metrics(active, resolved)
         self._active_value   = metrics["active_positions_value"]
         self._unrealized_pnl = metrics["unrealized_pnl"]
         self._realized_pnl   = metrics["realized_pnl"]
@@ -428,9 +550,12 @@ class OverviewWidget(QWidget):
         self._loss_watch_card.update_count(lw_count)
 
         self._replace_section("_act_section", _active_section(active))
-        self._replace_section("_res_section", _resolved_section(redeemable))
+        self._replace_section("_res_section", _resolved_section(resolved))
 
-        self.positions_changed.emit(active, redeemable, closed)
+        filtered = _filter_closed_by_range(closed, self._range)
+        self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
+
+        self.positions_changed.emit(active, resolved, closed)
 
     # ── Activity update ────────────────────────────────────────────────────────
 
@@ -447,11 +572,9 @@ class OverviewWidget(QWidget):
     # ── Public ─────────────────────────────────────────────────────────────────
 
     def request_refresh(self) -> None:
-        """Trigger a full data refresh — called by other tabs' Refresh buttons."""
         self._wallet_panel.request_refresh()
 
     def reload_acknowledged(self) -> None:
-        """Reload acknowledged list from DB (called after Loss Watch tab updates it)."""
         self._acknowledged_markets = load_loss_watch_acknowledged()
         count = compute_loss_watch_count(self._active_positions, self._acknowledged_markets)
         self._loss_watch_card.update_count(count)
