@@ -15,12 +15,13 @@ def compute_dashboard_metrics(
     wins   = [p for p in resolved if p.is_win]
     losses = [p for p in resolved if not p.is_win]
 
-    unrealized   = calc_unrealized_pnl(active)
-    realized     = calc_realized_pnl(resolved)
-    active_value = sum(p.current_value for p in active)
+    unrealized     = calc_unrealized_pnl(active)
+    realized       = calc_realized_pnl(resolved)
+    active_value   = sum(p.current_value for p in active)
+    resolved_value = sum(p.redeem_value  for p in resolved)
 
     return {
-        "active_positions_value": active_value,
+        "active_positions_value": active_value + resolved_value,
         "realized_pnl":          realized,
         "unrealized_pnl":        unrealized,
         "win_count":             len(wins),
@@ -28,5 +29,5 @@ def compute_dashboard_metrics(
         # wallet_usd_value and total_tracked_value are set at runtime
         # after the user fetches or enters a wallet value
         "wallet_usd_value":      0.0,
-        "total_tracked_value":   active_value,  # starts as active value only
+        "total_tracked_value":   active_value + resolved_value,
     }
