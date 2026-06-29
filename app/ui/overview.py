@@ -335,7 +335,8 @@ class OverviewWidget(QWidget):
     positions_changed    = Signal(list, list, list)  # (active, resolved, closed)
     snapshots_changed    = Signal(list)              # updated snapshot list
     activity_changed     = Signal(list)              # activity feed
-    closed_cache_updated = Signal(list)              # full closed history as backfill lands
+    closed_cache_updated = Signal(list)              # full closed history after backfill
+    more_closed          = Signal(list)              # next closed positions page for scroll-load
     more_activity        = Signal(list)              # next activity page for infinite scroll
 
     def __init__(
@@ -376,6 +377,7 @@ class OverviewWidget(QWidget):
         self._wallet_panel.positions_fetched.connect(self._on_positions_fetched)
         self._wallet_panel.activity_fetched.connect(self._on_activity_fetched)
         self._wallet_panel.closed_cache_updated.connect(self._on_closed_cache_updated)
+        self._wallet_panel.more_closed_fetched.connect(self.more_closed.emit)
         self._wallet_panel.more_activity_fetched.connect(self.more_activity.emit)
         main.addWidget(self._wallet_panel)
 
@@ -596,6 +598,10 @@ class OverviewWidget(QWidget):
 
     def request_refresh(self) -> None:
         self._wallet_panel.request_refresh()
+
+    def on_load_more_closed(self, offset: int) -> None:
+        """Called by the Closed Positions tab's scroll handler to request the next page."""
+        self._wallet_panel.fetch_closed_page(offset)
 
     def on_load_more_activity(self, offset: int) -> None:
         """Called by the Activity tab's scroll handler to request the next page."""

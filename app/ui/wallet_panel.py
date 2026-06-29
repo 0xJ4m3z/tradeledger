@@ -156,6 +156,26 @@ class _ActivityPageThread(QThread):
             self.err.emit(f"Unexpected error: {exc}")
 
 
+class _ClosedPageThread(QThread):
+    """Fetch one additional page of closed positions for the infinite-scroll load-more."""
+    done = Signal(list)
+    err  = Signal(str)
+
+    def __init__(self, address: str, offset: int):
+        super().__init__()
+        self._address = address
+        self._offset  = offset
+
+    def run(self) -> None:
+        try:
+            page = fetch_closed_positions_page(self._address, self._offset)
+            self.done.emit(page)
+        except PolymarketLookupError as exc:
+            self.err.emit(str(exc))
+        except Exception as exc:
+            self.err.emit(f"Unexpected error: {exc}")
+
+
 class WalletPanel(QWidget):
     """
     Read-only wallet panel.
@@ -172,14 +192,16 @@ class WalletPanel(QWidget):
     wallet_address_changed = Signal(str)         # emitted when the wallet address changes
     positions_fetched      = Signal(list, list, list)  # (active, resolved, closed)
     activity_fetched       = Signal(list)
-    closed_cache_updated   = Signal(list)        # full closed history after backfill pages
-    more_activity_fetched  = Signal(list)        # next page for infinite-scroll
+    closed_cache_updated   = Signal(list)        # full closed history after backfill completes
+    more_closed_fetched    = Signal(list)        # next page for closed positions scroll-load
+    more_activity_fetched  = Signal(list)        # next page for activity infinite-scroll
 
     def __init__(self):
         super().__init__()
         self._thread: _FetchThread | None = None
         self._backfill: _BackfillThread | None = None
         self._activity_page_thread: _ActivityPageThread | None = None
+        self._closed_page_thread: _ClosedPageThread | None = None
         self._current_value      = 0.0
         self._pending_value      = 0.0
         self._full_address       = ""
@@ -396,3 +418,13 @@ class WalletPanel(QWidget):
         self._activity_page_thread = _ActivityPageThread(self._full_address, offset)
         self._activity_page_thread.done.connect(self.more_activity_fetched.emit)
         self._activity_page_thread.start()
+
+    def fetch_closed_page(self, offset: int) -> None:
+        """Fetch the next closed positions page at offset (scroll-load for Closed tab)."""
+        if not self._full_address:
+            return
+        if self._closed_page_thread and self._closed_page_thread.isRunning():
+            return
+        self._closed_page_thread = _ClosedPageThread(self._full_address, offset)
+        self._closed_page_thread.done.connect(self.more_closed_fetched.emit)
+        self._closed_page_thread.start()

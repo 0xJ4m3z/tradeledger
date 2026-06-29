@@ -138,6 +138,10 @@ class MainWindow(QMainWindow):
         self._activity_tab.load_more_requested.connect(overview.on_load_more_activity)
         overview.more_activity.connect(self._activity_tab.append_activity)
 
+        # Closed positions: scroll-to-bottom → fetch next page → append rows
+        self._closed_tab.load_more_requested.connect(overview.on_load_more_closed)
+        overview.more_closed.connect(self._closed_tab.append_positions)
+
         # ── Total Tracked Value full-size chart tab ─────────────────────────────
         initial_wallet = load_last_wallet()
         self._tv_tab_chart = TotalValueChartWidget(load_wallet_snapshots(initial_wallet), figsize=(10, 5))
@@ -175,7 +179,8 @@ class MainWindow(QMainWindow):
         )
 
     def _on_closed_cache_updated(self, all_closed: list) -> None:
-        self._closed_tab.update_positions(all_closed)
+        # Do NOT call update_positions here — that would reset the table and lose
+        # scroll progress. The closed tab loads more via scroll-triggered API pages.
         self._status_bar.showMessage(
-            f"Live Polymarket data  •  {len(all_closed)} closed positions loaded"
+            f"Live Polymarket data  •  {len(all_closed)} closed positions cached"
         )
