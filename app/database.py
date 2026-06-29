@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
-from app.models import ActivePosition, ResolvedPosition
+from app.models import ActivePosition, ResolvedPosition, UserActivity
 
 # Allow tests to override the path via TRADELEDGER_DB environment variable
 _DEFAULT_DB = Path(__file__).parent.parent / "tradeledger.db"
@@ -58,21 +58,81 @@ def init_db() -> None:
                 value TEXT NOT NULL
             )
         """)
-        # Cache for closed positions — accumulates via backfill; deduped by position_key
+        # Cache for closed positions — accumulates via backfill; deduped by (wallet, position_key)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS closed_positions_cache (
-                id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                position_key   TEXT UNIQUE NOT NULL,
-                market         TEXT NOT NULL,
-                outcome_held   TEXT NOT NULL,
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                wallet_address  TEXT NOT NULL DEFAULT '',
+                position_key    TEXT NOT NULL,
+                market          TEXT NOT NULL,
+                outcome_held    TEXT NOT NULL,
                 winning_outcome TEXT NOT NULL,
+                quantity        REAL NOT NULL,
+                cost_basis      REAL NOT NULL,
+                redeem_value    REAL NOT NULL,
+                redeemed        INTEGER NOT NULL,
+                resolved_date   TEXT,
+                realized_pnl    REAL NOT NULL,
+                fetched_at      TEXT NOT NULL,
+                UNIQUE (wallet_address, position_key)
+            )
+        """)
+        # Migration: add wallet_address to legacy single-column-unique tables
+        try:
+            conn.execute(
+                "ALTER TABLE closed_positions_cache ADD COLUMN wallet_address TEXT NOT NULL DEFAULT ''"
+            )
+            conn.execute("DROP INDEX IF EXISTS sqlite_autoindex_closed_positions_cache_1")
+        except Exception:
+            pass
+
+        # Active positions cache — replaced in full on each successful fetch
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS active_positions_cache (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                wallet_address TEXT NOT NULL,
+                market         TEXT NOT NULL,
+                outcome        TEXT NOT NULL,
                 quantity       REAL NOT NULL,
-                cost_basis     REAL NOT NULL,
-                redeem_value   REAL NOT NULL,
-                redeemed       INTEGER NOT NULL,
-                resolved_date  TEXT,
-                realized_pnl   REAL NOT NULL,
-                fetched_at     TEXT NOT NULL
+                avg_cost       REAL NOT NULL,
+                current_price  REAL NOT NULL,
+                saved_at       TEXT NOT NULL
+            )
+        """)
+
+        # Resolved positions cache — replaced in full on each successful fetch
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS resolved_positions_cache (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                wallet_address  TEXT NOT NULL,
+                market          TEXT NOT NULL,
+                outcome_held    TEXT NOT NULL,
+                winning_outcome TEXT NOT NULL,
+                quantity        REAL NOT NULL,
+                cost_basis      REAL NOT NULL,
+                redeem_value    REAL NOT NULL,
+                redeemed        INTEGER NOT NULL,
+                resolved_date   TEXT,
+                saved_at        TEXT NOT NULL
+            )
+        """)
+
+        # Activity cache — deduped by (wallet_address, event_key)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS activity_cache (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                wallet_address TEXT NOT NULL,
+                event_key      TEXT NOT NULL,
+                timestamp      INTEGER NOT NULL,
+                type           TEXT NOT NULL,
+                title          TEXT NOT NULL,
+                outcome        TEXT NOT NULL,
+                side           TEXT NOT NULL,
+                size           REAL NOT NULL,
+                usdc_size      REAL NOT NULL,
+                price          REAL NOT NULL,
+                cached_at      TEXT NOT NULL,
+                UNIQUE (wallet_address, event_key)
             )
         """)
         conn.commit()
@@ -222,48 +282,55 @@ def load_loss_watch_acknowledged() -> List[str]:
 # ── Closed positions cache ────────────────────────────────────────────────────
 
 def _position_key(p: ResolvedPosition) -> str:
-    """Deterministic dedup key for a closed position."""
+    """Deterministic dedup key for a closed position (wallet-independent part)."""
     return f"{p.market}|{p.outcome_held}|{p.cost_basis:.6f}"
 
 
-def upsert_closed_positions_cache(positions: List[ResolvedPosition]) -> None:
-    """Insert or update cached closed positions. Safe to call repeatedly."""
+def upsert_closed_positions_cache(
+    positions: List[ResolvedPosition],
+    wallet_address: str = "",
+) -> None:
+    """Insert or update cached closed positions keyed by (wallet_address, position_key)."""
     with get_connection() as conn:
         for p in positions:
             key = _position_key(p)
             conn.execute(
                 """
                 INSERT INTO closed_positions_cache
-                    (position_key, market, outcome_held, winning_outcome, quantity,
-                     cost_basis, redeem_value, redeemed, resolved_date, realized_pnl,
-                     fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-                ON CONFLICT (position_key) DO UPDATE SET
+                    (wallet_address, position_key, market, outcome_held, winning_outcome,
+                     quantity, cost_basis, redeem_value, redeemed, resolved_date,
+                     realized_pnl, fetched_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT (wallet_address, position_key) DO UPDATE SET
                     winning_outcome = excluded.winning_outcome,
                     quantity        = excluded.quantity,
                     redeem_value    = excluded.redeem_value,
                     realized_pnl    = excluded.realized_pnl,
                     fetched_at      = excluded.fetched_at
                 """,
-                (key, p.market, p.outcome_held, p.winning_outcome, p.quantity,
-                 p.cost_basis, p.redeem_value, int(p.redeemed),
+                (wallet_address, key, p.market, p.outcome_held, p.winning_outcome,
+                 p.quantity, p.cost_basis, p.redeem_value, int(p.redeemed),
                  p.resolved_date, p.realized_pnl),
             )
         conn.commit()
 
 
-def load_closed_positions_cache(limit: int = 500) -> List[ResolvedPosition]:
-    """Load cached closed positions, most-recently-resolved first, capped at limit."""
+def load_closed_positions_cache(
+    wallet_address: str = "",
+    limit: int = 500,
+) -> List[ResolvedPosition]:
+    """Load cached closed positions for wallet, most-recently-resolved first."""
     with get_connection() as conn:
         rows = conn.execute(
             """
             SELECT market, outcome_held, winning_outcome, quantity, cost_basis,
                    redeem_value, redeemed, resolved_date
             FROM closed_positions_cache
+            WHERE wallet_address = ?
             ORDER BY resolved_date DESC, fetched_at DESC
             LIMIT ?
             """,
-            (limit,),
+            (wallet_address, limit),
         ).fetchall()
     return [
         ResolvedPosition(
@@ -302,7 +369,172 @@ def clear_wallet_snapshots_today(wallet_address: str) -> None:
         conn.commit()
 
 
-def count_closed_positions_cache() -> int:
+def count_closed_positions_cache(wallet_address: str = "") -> int:
     with get_connection() as conn:
-        row = conn.execute("SELECT COUNT(*) AS n FROM closed_positions_cache").fetchone()
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM closed_positions_cache WHERE wallet_address = ?",
+            (wallet_address,),
+        ).fetchone()
     return row["n"] if row else 0
+
+
+# ── Active positions cache ────────────────────────────────────────────────────
+
+def save_active_positions_cache(
+    wallet_address: str,
+    positions: List[ActivePosition],
+) -> None:
+    """Replace active positions cache for this wallet with the current fetch result."""
+    with get_connection() as conn:
+        conn.execute(
+            "DELETE FROM active_positions_cache WHERE wallet_address = ?",
+            (wallet_address,),
+        )
+        for p in positions:
+            conn.execute(
+                """
+                INSERT INTO active_positions_cache
+                    (wallet_address, market, outcome, quantity, avg_cost, current_price, saved_at)
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (wallet_address, p.market, p.outcome, p.quantity, p.avg_cost, p.current_price),
+            )
+        conn.commit()
+
+
+def load_active_positions_cache(wallet_address: str) -> List[ActivePosition]:
+    """Load cached active positions for wallet. Returns [] if no cache."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT market, outcome, quantity, avg_cost, current_price
+            FROM active_positions_cache
+            WHERE wallet_address = ?
+            ORDER BY market ASC
+            """,
+            (wallet_address,),
+        ).fetchall()
+    return [
+        ActivePosition(
+            market=r["market"],
+            outcome=r["outcome"],
+            quantity=r["quantity"],
+            avg_cost=r["avg_cost"],
+            current_price=r["current_price"],
+        )
+        for r in rows
+    ]
+
+
+# ── Resolved positions cache ──────────────────────────────────────────────────
+
+def save_resolved_positions_cache(
+    wallet_address: str,
+    positions: List[ResolvedPosition],
+) -> None:
+    """Replace resolved positions cache for this wallet with the current fetch result."""
+    with get_connection() as conn:
+        conn.execute(
+            "DELETE FROM resolved_positions_cache WHERE wallet_address = ?",
+            (wallet_address,),
+        )
+        for p in positions:
+            conn.execute(
+                """
+                INSERT INTO resolved_positions_cache
+                    (wallet_address, market, outcome_held, winning_outcome, quantity,
+                     cost_basis, redeem_value, redeemed, resolved_date, saved_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (wallet_address, p.market, p.outcome_held, p.winning_outcome,
+                 p.quantity, p.cost_basis, p.redeem_value, int(p.redeemed),
+                 p.resolved_date),
+            )
+        conn.commit()
+
+
+def load_resolved_positions_cache(wallet_address: str) -> List[ResolvedPosition]:
+    """Load cached resolved positions for wallet. Returns [] if no cache."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT market, outcome_held, winning_outcome, quantity, cost_basis,
+                   redeem_value, redeemed, resolved_date
+            FROM resolved_positions_cache
+            WHERE wallet_address = ?
+            ORDER BY market ASC
+            """,
+            (wallet_address,),
+        ).fetchall()
+    return [
+        ResolvedPosition(
+            market=r["market"],
+            outcome_held=r["outcome_held"],
+            winning_outcome=r["winning_outcome"],
+            quantity=r["quantity"],
+            cost_basis=r["cost_basis"],
+            redeem_value=r["redeem_value"],
+            redeemed=bool(r["redeemed"]),
+            resolved_date=r["resolved_date"],
+        )
+        for r in rows
+    ]
+
+
+# ── Activity cache ────────────────────────────────────────────────────────────
+
+def _activity_event_key(a: UserActivity) -> str:
+    """Deterministic dedup key for an activity event."""
+    return f"{a.timestamp}|{a.type}|{a.side}|{a.size:.6f}"
+
+
+def upsert_activity_cache(
+    wallet_address: str,
+    activity: List[UserActivity],
+) -> None:
+    """Insert new activity rows for wallet; skip duplicates by event_key."""
+    with get_connection() as conn:
+        for a in activity:
+            key = _activity_event_key(a)
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO activity_cache
+                    (wallet_address, event_key, timestamp, type, title, outcome,
+                     side, size, usdc_size, price, cached_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (wallet_address, key, a.timestamp, a.type, a.title,
+                 a.outcome, a.side, a.size, a.usdc_size, a.price),
+            )
+        conn.commit()
+
+
+def load_activity_cache(
+    wallet_address: str,
+    limit: int = 500,
+) -> List[UserActivity]:
+    """Load cached activity for wallet, newest first."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT timestamp, type, title, outcome, side, size, usdc_size, price
+            FROM activity_cache
+            WHERE wallet_address = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (wallet_address, limit),
+        ).fetchall()
+    return [
+        UserActivity(
+            timestamp=r["timestamp"],
+            type=r["type"],
+            title=r["title"],
+            outcome=r["outcome"],
+            side=r["side"],
+            size=r["size"],
+            usdc_size=r["usdc_size"],
+            price=r["price"],
+        )
+        for r in rows
+    ]

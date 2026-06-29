@@ -6,7 +6,7 @@ A local, read-only desktop application for tracking Polymarket positions, wallet
 
 TradeLedger lets you monitor your open positions, resolved winnings, closed trade history, and activity feed — all locally, using public read-only APIs. No account login, no API key, no wallet connection required.
 
-- **Overview** — wallet lookup, time-range filter (1D / 1W / 1M / 1Y / YTD / All), metric cards (Total Tracked Value, Wallet USD Value, Positions Value, Loss Watch, Realized P/L, Trades), daily P/L bar chart, live positions grid
+- **Overview** — wallet lookup, time-range filter (1D / 1W / 1M / 1Y / YTD / All), metric cards (Total Tracked Value, Wallet USD Value, Positions Value, Loss Watch, Realized P/L, Trades), cumulative realized P/L line chart with hover, live positions grid
 - **Loss Watch** — list of open positions with negative unrealized P/L; acknowledge known losers to track new ones
 - **Active Positions** — all open positions currently exposed to market movement
 - **Resolved Positions** — won/resolved markets not yet redeemed; still counted in Positions Value
@@ -120,6 +120,7 @@ tradeledger/
 │   ├── services/
 │   │   ├── pnl.py                      # P/L calculations and cumulative series
 │   │   ├── pnl_today.py                # Range-aware realized P/L from closed positions
+│   │   ├── pnl_series.py               # Cumulative P/L chart data builder (pure, testable)
 │   │   ├── metrics.py                  # Dashboard metric aggregation, Total Tracked Value
 │   │   ├── loss_watch.py               # Loss Watch: filter losing positions, count unacknowledged
 │   │   ├── positions.py                # Filter and sort helpers
@@ -134,7 +135,7 @@ tradeledger/
 │       ├── overview.py                 # Overview tab: range filter, cards, chart, positions grid
 │       ├── wallet_panel.py             # Wallet input, fetch/refresh, auto-refresh, background threads
 │       ├── total_value_chart.py        # Total Tracked Value chart widget (with range buttons)
-│       ├── pnl_chart.py                # Daily realized P/L bar chart widget (Overview mini-chart)
+│       ├── pnl_chart.py                # Cumulative P/L line chart with hover crosshair (Overview)
 │       ├── active_positions_table.py   # Active Positions tab with search filter
 │       ├── resolved_positions_table.py # Resolved / Closed Positions tabs with infinite scroll
 │       ├── activity_table.py           # Activity tab with infinite scroll and color-coded types
@@ -152,7 +153,9 @@ tradeledger/
 │   ├── test_closed_cache.py            # Closed positions cache: upsert, dedup, limit tests
 │   ├── test_loss_watch.py              # Loss Watch filter and count tests
 │   ├── test_chart_ranges.py            # Chart range filter tests
-│   └── test_pnl_ranges.py             # Range/timezone logic, partial data detection
+│   ├── test_pnl_ranges.py              # Range/timezone logic, partial data detection
+│   ├── test_pnl_series.py              # Cumulative P/L chart data builder tests
+│   └── test_position_cache.py          # Wallet-isolated cache tests (active/resolved/closed/activity)
 ├── sample_data/
 │   ├── sample_wallet_positions.json    # Example active positions
 │   └── sample_resolved_positions.json  # Example resolved positions
@@ -179,7 +182,7 @@ tradeledger/
 | Realized P/L | Net profit/loss from closed positions in the selected time range. Uses `redeem_value − cost_basis` so losses (redeem at $0) are correctly counted. Prefixed with `~` when loaded data may be incomplete for the range. |
 | Trades | Count of closed positions in the selected time range. Prefixed with `~` when loaded data may be incomplete. |
 
-The **1D / 1W / 1M / 1Y / YTD / All** range buttons above the cards and chart control all three at once: the closed positions grid in the overview, the Realized P/L card, and the Trades card, and the daily P/L bar chart.
+The **1D / 1W / 1M / 1Y / YTD / All** range buttons above the cards and chart control all of these at once: the closed positions grid in the overview, the Realized P/L card, the Trades card, and the cumulative P/L line chart.
 
 ---
 
@@ -213,6 +216,62 @@ Closed positions are loaded newest-first (most recent 100 on initial fetch, then
 When partial data is detected, the Realized P/L and Trades cards are prefixed with **`~`** to indicate the number may be understated. Scrolling down in the Closed Positions tab loads more history and will eventually clear the `~` prefix once data extends beyond the range cutoff.
 
 `All` is never marked partial — it means "all currently loaded data" by definition.
+
+---
+
+## P/L chart
+
+The Overview chart shows **cumulative realized P/L over time** for the selected range. It is a line chart, not a bar chart.
+
+- **Starts at $0** at the range start date (range cutoff for fixed ranges; one day before the oldest closed position for "All"). The line always anchors at zero.
+- **Final value equals the Realized P/L card.** The rightmost point is always `sum(realized_pnl)` for the same filtered set of closed positions.
+- **Same-date aggregation.** Multiple closed positions on the same calendar day are summed to one net data point before building the cumulative series.
+- **Color.** Green line and fill when the final value ≥ $0; red when negative.
+- **Hover crosshair.** Move the mouse over the chart to see a vertical crosshair, a dot on the line, and a tooltip showing the date and cumulative P/L at that point (`+$X.XX` / `-$X.XX`).
+- **X-axis format** adapts to the range: times for 1D, month-day for 1W/1M, month-year for 1Y/YTD/All.
+- **Single data point.** If only one date has closed positions, the chart shows the anchor + that one point (a straight line from $0 to the final value). This is honest — no interpolation.
+- **No data.** If no closed positions exist for the selected range, the chart shows "No closed positions in this range" as a text label.
+
+Chart data is built by `app/services/pnl_series.py` (`build_pnl_series`), a pure function with no Qt or matplotlib dependencies. It is fully covered by `tests/test_pnl_series.py`.
+
+---
+
+## Local caching
+
+TradeLedger caches position and activity data locally in the SQLite database (`tradeledger.db`, gitignored) so the app populates instantly on startup — no waiting for a live fetch before you can see your positions.
+
+### What is cached (per wallet address)
+
+| Cache | Key | Strategy |
+|-------|-----|----------|
+| Active positions | wallet_address | Replace-all on each fetch |
+| Resolved positions | wallet_address | Replace-all on each fetch |
+| Closed positions | wallet_address + position_key | Insert-or-ignore (dedup); accumulates over time |
+| Activity events | wallet_address + event_key | Insert-or-ignore (dedup); accumulates over time |
+
+**Active and resolved positions** are always stale after the app closes — they snapshot the last known state and are replaced entirely on the next live fetch.
+
+**Closed positions and activity** are additive: deduplication ensures the same event is never stored twice. Background backfill and scroll-loaded pages all flow through the same upsert path, so loading more history just adds to the cache without creating duplicates.
+
+### Dedup keys
+
+- Closed position: `f"{market}|{outcome_held}|{cost_basis:.6f}"`
+- Activity event: `f"{timestamp}|{type}|{side}|{size:.6f}"`
+
+### Startup behavior
+
+1. The last-used wallet address is read from the DB.
+2. All four caches are loaded immediately in `MainWindow.__init__`.
+3. The status bar shows **"Loaded from cache • X active • Y resolved • Z closed • Refreshing…"**
+4. The Overview P/L chart and metric cards are pre-populated from cached closed positions (`seed_from_cache`).
+5. `WalletPanel` auto-triggers a live fetch in the background (deferred with `QTimer.singleShot`).
+6. When the live fetch completes, all tabs update with fresh data and the status bar clears the "Refreshing…" suffix.
+
+**First run / new wallet:** If no cache exists for the wallet, sample data is shown briefly until the live fetch completes.
+
+### Cache invalidation
+
+There is no explicit TTL. Active and resolved caches are replaced on every successful live fetch. Closed and activity caches only grow (dedup-protected). Switching wallets reads a separate, isolated cache for the new address — wallets never share cached rows.
 
 ---
 
@@ -278,14 +337,18 @@ Tries multiple public Polygon RPCs automatically if one fails. Wallet address is
 - **Wallet-address-tagged snapshots** — chart never shows data from a different wallet; stale same-day snapshots are cleared on first fetch
 - 196 passing tests
 
-**v0.3.1 — P/L accuracy audit** ✓
+**v0.3.1 — P/L accuracy audit + chart + caching** ✓
 - **ET timezone** — all calendar-day calculations use America/New_York (was: Chicago); 1D = today ET midnight to now
 - **1Y and YTD ranges** — added to range bar alongside 1D / 1W / 1M / All
 - **Partial data detection** — Realized P/L and Trades cards show `~` prefix when loaded data may not cover the full range
 - **Closed positions as P/L source** — explicitly documented; `filter_closed_by_range` extracted to service layer
-- **Daily P/L bar chart** — Overview mini-chart replaced with daily realized P/L bars (green/red per day)
-- **Comprehensive range/timezone tests** — 36 new tests covering all ranges, edge cases, partial detection, timezone
-- 232 passing tests
+- **Cumulative P/L line chart** — Overview mini-chart replaced with cumulative realized P/L line; starts at $0 at range start; final value matches Realized P/L card; green/red fill; interactive hover crosshair with date + value tooltip
+- **Same-date aggregation** — multiple closed positions on the same calendar day sum to one net data point
+- **Wallet-isolated local caching** — active, resolved, closed, and activity data cached per wallet in SQLite; app pre-populates from cache on startup before the live fetch completes; status bar shows "Loaded from cache • Refreshing…"
+- **Startup cache flow** — cached data shown instantly; `seed_from_cache` pre-populates P/L chart and metric cards; live fetch replaces/extends data in the background
+- **Insert-or-ignore dedup** — closed positions and activity events accumulate without duplicates across scroll-loads, backfill pages, and refreshes
+- **Comprehensive tests** — 84 new tests covering range/timezone logic, cumulative series builder, and all four wallet-isolated caches
+- 280 passing tests
 
 **v0.4 — Planned**
 - Notes per market

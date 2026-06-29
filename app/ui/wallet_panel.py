@@ -27,7 +27,10 @@ from app.database import (
     init_db,
     load_closed_positions_cache,
     load_last_wallet,
+    save_active_positions_cache,
     save_last_wallet,
+    save_resolved_positions_cache,
+    upsert_activity_cache,
     upsert_closed_positions_cache,
 )
 from app.models import ActivePosition, ResolvedPosition, UserActivity
@@ -125,7 +128,7 @@ class _BackfillThread(QThread):
             if not page:
                 break
             try:
-                upsert_closed_positions_cache(page)
+                upsert_closed_positions_cache(page, self._address)
                 self.page_done.emit()
             except Exception:
                 pass
@@ -329,7 +332,7 @@ class WalletPanel(QWidget):
         self._thread.wallet_err.connect(self._on_wallet_err)
         self._thread.positions_ok.connect(self._on_positions_ok)
         self._thread.positions_err.connect(self._on_positions_err)
-        self._thread.activity_ok.connect(lambda a: self.activity_fetched.emit(a))
+        self._thread.activity_ok.connect(self._on_activity_ok)
         self._thread.finished.connect(self._on_fetch_done)
         self._thread.start()
 
@@ -354,9 +357,11 @@ class WalletPanel(QWidget):
             f"  ·  {len(resolved)} resolved",
             _TEXT,
         )
-        # Upsert the main-fetch closed positions so they're in the cache alongside backfill data
+        addr = self._full_address
         try:
-            upsert_closed_positions_cache(closed)
+            upsert_closed_positions_cache(closed, addr)
+            save_active_positions_cache(addr, active)
+            save_resolved_positions_cache(addr, resolved)
         except Exception:
             pass
         self.positions_fetched.emit(active, resolved, closed)
@@ -383,10 +388,17 @@ class WalletPanel(QWidget):
         self._backfill.done.connect(self._on_backfill_done)
         self._backfill.start()
 
+    def _on_activity_ok(self, activity: list) -> None:
+        try:
+            upsert_activity_cache(self._full_address, activity)
+        except Exception:
+            pass
+        self.activity_fetched.emit(activity)
+
     def _on_backfill_done(self) -> None:
         """Reload the most recent 500 from cache once all backfill pages are complete."""
         try:
-            all_closed = load_closed_positions_cache()
+            all_closed = load_closed_positions_cache(self._full_address)
             self.closed_cache_updated.emit(all_closed)
         except Exception:
             pass

@@ -1,7 +1,15 @@
 from PySide6.QtWidgets import QMainWindow, QStatusBar, QTabWidget, QVBoxLayout, QWidget
 
 from app.adapters.sample_adapter import load_all
-from app.database import load_last_wallet, load_wallet_snapshots, save_snapshot
+from app.database import (
+    load_active_positions_cache,
+    load_activity_cache,
+    load_closed_positions_cache,
+    load_last_wallet,
+    load_resolved_positions_cache,
+    load_wallet_snapshots,
+    save_snapshot,
+)
 from app.services.metrics import compute_dashboard_metrics
 from app.ui.active_positions_table import ActivePositionsTable
 from app.ui.activity_table import ActivityTable
@@ -109,8 +117,24 @@ class MainWindow(QMainWindow):
         self.resize(1440, 940)
         self.setStyleSheet(_STYLE)
 
-        active, resolved = load_all()
-        save_snapshot("sample", active, resolved)
+        # Try to load cached data for the remembered wallet to populate tabs immediately.
+        # The WalletPanel auto-triggers a live refresh in the background; cached data
+        # provides instant display while the fetch completes.
+        _init_wallet  = load_last_wallet()
+        cached_active   = load_active_positions_cache(_init_wallet)   if _init_wallet else []
+        cached_resolved = load_resolved_positions_cache(_init_wallet) if _init_wallet else []
+        cached_closed   = load_closed_positions_cache(_init_wallet)   if _init_wallet else []
+        cached_activity = load_activity_cache(_init_wallet)           if _init_wallet else []
+
+        # Fall back to sample data only when no cache exists (first run / new wallet)
+        if not cached_active and not cached_resolved:
+            active, resolved = load_all()
+            save_snapshot("sample", active, resolved)
+            _from_cache = False
+        else:
+            active, resolved = cached_active, cached_resolved
+            _from_cache = True
+
         metrics = compute_dashboard_metrics(active, resolved)
 
         overview               = OverviewWidget(active, resolved, metrics)
@@ -118,9 +142,9 @@ class MainWindow(QMainWindow):
         self._active_tab       = ActivePositionsTable(active)
         self._resolved_tab     = ResolvedPositionsTable(resolved, label="Resolved Positions")
         self._closed_tab       = ResolvedPositionsTable(
-            [], label="Closed Positions", show_refresh=True
+            cached_closed, label="Closed Positions", show_refresh=True
         )
-        self._activity_tab     = ActivityTable([])
+        self._activity_tab     = ActivityTable(cached_activity)
 
         # ── Signal wiring ───────────────────────────────────────────────────────
         overview.positions_changed.connect(self._on_positions_changed)
@@ -162,10 +186,21 @@ class MainWindow(QMainWindow):
         tabs.addTab(tv_tab,                    "Total Tracked Value")
         self.setCentralWidget(tabs)
 
+        # Pre-populate Overview with cached closed positions so metric cards and
+        # P/L chart render immediately before the live fetch completes.
+        if cached_closed:
+            overview.seed_from_cache(cached_closed)
+
         self._status_bar = QStatusBar()
-        self._status_bar.showMessage(
-            f"Sample data mode  •  {len(active)} active  •  {len(resolved)} resolved"
-        )
+        if _from_cache:
+            self._status_bar.showMessage(
+                f"Loaded from cache  •  {len(active)} active"
+                f"  •  {len(resolved)} resolved  •  {len(cached_closed)} closed  •  Refreshing…"
+            )
+        else:
+            self._status_bar.showMessage(
+                f"Sample data mode  •  {len(active)} active  •  {len(resolved)} resolved"
+            )
         self.setStatusBar(self._status_bar)
 
     def _on_positions_changed(self, active: list, resolved: list, closed: list) -> None:

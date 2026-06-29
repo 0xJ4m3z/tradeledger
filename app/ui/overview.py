@@ -599,6 +599,19 @@ class OverviewWidget(QWidget):
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
+    def seed_from_cache(self, closed: list) -> None:
+        """Pre-populate with cached closed positions before the first live fetch.
+
+        Called by MainWindow on startup if cached data exists for the remembered
+        wallet. Sets _closed_positions, updates metric cards, and redraws the chart
+        so the user sees real data immediately instead of empty cards.
+        """
+        self._closed_positions = list(closed)
+        filtered = filter_closed_by_range(closed, self._range)
+        self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
+        self._update_metric_cards()
+        self._chart.update(closed, self._range)
+
     def request_refresh(self) -> None:
         self._wallet_panel.request_refresh()
 
