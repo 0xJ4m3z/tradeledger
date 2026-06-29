@@ -385,7 +385,7 @@ class OverviewWidget(QWidget):
         self._wallet_panel.activity_fetched.connect(self._on_activity_fetched)
         self._wallet_panel.closed_cache_updated.connect(self._on_closed_cache_updated)
         self._wallet_panel.more_closed_fetched.connect(self.more_closed.emit)
-        self._wallet_panel.more_activity_fetched.connect(self.more_activity.emit)
+        self._wallet_panel.more_activity_fetched.connect(self._on_more_activity_fetched)
         main.addWidget(self._wallet_panel)
 
         main.addSpacing(12)
@@ -587,6 +587,11 @@ class OverviewWidget(QWidget):
     def _on_activity_fetched(self, activity: list) -> None:
         self._activity = activity
         self.activity_changed.emit(activity)
+        self._update_activity_cards()
+
+    def _on_more_activity_fetched(self, page: list) -> None:
+        self._activity.extend(page)
+        self.more_activity.emit(page)
         self._update_activity_cards()
 
     def _update_activity_cards(self) -> None:
