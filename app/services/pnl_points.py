@@ -1,11 +1,16 @@
 """
 Event-based cumulative realized P/L series builder.
 
-For 1D: intraday granularity using REDEEM activity timestamps.
-  Each REDEEM is matched to a closed position by redeem_value (usdc_size ≈
-  redeem_value) to obtain the realized P/L for that event.  Events with no
-  matching closed position are skipped and data is marked partial.  Closed
-  positions with no matching REDEEM (e.g. expired worthless) are also partial.
+For 1D: intraday granularity using the closed_at timestamp embedded in each
+  closed position (extracted from the API's ``timestamp`` field).  Each closed
+  position whose close time falls within the current ET day contributes one
+  cumulative step.  Positions that lack a ``closed_at`` value (older cache rows
+  fetched before this field was added) are placed at "now" and the series is
+  flagged partial.
+
+  Activity events are NOT used for 1D timing.  This makes the chart robust to
+  any close mechanism — market redemption, CLOB sell, CTF merge, or anything
+  else — because all close types appear in the closed-positions endpoint.
 
 For 1W / 1M / 1Y / YTD / All: daily rollup from closed positions.
   One cumulative step per calendar day with a "now" endpoint appended.
@@ -27,10 +32,6 @@ from app.debug import _dlog
 from app.models import ResolvedPosition, UserActivity
 from app.services.pnl_today import filter_closed_by_range, range_cutoff_et
 
-# USDC tolerance for matching a close event to a closed position.
-# Slightly above 0.01 to absorb minor floating-point rounding in API responses.
-_MATCH_TOL = 0.02
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -38,61 +39,8 @@ def _midnight(d: date, tz: ZoneInfo) -> datetime:
     return datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=tz)
 
 
-def _act_dt(a: UserActivity, tz: ZoneInfo) -> datetime:
-    return datetime.fromtimestamp(a.timestamp, tz=tz)
-
-
 def _cp_date_str(cp: ResolvedPosition) -> Optional[str]:
     return cp.resolved_date[:10] if cp.resolved_date else None
-
-
-def _is_close_event(a: UserActivity) -> bool:
-    """True if this activity event represents a fully-realized position exit.
-
-    Covers three close paths on Polymarket:
-      REDEEM  — market-resolution redemption (a.type == "REDEEM")
-      SELL    — CLOB full-position sell (a.type == "SELL")
-      TRADE   — some API responses use type="TRADE" with side="SELL"
-
-    BUY / TRADE+BUY / SPLIT / MERGE etc. are NOT close events.
-    """
-    if a.type == "REDEEM":
-        return True
-    if a.type == "SELL":
-        return True
-    if a.type == "TRADE" and a.side == "SELL":
-        return True
-    return False
-
-
-def _find_match(
-    act: UserActivity,
-    pool: List[ResolvedPosition],
-) -> Optional[ResolvedPosition]:
-    """Find the best-matching closed position for a close event.
-
-    The pool is assumed to be pre-filtered to the relevant date range.
-
-    Matching strategy (greedy, one-to-one):
-      Primary  : market title == activity title  AND  usdc_size ≈ redeem_value
-      Fallback : usdc_size ≈ redeem_value  (title absent or differs slightly)
-
-    For REDEEM events: usdc_size = redemption proceeds = redeem_value ✓
-    For SELL   events: usdc_size = sell proceeds      = cost_basis + realized_pnl
-                                                      = redeem_value ✓
-
-    Caller must remove the returned item from pool.
-    """
-    # Primary: title + value (reduces ambiguity when multiple positions have similar sizes)
-    if act.title:
-        for cp in pool:
-            if cp.market == act.title and abs(cp.redeem_value - act.usdc_size) < _MATCH_TOL:
-                return cp
-    # Fallback: value only (handles minor title mismatches)
-    for cp in pool:
-        if abs(cp.redeem_value - act.usdc_size) < _MATCH_TOL:
-            return cp
-    return None
 
 
 # ── 1D intraday ────────────────────────────────────────────────────────────────
@@ -107,67 +55,46 @@ def _build_1d_points(
     today_str = today.isoformat()
     midnight = _midnight(today, tz)
 
-    # All position-close events today (REDEEM + SELL + TRADE/SELL), sorted chronologically
-    close_events = sorted(
-        [a for a in activity if _is_close_event(a) and _act_dt(a, tz).date() == today],
-        key=lambda a: a.timestamp,
-    )
+    # Filter to positions whose close event falls on today in the given timezone.
+    # Primary:  use closed_at epoch (the API's "timestamp" field for the close event).
+    # Fallback: use resolved_date[:10] when closed_at is absent (legacy cache rows).
+    today_closed: List[ResolvedPosition] = []
+    for cp in closed:
+        if cp.closed_at:
+            if datetime.fromtimestamp(cp.closed_at, tz=tz).date() == today:
+                today_closed.append(cp)
+        elif _cp_date_str(cp) == today_str:
+            today_closed.append(cp)
 
-    # All closed positions that resolved today (by resolved_date)
-    today_closed = [cp for cp in closed if _cp_date_str(cp) == today_str]
-    full_total = round(sum(cp.realized_pnl for cp in today_closed), 2)
-
-    # Diagnostics — visible only when TRADELEDGER_DEBUG=1
-    if close_events or today_closed:
-        type_dist: Dict[str, int] = {}
-        for a in activity:
-            if _act_dt(a, tz).date() == today:
-                key = f"{a.type}:{a.side}" if a.side else a.type
-                type_dist[key] = type_dist.get(key, 0) + 1
-        _dlog("chart1d",
-              "range=1d | activity=%d total | today types: %s",
-              len(activity), type_dist)
-        _dlog("chart1d",
-              "today close_events=%d | today_closed=%d | full_total=%.2f",
-              len(close_events), len(today_closed), full_total)
-
-    pool = list(today_closed)
-    points: List[Dict[str, Any]] = [{"timestamp": midnight, "value": 0.0}]
-    cumulative = 0.0
-    matched = 0
-    is_partial = False
-
-    for act in close_events:
-        match = _find_match(act, pool)
-        if match is None:
-            # Cannot determine cost basis for this event → skip, mark partial
-            is_partial = True
-            continue
-        pool.remove(match)
-        matched += 1
-        cumulative = round(cumulative + match.realized_pnl, 2)
-        points.append({"timestamp": _act_dt(act, tz), "value": cumulative})
-
-    # Closed positions that couldn't be matched to any close event (expired worthless, etc.)
-    if pool:
-        is_partial = True
+    # Sort ascending by close time; positions without closed_at sort last (placed at now)
+    today_closed.sort(key=lambda cp: cp.closed_at or int(now.timestamp()) + 1)
 
     _dlog("chart1d",
-          "matched=%d | unmatched_events=%d | unmatched_closed=%d | "
-          "cumulative=%.2f | full_total=%.2f | points=%d",
-          matched,
-          len(close_events) - matched,
-          len(pool),
-          cumulative, full_total,
-          len(points) + 1)  # +1 for the "now" point we're about to add
+          "today_closed=%d | with_closed_at=%d | fallback=%d",
+          len(today_closed),
+          sum(1 for cp in today_closed if cp.closed_at),
+          sum(1 for cp in today_closed if not cp.closed_at))
 
-    # Always end at "now" using the authoritative total from all closed positions
-    points.append({"timestamp": now, "value": full_total})
+    points: List[Dict[str, Any]] = [{"timestamp": midnight, "value": 0.0}]
+    cumulative = 0.0
+    is_partial = False
 
-    # If the matched running total diverges from the full closed-positions total,
-    # the chart has a visible jump at "now" — flag this as partial
-    if abs(cumulative - full_total) > _MATCH_TOL:
-        is_partial = True
+    for cp in today_closed:
+        cumulative = round(cumulative + cp.realized_pnl, 2)
+        if cp.closed_at:
+            ts = datetime.fromtimestamp(cp.closed_at, tz=tz)
+        else:
+            # No timestamp available — approximate as "now" and flag as partial
+            ts = now
+            is_partial = True
+        points.append({"timestamp": ts, "value": cumulative})
+
+    # Always end at "now" so the line extends to the current moment
+    points.append({"timestamp": now, "value": cumulative})
+
+    _dlog("chart1d",
+          "points=%d | cumulative=%.2f | is_partial=%s",
+          len(points), cumulative, is_partial)
 
     return points, is_partial
 
@@ -231,8 +158,8 @@ def build_cumulative_pnl_points(
 
     Parameters
     ----------
-    activity        : full activity list (used for 1D intraday timestamps)
-    closed_positions: closed positions list (source of P/L amounts)
+    activity        : reserved; not used for any range (kept for API compatibility)
+    closed_positions: closed positions list (source of P/L amounts and timestamps)
     range_key       : "1d" | "1w" | "1m" | "1y" | "ytd" | "all"
     timezone        : IANA timezone name (default: America/New_York)
 
@@ -241,12 +168,13 @@ def build_cumulative_pnl_points(
     (points, is_partial)
       points      — list of {"timestamp": aware_datetime, "value": float}
                     • First point : range start at $0
-                    • Middle points: P/L events in chronological order
+                    • Middle points: one per close event in chronological order
                     • Last point  : "now" at final cumulative P/L
-      is_partial  — True when some events could not be precisely timestamped
-                    (1D only: unmatched REDEEM or unmatched closed positions)
+      is_partial  — True when some 1D positions lack a closed_at timestamp
+                    (1D only; always False for 1W+)
 
-    For 1D: uses REDEEM activity timestamps for intraday granularity.
+    For 1D: uses closed_positions[i].closed_at for intraday timestamps.
+            Works for any close type (REDEEM, SELL, MERGE, etc.).
     For 1W+: daily rollup from closed positions (partial detection via
              pnl_today.is_data_partial, not this function).
     """

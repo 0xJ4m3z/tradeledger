@@ -1,6 +1,7 @@
 """Cumulative realized P/L line chart for the Overview panel.
 
-For 1D: event-based intraday series using REDEEM activity timestamps.
+For 1D: intraday series driven by closed_at timestamps on closed positions.
+         Works for any close type (REDEEM, SELL, MERGE, etc.).
          Steps-post line so the value stays flat between events.
 For 1W+: daily rollup from closed positions, normal line.
 

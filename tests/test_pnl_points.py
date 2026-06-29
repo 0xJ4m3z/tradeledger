@@ -31,27 +31,14 @@ def _unix(dt):
     return int(dt.timestamp())
 
 
-def _redeem(ts_dt, usdc_size, title="Market A"):
-    return UserActivity(
-        timestamp=_unix(ts_dt),
-        type="REDEEM",
-        title=title,
-        outcome="Yes",
-        side="",
-        size=100.0,
-        usdc_size=usdc_size,
-        price=0.0,
-    )
-
-
-def _closed(pnl, redeem_value=None, resolved_date=None):
+def _closed(pnl, redeem_value=None, resolved_date=None, closed_at=None, market="Test Market"):
     if redeem_value is None:
         redeem_value = max(0.0, pnl + 50.0)
     cost_basis = redeem_value - pnl
     if resolved_date is None:
         resolved_date = str(_today())
     return ResolvedPosition(
-        market="Test Market",
+        market=market,
         outcome_held="Yes",
         winning_outcome="Yes" if pnl >= 0 else "No",
         quantity=100.0,
@@ -59,6 +46,7 @@ def _closed(pnl, redeem_value=None, resolved_date=None):
         redeem_value=redeem_value,
         redeemed=True,
         resolved_date=resolved_date,
+        closed_at=closed_at,
     )
 
 
@@ -91,274 +79,216 @@ class TestBuild1DAnchoring:
     def test_points_are_in_chronological_order(self):
         t1 = _et(14, 0)
         t2 = _et(9, 0)   # earlier but listed second
-        acts = [_redeem(t1, 75.0), _redeem(t2, 90.0)]
-        cps  = [_closed(25.0, 75.0), _closed(40.0, 90.0)]
-        points, _ = build_cumulative_pnl_points(acts, cps, "1d")
+        cps = [
+            _closed(25.0, 75.0, closed_at=_unix(t1)),
+            _closed(40.0, 90.0, closed_at=_unix(t2)),
+        ]
+        points, _ = build_cumulative_pnl_points([], cps, "1d")
         ts_list = [p["timestamp"] for p in points]
         assert ts_list == sorted(ts_list)
 
 
-# ── 1D: intraday event timestamps ─────────────────────────────────────────────
+# ── 1D: intraday timestamps from closed_at ─────────────────────────────────────
 
 class TestBuild1DIntraday:
-    def test_redeem_event_creates_point_at_its_timestamp(self):
+    def test_closed_at_creates_point_at_its_timestamp(self):
         t = _et(9, 42)
-        acts = [_redeem(t, 75.0)]
-        cps  = [_closed(25.0, 75.0)]
-        points, _ = build_cumulative_pnl_points(acts, cps, "1d")
-        # midnight + event + now = 3
+        cp = _closed(25.0, 75.0, closed_at=_unix(t))
+        points, _ = build_cumulative_pnl_points([], [cp], "1d")
+        # anchor + position + now = 3
         assert len(points) == 3
         mid = points[1]
         mid_local = mid["timestamp"].astimezone(_ET)
         assert mid_local.hour == 9
         assert mid_local.minute == 42
 
-    def test_multiple_events_create_multiple_points(self):
-        acts = [_redeem(_et(9, 42), 75.0), _redeem(_et(10, 13), 90.0), _redeem(_et(11, 5), 60.0)]
-        cps  = [_closed(25.0, 75.0), _closed(40.0, 90.0), _closed(10.0, 60.0)]
-        points, _ = build_cumulative_pnl_points(acts, cps, "1d")
-        # anchor + 3 events + now = 5
+    def test_multiple_positions_create_multiple_points(self):
+        cps = [
+            _closed(25.0, 75.0, closed_at=_unix(_et(9, 42))),
+            _closed(40.0, 90.0, closed_at=_unix(_et(10, 13))),
+            _closed(10.0, 60.0, closed_at=_unix(_et(11, 5))),
+        ]
+        points, _ = build_cumulative_pnl_points([], cps, "1d")
+        # anchor + 3 positions + now = 5
         assert len(points) == 5
 
-    def test_same_day_events_not_aggregated_into_one_bucket(self):
-        """Two events 30 minutes apart produce two separate chart points."""
-        t1, t2 = _et(9, 0), _et(9, 30)
-        acts = [_redeem(t1, 75.0), _redeem(t2, 90.0)]
-        cps  = [_closed(25.0, 75.0), _closed(40.0, 90.0)]
-        points, _ = build_cumulative_pnl_points(acts, cps, "1d")
-        assert len(points) == 4   # anchor + 2 events + now
+    def test_same_day_positions_not_aggregated_into_one_bucket(self):
+        """Two positions 30 minutes apart produce two separate chart points."""
+        cps = [
+            _closed(25.0, 75.0, closed_at=_unix(_et(9, 0))),
+            _closed(40.0, 90.0, closed_at=_unix(_et(9, 30))),
+        ]
+        points, _ = build_cumulative_pnl_points([], cps, "1d")
+        assert len(points) == 4   # anchor + 2 positions + now
 
-    def test_single_event_produces_three_points(self):
-        acts = [_redeem(_et(10, 0), 75.0)]
-        cps  = [_closed(25.0, 75.0)]
-        points, _ = build_cumulative_pnl_points(acts, cps, "1d")
+    def test_single_position_produces_three_points(self):
+        cp = _closed(25.0, 75.0, closed_at=_unix(_et(10, 0)))
+        points, _ = build_cumulative_pnl_points([], [cp], "1d")
         assert len(points) == 3
         assert points[0]["value"] == 0.0
         assert abs(points[1]["value"] - 25.0) < 0.01
 
-    def test_values_are_cumulative_not_per_event(self):
-        acts = [_redeem(_et(9, 0), 75.0), _redeem(_et(10, 0), 90.0)]
-        cps  = [_closed(30.0, 75.0), _closed(20.0, 90.0)]
-        points, _ = build_cumulative_pnl_points(acts, cps, "1d")
-        assert abs(points[1]["value"] - 30.0) < 0.01   # after first event
-        assert abs(points[2]["value"] - 50.0) < 0.01   # after second event
+    def test_values_are_cumulative_not_per_position(self):
+        cps = [
+            _closed(30.0, 75.0, closed_at=_unix(_et(9, 0))),
+            _closed(20.0, 90.0, closed_at=_unix(_et(10, 0))),
+        ]
+        points, _ = build_cumulative_pnl_points([], cps, "1d")
+        assert abs(points[1]["value"] - 30.0) < 0.01   # after first close
+        assert abs(points[2]["value"] - 50.0) < 0.01   # after second close
 
     def test_final_point_matches_sum_of_all_closed(self):
-        acts = [_redeem(_et(9, 0), 75.0), _redeem(_et(11, 0), 40.0)]
-        cps  = [_closed(25.0, 75.0), _closed(-10.0, 40.0)]
+        cps = [
+            _closed(25.0, 75.0, closed_at=_unix(_et(9, 0))),
+            _closed(-10.0, 40.0, closed_at=_unix(_et(11, 0))),
+        ]
         expected = 25.0 + (-10.0)
-        points, _ = build_cumulative_pnl_points(acts, cps, "1d")
+        points, _ = build_cumulative_pnl_points([], cps, "1d")
         assert abs(points[-1]["value"] - expected) < 0.01
 
-    def test_yesterday_events_excluded_from_1d(self):
+    def test_yesterday_positions_excluded_from_1d(self):
         yesterday = _today() - timedelta(days=1)
         t_yest = datetime(yesterday.year, yesterday.month, yesterday.day, 9, 0, tzinfo=_ET)
-        acts = [_redeem(t_yest, 75.0)]
-        cps  = [_closed(25.0, 75.0, resolved_date=str(yesterday))]
-        points, _ = build_cumulative_pnl_points(acts, cps, "1d")
-        # No events today → just midnight + now at $0
+        cp = _closed(25.0, 75.0, resolved_date=str(yesterday), closed_at=_unix(t_yest))
+        points, _ = build_cumulative_pnl_points([], [cp], "1d")
+        # No positions today → just anchor + now at $0
         assert len(points) == 2
         assert points[-1]["value"] == 0.0
+
+    def test_positions_sorted_by_closed_at_regardless_of_input_order(self):
+        """Input order must not affect chart — positions are always sorted by closed_at."""
+        cps = [
+            _closed(40.0, 90.0, closed_at=_unix(_et(10, 0))),  # listed first but later
+            _closed(25.0, 75.0, closed_at=_unix(_et(9, 0))),   # listed second but earlier
+        ]
+        points, _ = build_cumulative_pnl_points([], cps, "1d")
+        # After sorting: 09:00 position first → cumulative=25, then 10:00 → cumulative=65
+        assert abs(points[1]["value"] - 25.0) < 0.01
+        assert abs(points[2]["value"] - 65.0) < 0.01
 
 
 # ── 1D: partial detection ─────────────────────────────────────────────────────
 
 class TestBuild1DPartial:
-    def test_not_partial_when_all_matched(self):
-        acts = [_redeem(_et(9, 0), 75.0)]
-        cps  = [_closed(25.0, 75.0)]
-        _, is_partial = build_cumulative_pnl_points(acts, cps, "1d")
+    def test_not_partial_when_all_have_closed_at(self):
+        cp = _closed(25.0, 75.0, closed_at=_unix(_et(9, 0)))
+        _, is_partial = build_cumulative_pnl_points([], [cp], "1d")
         assert not is_partial
 
-    def test_partial_when_closed_has_no_matching_redeem(self):
-        """Expired worthless: redeem_value=0, no REDEEM event in activity."""
-        cps = [_closed(-50.0, redeem_value=0.0)]
+    def test_partial_when_position_has_no_closed_at(self):
+        """Position without closed_at cannot be precisely timed → partial."""
+        cp = _closed(25.0, 75.0, closed_at=None)  # resolved_date fallback, no timestamp
+        _, is_partial = build_cumulative_pnl_points([], [cp], "1d")
+        assert is_partial
+
+    def test_partial_when_only_some_positions_have_closed_at(self):
+        cps = [
+            _closed(25.0, 75.0, closed_at=_unix(_et(9, 0))),
+            _closed(10.0, 60.0, closed_at=None),   # no timestamp
+        ]
         _, is_partial = build_cumulative_pnl_points([], cps, "1d")
         assert is_partial
 
-    def test_partial_when_redeem_has_no_matching_closed(self):
-        """REDEEM event with usdc_size that matches no closed position."""
-        acts = [_redeem(_et(9, 0), 999.0)]   # no closed position with redeem_value=999
-        _, is_partial = build_cumulative_pnl_points(acts, [], "1d")
-        assert is_partial
-
-    def test_partial_when_only_some_events_matched(self):
-        acts = [_redeem(_et(9, 0), 75.0), _redeem(_et(10, 0), 999.0)]
-        cps  = [_closed(25.0, 75.0)]   # second REDEEM has no match
-        _, is_partial = build_cumulative_pnl_points(acts, cps, "1d")
-        assert is_partial
+    def test_no_data_is_not_partial(self):
+        _, is_partial = build_cumulative_pnl_points([], [], "1d")
+        assert not is_partial
 
 
 # ── 1D: data source rules ─────────────────────────────────────────────────────
 
 class TestBuild1DDataSource:
-    def test_market_title_does_not_create_chart_points(self):
-        """Title strings (even date-like) must not influence which timestamps are used."""
+    def test_closed_at_drives_timestamp_not_resolved_date(self):
+        """closed_at epoch determines the chart point's time, not resolved_date."""
         t = _et(9, 42)
-        # Title contains a past date — must NOT generate a chart point at that date
-        act = _redeem(t, 75.0, title="Will BTC hit $100k by Jan 1 2020?")
-        cp  = _closed(25.0, 75.0)
-        points, _ = build_cumulative_pnl_points([act], [cp], "1d")
+        cp = _closed(25.0, 75.0, closed_at=_unix(t))
+        points, _ = build_cumulative_pnl_points([], [cp], "1d")
         assert len(points) == 3
         mid_local = points[1]["timestamp"].astimezone(_ET)
         assert mid_local.hour == 9
         assert mid_local.minute == 42
 
-    def test_slug_utc_text_does_not_affect_timestamps(self):
-        """Slug-style UTC strings in title must not be parsed as chart timestamps."""
-        t = _et(10, 0)
-        act = _redeem(t, 75.0, title="btc-100k-2020-01-01T00:00:00Z")
-        cp  = _closed(25.0, 75.0)
-        points, _ = build_cumulative_pnl_points([act], [cp], "1d")
-        assert len(points) == 3
-        mid_local = points[1]["timestamp"].astimezone(_ET)
-        assert mid_local.hour == 10
-
-    def test_non_redeem_activity_types_ignored(self):
-        """TRADE BUY events must not create chart points."""
-        buy = UserActivity(
+    def test_activity_events_do_not_create_chart_points(self):
+        """Activity list is ignored entirely — no REDEEM event creates a chart point."""
+        redeem = UserActivity(
             timestamp=_unix(_et(9, 0)),
-            type="TRADE", title="Market A", outcome="Yes",
-            side="BUY", size=100.0, usdc_size=50.0, price=0.5,
+            type="REDEEM", title="Market A", outcome="Yes",
+            side="", size=100.0, usdc_size=75.0, price=0.0,
         )
-        cp = _closed(25.0, 75.0)
-        points, _ = build_cumulative_pnl_points([buy], [cp], "1d")
-        # BUY event is not a REDEEM → unmatched closed → partial, but no event point
-        # anchor + now = 2 data points (the buy event adds no chart point)
-        event_points = [p for p in points[1:-1]]  # exclude anchor and now
-        assert len(event_points) == 0
+        # No closed positions → no chart points even with REDEEM activity
+        points, _ = build_cumulative_pnl_points([redeem], [], "1d")
+        assert len(points) == 2   # anchor + now only
+
+    def test_fallback_to_resolved_date_when_closed_at_absent(self):
+        """Positions without closed_at are included via resolved_date fallback."""
+        cp = _closed(25.0, 75.0, closed_at=None)  # resolved_date defaults to today
+        points, is_partial = build_cumulative_pnl_points([], [cp], "1d")
+        # Position IS included (via resolved_date), but partial because no timestamp
+        assert len(points) == 3   # anchor + position (at now) + now
+        assert is_partial
 
 
-# ── 1D: SELL event handling (CLOB position exits) ────────────────────────────
+# ── 1D: close-type independence ───────────────────────────────────────────────
 
-def _sell(ts_dt, usdc_size, title="Market A"):
-    """CLOB sell event (type='SELL', side='SELL')."""
-    return UserActivity(
-        timestamp=_unix(ts_dt),
-        type="SELL",
-        title=title,
-        outcome="Yes",
-        side="SELL",
-        size=100.0,
-        usdc_size=usdc_size,
-        price=0.0,
-    )
+class TestBuild1DCloseTypes:
+    """Chart works the same regardless of how the position was closed (REDEEM/SELL/MERGE)."""
 
-
-def _trade_sell(ts_dt, usdc_size, title="Market A"):
-    """CLOB sell as TRADE event with side=SELL (alternate API format)."""
-    return UserActivity(
-        timestamp=_unix(ts_dt),
-        type="TRADE",
-        title=title,
-        outcome="Yes",
-        side="SELL",
-        size=100.0,
-        usdc_size=usdc_size,
-        price=0.0,
-    )
-
-
-class TestBuild1DSellEvents:
-    """CLOB sell events must create intraday chart points, just like REDEEM events."""
-
-    def test_sell_event_creates_chart_point(self):
+    def test_any_closed_position_creates_chart_point(self):
+        """closed_at-based approach: no special-casing by close mechanism."""
         t = _et(10, 30)
-        act = _sell(t, usdc_size=75.0)
-        cp  = _closed(25.0, 75.0)
-        points, _ = build_cumulative_pnl_points([act], [cp], "1d")
-        # anchor + sell event + now = 3
+        # Label the market as a merge-closed position (the chart doesn't care)
+        cp = _closed(25.0, 75.0, closed_at=_unix(t), market="Merge-closed market")
+        points, _ = build_cumulative_pnl_points([], [cp], "1d")
         assert len(points) == 3
         mid_local = points[1]["timestamp"].astimezone(_ET)
         assert mid_local.hour == 10
         assert mid_local.minute == 30
 
-    def test_trade_sell_event_creates_chart_point(self):
-        """type='TRADE', side='SELL' is also a close event."""
-        t = _et(14, 0)
-        act = _trade_sell(t, usdc_size=90.0)
-        cp  = _closed(40.0, 90.0)
-        points, _ = build_cumulative_pnl_points([act], [cp], "1d")
-        assert len(points) == 3
-        assert abs(points[1]["value"] - 40.0) < 0.01
-
-    def test_trade_buy_event_still_ignored(self):
-        """type='TRADE', side='BUY' must NOT create a chart point."""
-        buy = UserActivity(
-            timestamp=_unix(_et(9, 0)),
-            type="TRADE", title="Market A", outcome="Yes",
-            side="BUY", size=100.0, usdc_size=50.0, price=0.5,
-        )
-        cp = _closed(25.0, 75.0)
-        points, _ = build_cumulative_pnl_points([buy], [cp], "1d")
-        assert len(points) == 2   # anchor + now only (no event point)
-
-    def test_sell_and_redeem_mixed_both_create_points(self):
-        """A mix of SELL and REDEEM events should each create an intraday point."""
-        acts = [
-            _redeem(_et(9, 30), 75.0, title="Market A"),
-            _sell(_et(11, 0),   90.0, title="Market B"),
-        ]
+    def test_multiple_close_types_all_produce_points(self):
+        """Redeem, CLOB sell, and merge-closed positions each produce their own point."""
         cps = [
-            _closed(25.0, 75.0),
-            _closed(40.0, 90.0),
+            _closed(25.0, 75.0, closed_at=_unix(_et(9, 30)), market="Market A (redeemed)"),
+            _closed(40.0, 90.0, closed_at=_unix(_et(11, 0)), market="Market B (CLOB sold)"),
+            _closed(-5.0, 45.0, closed_at=_unix(_et(14, 0)), market="Market C (merged)"),
         ]
-        points, is_partial = build_cumulative_pnl_points(acts, cps, "1d")
-        # anchor + 2 events + now = 4
-        assert len(points) == 4
+        points, is_partial = build_cumulative_pnl_points([], cps, "1d")
+        # anchor + 3 positions + now = 5
+        assert len(points) == 5
         assert not is_partial
         assert abs(points[1]["value"] - 25.0) < 0.01
         assert abs(points[2]["value"] - 65.0) < 0.01
+        assert abs(points[3]["value"] - 60.0) < 0.01
 
-    def test_title_based_match_avoids_ambiguity(self):
-        """When two positions have identical redeem_value, title match picks the right one."""
-        t1 = _et(9, 0)
-        t2 = _et(10, 0)
-        # Both positions have redeem_value=75.0 — title disambiguates
-        acts = [
-            _sell(t1, 75.0, title="Market A"),
-            _sell(t2, 75.0, title="Market B"),
+    def test_activity_argument_completely_ignored_for_1d(self):
+        """Passing non-empty activity must not change the chart."""
+        activities = [
+            UserActivity(
+                timestamp=_unix(_et(9, 0)), type="REDEEM", title="Market A",
+                outcome="Yes", side="", size=100.0, usdc_size=75.0, price=0.0,
+            ),
+            UserActivity(
+                timestamp=_unix(_et(10, 0)), type="SELL", title="Market B",
+                outcome="No", side="SELL", size=50.0, usdc_size=30.0, price=0.0,
+            ),
         ]
-        cp_a = ResolvedPosition(
-            market="Market A", outcome_held="Yes", winning_outcome="Yes",
-            quantity=100.0, cost_basis=50.0, redeem_value=75.0,
-            redeemed=True, resolved_date=str(_today()),
-        )
-        cp_b = ResolvedPosition(
-            market="Market B", outcome_held="No", winning_outcome="No",
-            quantity=100.0, cost_basis=60.0, redeem_value=75.0,
-            redeemed=True, resolved_date=str(_today()),
-        )
-        points, is_partial = build_cumulative_pnl_points(acts, [cp_a, cp_b], "1d")
-        assert not is_partial
-        assert len(points) == 4  # anchor + 2 events + now
-        # First event should match cp_a (pnl = 75 - 50 = 25)
-        assert abs(points[1]["value"] - 25.0) < 0.01
-        # Second event should match cp_b (pnl = 75 - 60 = 15, cumulative = 40)
-        assert abs(points[2]["value"] - 40.0) < 0.01
+        cp = _closed(20.0, 60.0, closed_at=_unix(_et(11, 0)))
+        points_with_activity, _ = build_cumulative_pnl_points(activities, [cp], "1d")
+        points_without, _ = build_cumulative_pnl_points([], [cp], "1d")
+        assert len(points_with_activity) == len(points_without)
+        for a, b in zip(points_with_activity, points_without):
+            assert abs(a["value"] - b["value"]) < 0.01
 
-    def test_partial_when_sell_has_no_matching_closed_position(self):
-        """An unmatched SELL event marks the data as partial."""
-        acts = [_sell(_et(10, 0), 999.0)]  # no closed position with redeem_value=999
-        _, is_partial = build_cumulative_pnl_points(acts, [], "1d")
-        assert is_partial
-
-    def test_sell_value_within_tolerance_still_matches(self):
-        """Minor floating-point difference (< _MATCH_TOL) must not break matching."""
-        t = _et(11, 0)
-        # usdc_size = 75.009, redeem_value = 75.0 → diff = 0.009 < 0.02 tolerance
-        act_titled = UserActivity(
-            timestamp=_unix(t), type="SELL", title="Market A", outcome="Yes",
-            side="SELL", size=100.0, usdc_size=75.009, price=0.0,
-        )
-        cp_exact = ResolvedPosition(
-            market="Market A", outcome_held="Yes", winning_outcome="Yes",
-            quantity=100.0, cost_basis=50.0, redeem_value=75.0,
-            redeemed=True, resolved_date=str(_today()),
-        )
-        points, is_partial = build_cumulative_pnl_points([act_titled], [cp_exact], "1d")
-        assert not is_partial
+    def test_closed_at_for_today_filters_correctly(self):
+        """Only today's positions appear; yesterday and tomorrow are excluded."""
+        yesterday = _today() - timedelta(days=1)
+        t_yest = datetime(yesterday.year, yesterday.month, yesterday.day, 15, 0, tzinfo=_ET)
+        cps = [
+            _closed(99.0, 149.0, closed_at=_unix(t_yest)),          # yesterday → excluded
+            _closed(25.0, 75.0,  closed_at=_unix(_et(10, 0))),      # today → included
+        ]
+        points, _ = build_cumulative_pnl_points([], cps, "1d")
+        # Only 1 position today → anchor + 1 + now = 3
         assert len(points) == 3
+        assert abs(points[-1]["value"] - 25.0) < 0.01
 
 
 # ── 1W / 1M / 1Y / YTD / All ─────────────────────────────────────────────────

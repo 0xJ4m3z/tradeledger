@@ -40,6 +40,7 @@ class ResolvedPosition:
     redeem_value: float
     redeemed: bool
     resolved_date: Optional[str] = None
+    closed_at: Optional[int] = None  # epoch seconds from API timestamp field
 
     @property
     def realized_pnl(self) -> float:

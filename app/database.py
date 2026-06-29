@@ -85,6 +85,13 @@ def init_db() -> None:
             conn.execute("DROP INDEX IF EXISTS sqlite_autoindex_closed_positions_cache_1")
         except Exception:
             pass
+        # Migration: add closed_at (actual close epoch) if not present
+        try:
+            conn.execute(
+                "ALTER TABLE closed_positions_cache ADD COLUMN closed_at INTEGER"
+            )
+        except Exception:
+            pass
 
         # Active positions cache — replaced in full on each successful fetch
         conn.execute("""
@@ -298,19 +305,20 @@ def upsert_closed_positions_cache(
                 """
                 INSERT INTO closed_positions_cache
                     (wallet_address, position_key, market, outcome_held, winning_outcome,
-                     quantity, cost_basis, redeem_value, redeemed, resolved_date,
+                     quantity, cost_basis, redeem_value, redeemed, resolved_date, closed_at,
                      realized_pnl, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT (wallet_address, position_key) DO UPDATE SET
                     winning_outcome = excluded.winning_outcome,
                     quantity        = excluded.quantity,
                     redeem_value    = excluded.redeem_value,
                     realized_pnl    = excluded.realized_pnl,
+                    closed_at       = COALESCE(excluded.closed_at, closed_positions_cache.closed_at),
                     fetched_at      = excluded.fetched_at
                 """,
                 (wallet_address, key, p.market, p.outcome_held, p.winning_outcome,
                  p.quantity, p.cost_basis, p.redeem_value, int(p.redeemed),
-                 p.resolved_date, p.realized_pnl),
+                 p.resolved_date, p.closed_at, p.realized_pnl),
             )
         conn.commit()
 
@@ -324,10 +332,10 @@ def load_closed_positions_cache(
         rows = conn.execute(
             """
             SELECT market, outcome_held, winning_outcome, quantity, cost_basis,
-                   redeem_value, redeemed, resolved_date
+                   redeem_value, redeemed, resolved_date, closed_at
             FROM closed_positions_cache
             WHERE wallet_address = ?
-            ORDER BY resolved_date DESC, fetched_at DESC
+            ORDER BY COALESCE(closed_at, 0) DESC, resolved_date DESC, fetched_at DESC
             LIMIT ?
             """,
             (wallet_address, limit),
@@ -342,6 +350,7 @@ def load_closed_positions_cache(
             redeem_value=r["redeem_value"],
             redeemed=bool(r["redeemed"]),
             resolved_date=r["resolved_date"],
+            closed_at=r["closed_at"],
         )
         for r in rows
     ]

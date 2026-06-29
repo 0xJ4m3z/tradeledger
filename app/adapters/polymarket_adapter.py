@@ -121,6 +121,7 @@ def _to_closed(row: dict) -> ResolvedPosition:
         redeem_value    = total_bought + realized_pnl,
         redeemed        = True,
         resolved_date   = row.get("endDate"),
+        closed_at       = int(row.get("timestamp") or 0) or None,
     )
 
 
