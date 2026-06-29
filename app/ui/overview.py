@@ -24,13 +24,6 @@ from app.database import (
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 from app.services.loss_watch import compute_loss_watch_count
 from app.services.metrics import compute_dashboard_metrics, compute_total_tracked_value
-from app.services.pnl_today import (
-    compute_pnl_range,
-    compute_pnl_today,
-    count_trades_range,
-    count_trades_today,
-    today_date_ct,
-)
 from app.ui.total_value_chart import TotalValueChartWidget
 from app.ui.wallet_panel import WalletPanel
 
@@ -465,7 +458,7 @@ class OverviewWidget(QWidget):
             btn.setStyleSheet(_RANGE_BTN_ACTIVE if key == range_ else _RANGE_BTN_IDLE)
         filtered = _filter_closed_by_range(self._closed_positions, range_)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[range_]))
-        self._update_activity_cards()
+        self._update_metric_cards()
 
     # ── Card panel ─────────────────────────────────────────────────────────────
 
@@ -561,6 +554,7 @@ class OverviewWidget(QWidget):
 
         filtered = _filter_closed_by_range(closed, self._range)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
+        self._update_metric_cards()
 
         # Save snapshot now that both wallet USD and real positions values are settled.
         # On the first fetch of each session, wipe today's snapshots first — any that
@@ -587,32 +581,23 @@ class OverviewWidget(QWidget):
     def _on_activity_fetched(self, activity: list) -> None:
         self._activity = activity
         self.activity_changed.emit(activity)
-        self._update_activity_cards()
 
     def _on_more_activity_fetched(self, page: list) -> None:
         self._activity.extend(page)
         self.more_activity.emit(page)
-        self._update_activity_cards()
 
-    def _update_activity_cards(self) -> None:
-        """Recompute Realized P/L and Trades cards for the current range."""
-        today = today_date_ct()
-        if self._range == "1d":
-            cutoff = today
-        elif self._range == "1w":
-            cutoff = today - timedelta(days=7)
-        elif self._range == "1m":
-            cutoff = today - timedelta(days=30)
-        else:
-            cutoff = None  # All time
+    def _update_metric_cards(self) -> None:
+        """Recompute Realized P/L and Trades cards from closed positions for the current range.
 
-        pnl = compute_pnl_range(self._activity, cutoff)
+        Uses closed positions (not activity) so true losses — where redeem_value is $0
+        because the outcome went against the position — are correctly counted as negative P/L.
+        """
+        filtered = _filter_closed_by_range(self._closed_positions, self._range)
+        pnl = sum(p.realized_pnl for p in filtered)
         color = _GREEN if pnl > 0 else (_RED if pnl < 0 else _MUTED)
         display = f"${pnl:+,.2f}" if pnl != 0 else "$0.00"
         self._pnl_today_card.update_value(display, color)
-
-        trades = count_trades_range(self._activity, cutoff)
-        self._trades_today_card.update_value(str(trades) if trades else "0", _TEXT)
+        self._trades_today_card.update_value(str(len(filtered)) if filtered else "0", _TEXT)
 
     # ── Closed cache updates (backfill pages) ─────────────────────────────────
 
@@ -620,6 +605,7 @@ class OverviewWidget(QWidget):
         self._closed_positions = list(all_closed)
         filtered = _filter_closed_by_range(all_closed, self._range)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
+        self._update_metric_cards()
         self.closed_cache_updated.emit(all_closed)
 
     # ── Public ─────────────────────────────────────────────────────────────────
