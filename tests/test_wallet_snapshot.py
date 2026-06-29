@@ -24,6 +24,7 @@ class TestWalletSnapshotStorage:
 
     def test_save_and_load_single_snapshot(self, isolated_db):
         isolated_db.save_wallet_snapshot(
+            wallet_address="",
             active_positions_value=2256.00,
             wallet_usd_value=1244.00,
             unrealized_pnl=310.50,
@@ -40,6 +41,7 @@ class TestWalletSnapshotStorage:
 
     def test_total_tracked_value_is_sum(self, isolated_db):
         isolated_db.save_wallet_snapshot(
+            wallet_address="",
             active_positions_value=1000.00,
             wallet_usd_value=500.00,
             unrealized_pnl=0.0,
@@ -51,6 +53,7 @@ class TestWalletSnapshotStorage:
     def test_multiple_snapshots_ordered_chronologically(self, isolated_db):
         for wallet_val in [100.0, 200.0, 300.0]:
             isolated_db.save_wallet_snapshot(
+                wallet_address="",
                 active_positions_value=1000.0,
                 wallet_usd_value=wallet_val,
                 unrealized_pnl=0.0,
@@ -63,6 +66,7 @@ class TestWalletSnapshotStorage:
 
     def test_zero_wallet_value_snapshot(self, isolated_db):
         isolated_db.save_wallet_snapshot(
+            wallet_address="",
             active_positions_value=500.0,
             wallet_usd_value=0.0,
             unrealized_pnl=50.0,
@@ -73,7 +77,26 @@ class TestWalletSnapshotStorage:
         assert s["total_tracked_value"] == 500.0
 
     def test_captured_at_is_present(self, isolated_db):
-        isolated_db.save_wallet_snapshot(1000.0, 500.0, 0.0, 0.0)
+        isolated_db.save_wallet_snapshot("", 1000.0, 500.0, 0.0, 0.0)
         s = isolated_db.load_wallet_snapshots()[0]
         assert s["captured_at"] is not None
         assert len(s["captured_at"]) > 0
+
+    def test_address_filtered_load(self, isolated_db):
+        addr = "0xabc123"
+        isolated_db.save_wallet_snapshot("", 100.0, 50.0, 0.0, 0.0)           # unaddressed
+        isolated_db.save_wallet_snapshot(addr, 200.0, 100.0, 0.0, 0.0)        # tagged
+        # Address-filtered load returns only the tagged one
+        tagged = isolated_db.load_wallet_snapshots(addr)
+        assert len(tagged) == 1
+        assert tagged[0]["active_positions_value"] == 200.0
+        # Unfiltered load returns both
+        all_snaps = isolated_db.load_wallet_snapshots()
+        assert len(all_snaps) == 2
+
+    def test_different_addresses_isolated(self, isolated_db):
+        isolated_db.save_wallet_snapshot("0xAAA", 1000.0, 500.0, 0.0, 0.0)
+        isolated_db.save_wallet_snapshot("0xBBB", 2000.0, 1000.0, 0.0, 0.0)
+        assert len(isolated_db.load_wallet_snapshots("0xAAA")) == 1
+        assert len(isolated_db.load_wallet_snapshots("0xBBB")) == 1
+        assert isolated_db.load_wallet_snapshots("0xAAA")[0]["active_positions_value"] == 1000.0

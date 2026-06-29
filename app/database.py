@@ -39,11 +39,46 @@ def init_db() -> None:
                 wallet_usd_value      REAL NOT NULL DEFAULT 0.0,
                 total_tracked_value   REAL NOT NULL DEFAULT 0.0,
                 unrealized_pnl        REAL NOT NULL DEFAULT 0.0,
-                realized_pnl          REAL NOT NULL DEFAULT 0.0
+                realized_pnl          REAL NOT NULL DEFAULT 0.0,
+                wallet_address        TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        # Migration: add wallet_address to existing databases that pre-date this column
+        try:
+            conn.execute(
+                "ALTER TABLE wallet_snapshots ADD COLUMN wallet_address TEXT NOT NULL DEFAULT ''"
+            )
+        except Exception:
+            pass  # column already exists
+        # Key-value store for app settings (last wallet, loss watch state, etc.)
+        # Never commit this DB — it is gitignored via *.db
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        # Cache for closed positions — accumulates via backfill; deduped by position_key
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS closed_positions_cache (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                position_key   TEXT UNIQUE NOT NULL,
+                market         TEXT NOT NULL,
+                outcome_held   TEXT NOT NULL,
+                winning_outcome TEXT NOT NULL,
+                quantity       REAL NOT NULL,
+                cost_basis     REAL NOT NULL,
+                redeem_value   REAL NOT NULL,
+                redeemed       INTEGER NOT NULL,
+                resolved_date  TEXT,
+                realized_pnl   REAL NOT NULL,
+                fetched_at     TEXT NOT NULL
             )
         """)
         conn.commit()
 
+
+# ── Legacy snapshot helpers (v0.1) ────────────────────────────────────────────
 
 def save_snapshot(
     source: str,
@@ -52,24 +87,17 @@ def save_snapshot(
 ) -> None:
     active_data = [
         {
-            "market": p.market,
-            "outcome": p.outcome,
-            "quantity": p.quantity,
-            "avg_cost": p.avg_cost,
-            "current_price": p.current_price,
+            "market": p.market, "outcome": p.outcome, "quantity": p.quantity,
+            "avg_cost": p.avg_cost, "current_price": p.current_price,
         }
         for p in active
     ]
     resolved_data = [
         {
-            "market": p.market,
-            "outcome_held": p.outcome_held,
-            "winning_outcome": p.winning_outcome,
-            "quantity": p.quantity,
-            "cost_basis": p.cost_basis,
-            "redeem_value": p.redeem_value,
-            "redeemed": p.redeemed,
-            "resolved_date": p.resolved_date,
+            "market": p.market, "outcome_held": p.outcome_held,
+            "winning_outcome": p.winning_outcome, "quantity": p.quantity,
+            "cost_basis": p.cost_basis, "redeem_value": p.redeem_value,
+            "redeemed": p.redeemed, "resolved_date": p.resolved_date,
         }
         for p in resolved
     ]
@@ -82,18 +110,18 @@ def save_snapshot(
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
-                datetime.utcnow().isoformat(),
-                source,
-                len(active),
-                len(resolved),
-                json.dumps(active_data),
-                json.dumps(resolved_data),
+                datetime.utcnow().isoformat(), source,
+                len(active), len(resolved),
+                json.dumps(active_data), json.dumps(resolved_data),
             ),
         )
         conn.commit()
 
 
+# ── Wallet value snapshots ────────────────────────────────────────────────────
+
 def save_wallet_snapshot(
+    wallet_address: str,
     active_positions_value: float,
     wallet_usd_value: float,
     unrealized_pnl: float,
@@ -105,22 +133,176 @@ def save_wallet_snapshot(
             """
             INSERT INTO wallet_snapshots
                 (captured_at, active_positions_value, wallet_usd_value,
-                 total_tracked_value, unrealized_pnl, realized_pnl)
-            VALUES (datetime('now'), ?, ?, ?, ?, ?)
+                 total_tracked_value, unrealized_pnl, realized_pnl, wallet_address)
+            VALUES (datetime('now'), ?, ?, ?, ?, ?, ?)
             """,
-            (active_positions_value, wallet_usd_value, total, unrealized_pnl, realized_pnl),
+            (active_positions_value, wallet_usd_value, total,
+             unrealized_pnl, realized_pnl, wallet_address),
         )
         conn.commit()
 
 
-def load_wallet_snapshots() -> List[dict]:
+def load_wallet_snapshots(wallet_address: str = "") -> List[dict]:
+    """Load wallet snapshots for the given address, oldest first.
+
+    Pass wallet_address="" to load all snapshots regardless of address (avoid
+    in the UI — this returns old dummy/sample data too).
+    """
+    with get_connection() as conn:
+        if wallet_address:
+            rows = conn.execute(
+                """
+                SELECT captured_at, active_positions_value, wallet_usd_value,
+                       total_tracked_value, unrealized_pnl, realized_pnl
+                FROM wallet_snapshots
+                WHERE wallet_address = ?
+                ORDER BY captured_at ASC
+                """,
+                (wallet_address,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT captured_at, active_positions_value, wallet_usd_value,
+                       total_tracked_value, unrealized_pnl, realized_pnl
+                FROM wallet_snapshots
+                ORDER BY captured_at ASC
+                """
+            ).fetchall()
+    return [dict(row) for row in rows]
+
+
+# ── Settings (key-value) ──────────────────────────────────────────────────────
+
+def _save_setting(key: str, value: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        conn.commit()
+
+
+def _load_setting(key: str, default: str = "") -> str:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+    return row["value"] if row else default
+
+
+# ── Last wallet address ───────────────────────────────────────────────────────
+
+def save_last_wallet(wallet: str) -> None:
+    """Persist the last-used wallet address to local DB (gitignored)."""
+    _save_setting("last_wallet", wallet)
+
+
+def load_last_wallet() -> str:
+    """Return the last-used wallet address, or '' if none stored."""
+    return _load_setting("last_wallet")
+
+
+# ── Loss Watch acknowledged state ─────────────────────────────────────────────
+
+def save_loss_watch_acknowledged(markets: List[str]) -> None:
+    """Store the set of market titles the user has acknowledged as known losses."""
+    _save_setting("loss_watch_acknowledged", json.dumps(markets))
+
+
+def load_loss_watch_acknowledged() -> List[str]:
+    """Return list of acknowledged loss market titles."""
+    raw = _load_setting("loss_watch_acknowledged", "[]")
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+
+# ── Closed positions cache ────────────────────────────────────────────────────
+
+def _position_key(p: ResolvedPosition) -> str:
+    """Deterministic dedup key for a closed position."""
+    return f"{p.market}|{p.outcome_held}|{p.cost_basis:.6f}"
+
+
+def upsert_closed_positions_cache(positions: List[ResolvedPosition]) -> None:
+    """Insert or update cached closed positions. Safe to call repeatedly."""
+    with get_connection() as conn:
+        for p in positions:
+            key = _position_key(p)
+            conn.execute(
+                """
+                INSERT INTO closed_positions_cache
+                    (position_key, market, outcome_held, winning_outcome, quantity,
+                     cost_basis, redeem_value, redeemed, resolved_date, realized_pnl,
+                     fetched_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT (position_key) DO UPDATE SET
+                    winning_outcome = excluded.winning_outcome,
+                    quantity        = excluded.quantity,
+                    redeem_value    = excluded.redeem_value,
+                    realized_pnl    = excluded.realized_pnl,
+                    fetched_at      = excluded.fetched_at
+                """,
+                (key, p.market, p.outcome_held, p.winning_outcome, p.quantity,
+                 p.cost_basis, p.redeem_value, int(p.redeemed),
+                 p.resolved_date, p.realized_pnl),
+            )
+        conn.commit()
+
+
+def load_closed_positions_cache(limit: int = 500) -> List[ResolvedPosition]:
+    """Load cached closed positions, most-recently-resolved first, capped at limit."""
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT captured_at, active_positions_value, wallet_usd_value,
-                   total_tracked_value, unrealized_pnl, realized_pnl
-            FROM wallet_snapshots
-            ORDER BY captured_at ASC
-            """
+            SELECT market, outcome_held, winning_outcome, quantity, cost_basis,
+                   redeem_value, redeemed, resolved_date
+            FROM closed_positions_cache
+            ORDER BY resolved_date DESC, fetched_at DESC
+            LIMIT ?
+            """,
+            (limit,),
         ).fetchall()
-    return [dict(row) for row in rows]
+    return [
+        ResolvedPosition(
+            market=r["market"],
+            outcome_held=r["outcome_held"],
+            winning_outcome=r["winning_outcome"],
+            quantity=r["quantity"],
+            cost_basis=r["cost_basis"],
+            redeem_value=r["redeem_value"],
+            redeemed=bool(r["redeemed"]),
+            resolved_date=r["resolved_date"],
+        )
+        for r in rows
+    ]
+
+
+def clear_wallet_snapshots() -> None:
+    """Delete all wallet snapshots."""
+    with get_connection() as conn:
+        conn.execute("DELETE FROM wallet_snapshots")
+        conn.commit()
+
+
+def clear_wallet_snapshots_today(wallet_address: str) -> None:
+    """Delete today's snapshots for this wallet (local date).
+
+    Called at the start of each session's first positions fetch so any snapshots
+    saved before real position data arrived (using stale sample values) are wiped,
+    giving the chart a clean baseline for the current day.
+    """
+    with get_connection() as conn:
+        conn.execute(
+            "DELETE FROM wallet_snapshots WHERE wallet_address = ? AND date(captured_at, 'localtime') = date('now', 'localtime')",
+            (wallet_address,),
+        )
+        conn.commit()
+
+
+def count_closed_positions_cache() -> int:
+    with get_connection() as conn:
+        row = conn.execute("SELECT COUNT(*) AS n FROM closed_positions_cache").fetchone()
+    return row["n"] if row else 0

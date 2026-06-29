@@ -1,10 +1,11 @@
 from PySide6.QtWidgets import QMainWindow, QStatusBar, QTabWidget, QVBoxLayout, QWidget
 
 from app.adapters.sample_adapter import load_all
-from app.database import load_wallet_snapshots, save_snapshot
+from app.database import load_last_wallet, load_wallet_snapshots, save_snapshot
 from app.services.metrics import compute_dashboard_metrics
 from app.ui.active_positions_table import ActivePositionsTable
 from app.ui.activity_table import ActivityTable
+from app.ui.loss_watch_tab import LossWatchTab
 from app.ui.overview import OverviewWidget
 from app.ui.resolved_positions_table import ResolvedPositionsTable
 from app.ui.total_value_chart import TotalValueChartWidget
@@ -112,31 +113,50 @@ class MainWindow(QMainWindow):
         save_snapshot("sample", active, resolved)
         metrics = compute_dashboard_metrics(active, resolved)
 
-        overview           = OverviewWidget(active, resolved, metrics)
-        self._active_tab   = ActivePositionsTable(active)
-        self._resolved_tab = ResolvedPositionsTable(resolved, label="Redeemable Positions")
-        self._closed_tab   = ResolvedPositionsTable(
-            [], label="Closed Positions — most recent 100", show_refresh=True
+        overview               = OverviewWidget(active, resolved, metrics)
+        self._loss_watch_tab   = LossWatchTab()
+        self._active_tab       = ActivePositionsTable(active)
+        self._resolved_tab     = ResolvedPositionsTable(resolved, label="Resolved Positions")
+        self._closed_tab       = ResolvedPositionsTable(
+            [], label="Closed Positions", show_refresh=True
         )
-        self._activity_tab = ActivityTable([])
+        self._activity_tab     = ActivityTable([])
 
+        # ── Signal wiring ───────────────────────────────────────────────────────
         overview.positions_changed.connect(self._on_positions_changed)
         overview.activity_changed.connect(self._activity_tab.update_activity)
         self._closed_tab.refresh_requested.connect(overview.request_refresh)
         self._activity_tab.refresh_requested.connect(overview.request_refresh)
 
-        # Full-size Total Tracked Value tab (same data as overview mini chart, bigger canvas)
-        self._tv_tab_chart = TotalValueChartWidget(load_wallet_snapshots(), figsize=(10, 5))
+        # Loss Watch tab ↔ Overview card stay in sync via DB
+        self._loss_watch_tab.acknowledged_changed.connect(overview.reload_acknowledged)
+
+        # Closed positions: backfill pages arrive incrementally → push to Closed tab
+        overview.closed_cache_updated.connect(self._on_closed_cache_updated)
+
+        # Activity: scroll-to-bottom → fetch next page → append rows
+        self._activity_tab.load_more_requested.connect(overview.on_load_more_activity)
+        overview.more_activity.connect(self._activity_tab.append_activity)
+
+        # Closed positions: scroll-to-bottom → fetch next page → append rows
+        self._closed_tab.load_more_requested.connect(overview.on_load_more_closed)
+        overview.more_closed.connect(self._closed_tab.append_positions)
+
+        # ── Total Tracked Value full-size chart tab ─────────────────────────────
+        initial_wallet = load_last_wallet()
+        self._tv_tab_chart = TotalValueChartWidget(load_wallet_snapshots(initial_wallet), figsize=(10, 5))
         overview.snapshots_changed.connect(self._tv_tab_chart.update_snapshots)
         tv_tab = QWidget()
         tv_layout = QVBoxLayout(tv_tab)
         tv_layout.setContentsMargins(20, 20, 20, 20)
         tv_layout.addWidget(self._tv_tab_chart)
 
+        # ── Tabs ────────────────────────────────────────────────────────────────
         tabs = QTabWidget()
         tabs.addTab(overview,                  "Overview")
+        tabs.addTab(self._loss_watch_tab,      "Loss Watch")
         tabs.addTab(self._active_tab,          "Active Positions")
-        tabs.addTab(self._resolved_tab,        "Redeemable Positions")
+        tabs.addTab(self._resolved_tab,        "Resolved Positions")
         tabs.addTab(self._closed_tab,          "Closed Positions")
         tabs.addTab(self._activity_tab,        "Activity")
         tabs.addTab(tv_tab,                    "Total Tracked Value")
@@ -144,15 +164,26 @@ class MainWindow(QMainWindow):
 
         self._status_bar = QStatusBar()
         self._status_bar.showMessage(
-            f"Sample data mode  •  {len(active)} active positions  •  {len(resolved)} resolved positions"
+            f"Sample data mode  •  {len(active)} active  •  {len(resolved)} resolved"
         )
         self.setStatusBar(self._status_bar)
 
-    def _on_positions_changed(self, active: list, redeemable: list, closed: list) -> None:
+    def _on_positions_changed(self, active: list, resolved: list, closed: list) -> None:
         self._active_tab.update_positions(active)
-        self._resolved_tab.update_positions(redeemable)
-        self._closed_tab.update_positions(closed)
+        self._resolved_tab.update_positions(resolved)
+        if not self._closed_tab._all_positions:
+            self._closed_tab.update_positions(closed)   # first load
+        else:
+            self._closed_tab.merge_positions(closed)    # refresh — prepend new only
+        self._loss_watch_tab.update_positions(active)
         self._status_bar.showMessage(
             f"Live Polymarket data  •  {len(active)} active"
-            f"  •  {len(redeemable)} redeemable  •  {len(closed)} closed"
+            f"  •  {len(resolved)} resolved  •  {len(self._closed_tab._all_positions)} closed"
+        )
+
+    def _on_closed_cache_updated(self, all_closed: list) -> None:
+        # Do NOT call update_positions here — that would reset the table and lose
+        # scroll progress. The closed tab loads more via scroll-triggered API pages.
+        self._status_bar.showMessage(
+            f"Live Polymarket data  •  {len(all_closed)} closed positions cached"
         )

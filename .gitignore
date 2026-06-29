@@ -235,3 +235,4 @@ venv/
 dist/
 build/
 *.log
+*_debug.json
