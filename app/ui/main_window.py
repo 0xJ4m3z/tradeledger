@@ -189,7 +189,7 @@ class MainWindow(QMainWindow):
         # Pre-populate Overview with cached closed positions so metric cards and
         # P/L chart render immediately before the live fetch completes.
         if cached_closed:
-            overview.seed_from_cache(cached_closed)
+            overview.seed_from_cache(cached_closed, cached_activity)
 
         self._status_bar = QStatusBar()
         if _from_cache:

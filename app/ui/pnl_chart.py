@@ -1,13 +1,16 @@
 """Cumulative realized P/L line chart for the Overview panel.
 
-Shows cumulative realized P/L from closed positions over the selected range.
-Starts at $0 at the range boundary and moves with each closed position.
+For 1D: event-based intraday series using REDEEM activity timestamps.
+         Steps-post line so the value stays flat between events.
+For 1W+: daily rollup from closed positions, normal line.
 
-Interactive: hover over the chart to see the exact date and value at any point.
-Uses matplotlib motion_notify_event — no extra dependencies.
+Interactive hover: vertical crosshair, dot on the line, tooltip showing
+time (1D) or date (1W+) and the cumulative P/L at that point.
 """
+from __future__ import annotations
 
 from typing import List
+from zoneinfo import ZoneInfo
 
 import matplotlib
 matplotlib.use("QtAgg")
@@ -17,41 +20,53 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
-from app.models import ResolvedPosition
-from app.services.pnl_series import build_pnl_series
+from app.models import ResolvedPosition, UserActivity
+from app.services.pnl_points import build_cumulative_pnl_points
 
 _BG    = "#0d1117"
 _CARD  = "#161b22"
 _MUTED = "#8b949e"
 _GREEN = "#3fb950"
 _RED   = "#f85149"
-_BLUE  = "#58a6ff"
 _TEXT  = "#c9d1d9"
+_ET    = ZoneInfo("America/New_York")
 
 
-def _range_date_format(range_: str, n_days: int) -> str:
-    """Pick an appropriate strftime format for the x-axis based on range."""
+def _tooltip_ts(ts, range_: str) -> str:
+    """Format a timezone-aware datetime for the hover tooltip."""
+    local = ts.astimezone(_ET)
     if range_ == "1d":
-        return "%b %d"
+        return local.strftime("%H:%M ET")
     if range_ in ("1w", "1m"):
-        return "%b %d"
-    if range_ in ("1y", "ytd", "all") and n_days > 90:
-        return "%b '%y"
-    return "%b %d"
+        return local.strftime("%b %d")
+    return local.strftime("%b %d, %Y")
+
+
+def _xaxis_label(x_num, range_: str) -> str:
+    """Format a matplotlib date number for the x-axis tick label (ET)."""
+    dt_et = mdates.num2date(x_num).astimezone(_ET)
+    if range_ == "1d":
+        return dt_et.strftime("%H:%M")
+    if range_ in ("1w", "1m"):
+        return dt_et.strftime("%b %d")
+    return dt_et.strftime("%b '%y")
 
 
 class PnlChartWidget(QWidget):
-    """Cumulative realized P/L line chart with hover crosshair and tooltip."""
+    """Cumulative realized P/L line chart with step-hold and hover crosshair."""
 
     def __init__(
         self,
-        closed: List[ResolvedPosition],
+        activity: List[UserActivity] = None,
+        closed: List[ResolvedPosition] = None,
         range_: str = "1d",
         figsize: tuple = (6, 3),
     ):
         super().__init__()
-        self._closed = list(closed)
-        self._range  = range_
+        self._activity = list(activity or [])
+        self._closed   = list(closed or [])
+        self._range    = range_
+        self.is_partial = False  # set by _draw(); checked by overview for card ~
 
         self._fig, self._ax = plt.subplots(figsize=figsize)
         self._fig.patch.set_facecolor(_BG)
@@ -62,13 +77,14 @@ class PnlChartWidget(QWidget):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
 
-        # Hover state
-        self._x_nums: list  = []   # matplotlib date numbers for each data point
-        self._y_data: list  = []   # y values matching _x_nums
-        self._x_data: list  = []   # original date objects for tooltip text
-        self._vline  = None
-        self._dot    = None
-        self._annot  = None
+        # Hover state — all Python lists so bool checks are safe
+        self._x_nums: list = []   # float date numbers
+        self._y_data: list = []   # float P/L values
+        self._x_data: list = []   # aware datetime objects for tooltip
+
+        self._vline = None
+        self._dot   = None
+        self._annot = None
 
         self._canvas.mpl_connect("motion_notify_event", self._on_motion)
         self._canvas.mpl_connect("axes_leave_event",    self._on_leave)
@@ -79,70 +95,88 @@ class PnlChartWidget(QWidget):
 
         self._draw()
 
-    def update(self, closed: List[ResolvedPosition], range_: str) -> None:
-        self._closed = list(closed)
-        self._range  = range_
+    # ── Public ────────────────────────────────────────────────────────────────
+
+    def update(
+        self,
+        activity: List[UserActivity],
+        closed: List[ResolvedPosition],
+        range_: str,
+    ) -> None:
+        self._activity = list(activity)
+        self._closed   = list(closed)
+        self._range    = range_
         self._draw()
 
-    # ── Drawing ────────────────────────────────────────────────────────────────
+    # ── Drawing ───────────────────────────────────────────────────────────────
 
     def _draw(self) -> None:
         ax = self._ax
         ax.clear()
         ax.set_facecolor(_BG)
 
-        # Clear hover references (axis was cleared)
+        # Reset hover state; the axis was cleared
         self._vline = self._dot = self._annot = None
         self._x_nums = self._y_data = self._x_data = []
 
-        x_dates, y_vals = build_pnl_series(self._closed, self._range)
+        points, self.is_partial = build_cumulative_pnl_points(
+            self._activity, self._closed, self._range
+        )
 
-        if not x_dates:
+        if not points:
             self._draw_empty()
             return
 
-        x_nums = list(mdates.date2num(x_dates))
+        timestamps = [p["timestamp"] for p in points]
+        y_vals     = [p["value"]     for p in points]
+
+        # Keep as Python lists so `not self._x_nums` works correctly
+        x_nums = list(mdates.date2num(timestamps))
         self._x_nums = x_nums
         self._y_data = list(y_vals)
-        self._x_data = list(x_dates)
+        self._x_data = list(timestamps)
 
         final = y_vals[-1] if len(y_vals) > 1 else 0.0
-        line_color = _GREEN if final >= 0 else _RED
+        color = _GREEN if final >= 0 else _RED
 
-        ax.plot(x_nums, y_vals, color=line_color, linewidth=1.8, zorder=3)
+        is_1d = (self._range == "1d")
+        draw_style = "steps-post" if is_1d else "default"
+        fill_step  = "post"       if is_1d else None
+
+        ax.plot(x_nums, y_vals, color=color, linewidth=1.8,
+                drawstyle=draw_style, zorder=3)
         ax.axhline(0, color=_MUTED, linewidth=0.5, alpha=0.5, zorder=1)
 
-        # Shade area above/below zero
-        y_arr = y_vals
         ax.fill_between(
-            x_nums, 0, y_arr,
-            where=[v >= 0 for v in y_arr],
-            color=_GREEN, alpha=0.12, zorder=2,
+            x_nums, 0, y_vals,
+            where=[v >= 0 for v in y_vals],
+            color=_GREEN, alpha=0.12, step=fill_step, zorder=2,
         )
         ax.fill_between(
-            x_nums, 0, y_arr,
-            where=[v < 0 for v in y_arr],
-            color=_RED, alpha=0.12, zorder=2,
+            x_nums, 0, y_vals,
+            where=[v < 0 for v in y_vals],
+            color=_RED, alpha=0.12, step=fill_step, zorder=2,
         )
 
-        # X-axis formatting
-        n_days = (x_dates[-1] - x_dates[0]).days if len(x_dates) > 1 else 1
-        fmt = _range_date_format(self._range, n_days)
-        ax.xaxis.set_major_formatter(mdates.DateFormatter(fmt))
+        # X-axis: convert float date numbers back to ET datetimes for labels
+        _rng = self._range  # capture for closure
+        ax.xaxis.set_major_formatter(
+            plt.FuncFormatter(lambda x, _: _xaxis_label(x, _rng))
+        )
         ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=3, maxticks=7))
+        ax.tick_params(axis="x", labelsize=8, colors=_MUTED)
 
-        # Y-axis formatting
+        # Y-axis
         ax.yaxis.set_major_formatter(
             plt.FuncFormatter(lambda v, _: f"${v:+,.0f}" if v != 0 else "$0")
         )
+        ax.tick_params(axis="y", labelsize=8, colors=_MUTED)
 
-        # Style
-        ax.tick_params(axis="both", colors=_MUTED, labelsize=8)
         for spine in ax.spines.values():
             spine.set_visible(False)
         ax.grid(axis="y", color=_MUTED, alpha=0.1, linewidth=0.5, zorder=0)
 
-        # Persistent hover overlay objects (created once, updated on motion)
+        # Persistent hover overlay objects (created once per draw, updated on motion)
         self._vline, = ax.plot(
             [], [], color=_MUTED, linewidth=0.8, linestyle="--", zorder=5, visible=False
         )
@@ -151,7 +185,8 @@ class PnlChartWidget(QWidget):
         )
         self._annot = ax.annotate(
             "", xy=(0, 0), xytext=(8, 8), textcoords="offset points",
-            bbox=dict(boxstyle="round,pad=0.4", fc=_CARD, ec=_MUTED, alpha=0.9, linewidth=0.8),
+            bbox=dict(boxstyle="round,pad=0.4", fc=_CARD, ec=_MUTED,
+                      alpha=0.9, linewidth=0.8),
             fontsize=8, color=_TEXT, zorder=7, visible=False,
         )
 
@@ -172,7 +207,7 @@ class PnlChartWidget(QWidget):
             spine.set_visible(False)
         self._canvas.draw_idle()
 
-    # ── Hover ──────────────────────────────────────────────────────────────────
+    # ── Hover ─────────────────────────────────────────────────────────────────
 
     def _on_motion(self, event) -> None:
         if (
@@ -182,26 +217,24 @@ class PnlChartWidget(QWidget):
         ):
             return
 
-        # Snap to nearest data point by x
         idx = min(
             range(len(self._x_nums)),
             key=lambda i: abs(self._x_nums[i] - event.xdata),
         )
         xn = self._x_nums[idx]
         yv = self._y_data[idx]
-        xd = self._x_data[idx]
+        ts = self._x_data[idx]
 
-        self._vline.set_data([xn, xn], [self._ax.get_ylim()[0], self._ax.get_ylim()[1]])
+        label = f"{_tooltip_ts(ts, self._range)}\n${yv:+,.2f}"
+
+        ylim = self._ax.get_ylim()
+        self._vline.set_data([xn, xn], [ylim[0], ylim[1]])
         self._vline.set_visible(True)
-
         self._dot.set_data([xn], [yv])
         self._dot.set_visible(True)
-
-        label = f"{xd}\n{'$' + f'{yv:+,.2f}'}"
         self._annot.set_text(label)
         self._annot.xy = (xn, yv)
         self._annot.set_visible(True)
-
         self._canvas.draw_idle()
 
     def _on_leave(self, event) -> None:

@@ -378,7 +378,7 @@ class OverviewWidget(QWidget):
         cards_panel = self._build_cards_panel(metrics, active, resolved)
         top_row.addWidget(cards_panel, 42)
 
-        self._chart = PnlChartWidget([], range_=self._range)
+        self._chart = PnlChartWidget([], [], self._range)
         top_row.addWidget(self._chart, 58)
 
         main.addWidget(top)
@@ -437,8 +437,8 @@ class OverviewWidget(QWidget):
             btn.setStyleSheet(_RANGE_BTN_ACTIVE if key == range_ else _RANGE_BTN_IDLE)
         filtered = filter_closed_by_range(self._closed_positions, range_)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[range_]))
+        self._chart.update(self._activity, self._closed_positions, range_)
         self._update_metric_cards()
-        self._chart.update(self._closed_positions, range_)
 
     # ── Card panel ─────────────────────────────────────────────────────────────
 
@@ -498,8 +498,8 @@ class OverviewWidget(QWidget):
 
     def _on_wallet_address_changed(self, address: str) -> None:
         self._confirmed_wallet = address
-        # Clear P/L chart — new wallet's positions not yet loaded
-        self._chart.update([], self._range)
+        self._activity = []
+        self._chart.update([], [], self._range)
         snaps = load_wallet_snapshots(address)
         self.snapshots_changed.emit(snaps)
 
@@ -542,8 +542,8 @@ class OverviewWidget(QWidget):
 
         filtered = filter_closed_by_range(self._closed_positions, self._range)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
+        self._chart.update(self._activity, self._closed_positions, self._range)
         self._update_metric_cards()
-        self._chart.update(self._closed_positions, self._range)
 
         # Save snapshot now that both wallet USD and real positions values are settled.
         # On the first fetch of each session, wipe today's snapshots first — any that
@@ -569,14 +569,19 @@ class OverviewWidget(QWidget):
     def _on_activity_fetched(self, activity: list) -> None:
         self._activity = activity
         self.activity_changed.emit(activity)
+        # Redraw 1D chart — REDEEM timestamps just arrived
+        self._chart.update(self._activity, self._closed_positions, self._range)
+        self._update_metric_cards()
 
     def _on_more_activity_fetched(self, page: list) -> None:
         self._activity.extend(page)
         self.more_activity.emit(page)
+        self._chart.update(self._activity, self._closed_positions, self._range)
+        self._update_metric_cards()
 
     def _update_metric_cards(self) -> None:
         filtered = filter_closed_by_range(self._closed_positions, self._range)
-        partial  = is_data_partial(self._closed_positions, self._range)
+        partial  = is_data_partial(self._closed_positions, self._range) or self._chart.is_partial
         prefix   = "~" if partial else ""
 
         pnl   = sum(p.realized_pnl for p in filtered)
@@ -593,24 +598,26 @@ class OverviewWidget(QWidget):
         self._closed_positions = list(all_closed)
         filtered = filter_closed_by_range(all_closed, self._range)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
+        self._chart.update(self._activity, all_closed, self._range)
         self._update_metric_cards()
-        self._chart.update(all_closed, self._range)
         self.closed_cache_updated.emit(all_closed)
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
-    def seed_from_cache(self, closed: list) -> None:
-        """Pre-populate with cached closed positions before the first live fetch.
+    def seed_from_cache(self, closed: list, activity: list = None) -> None:
+        """Pre-populate with cached data before the first live fetch.
 
-        Called by MainWindow on startup if cached data exists for the remembered
-        wallet. Sets _closed_positions, updates metric cards, and redraws the chart
-        so the user sees real data immediately instead of empty cards.
+        Called by MainWindow on startup when cached data exists for the wallet.
+        Seeds closed positions and (optionally) activity so the 1D chart can
+        show intraday points immediately from cached REDEEM events.
         """
         self._closed_positions = list(closed)
+        if activity is not None:
+            self._activity = list(activity)
         filtered = filter_closed_by_range(closed, self._range)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
+        self._chart.update(self._activity, closed, self._range)
         self._update_metric_cards()
-        self._chart.update(closed, self._range)
 
     def request_refresh(self) -> None:
         self._wallet_panel.request_refresh()
