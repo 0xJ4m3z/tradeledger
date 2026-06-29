@@ -483,8 +483,8 @@ class OverviewWidget(QWidget):
         self._loss_watch_card.update_count(initial_lw)
         self._loss_watch_card.acknowledge_btn.clicked.connect(self._on_acknowledge)
 
-        self._pnl_today_card    = _MetricCard("Realized P/L Today", "—", _MUTED)
-        self._trades_today_card = _MetricCard("Trades Today",        "—", _TEXT)
+        self._pnl_today_card    = _MetricCard("Realized P/L", "—", _MUTED)
+        self._trades_today_card = _MetricCard("Trades",       "—", _TEXT)
 
         row1 = QHBoxLayout()
         row1.setSpacing(10)
@@ -526,7 +526,7 @@ class OverviewWidget(QWidget):
     def _on_wallet_value_changed(self, wallet_usd_value: float) -> None:
         self._wallet_usd_value = wallet_usd_value
         total = compute_total_tracked_value(self._active_value, wallet_usd_value)
-        self._total_card.update_value(f"${total:,.2f}", _BLUE)
+        self._total_card.update_value(f"${total:,.2f}", _TEXT)
         self._wallet_card.update_value(f"${wallet_usd_value:,.2f}", _TEXT)
         # Snapshot is saved in _on_positions_fetched once both wallet USD and
         # real positions values are known — saving here would use stale sample data
@@ -542,8 +542,8 @@ class OverviewWidget(QWidget):
         self._realized_pnl   = metrics["realized_pnl"]
 
         total = compute_total_tracked_value(self._active_value, self._wallet_usd_value)
-        self._total_card.update_value(f"${total:,.2f}", _BLUE)
-        self._active_card.update_value(f"${self._active_value:,.2f}", _BLUE)
+        self._total_card.update_value(f"${total:,.2f}", _TEXT)
+        self._active_card.update_value(f"${self._active_value:,.2f}", _TEXT)
 
         lw_count = compute_loss_watch_count(active, self._acknowledged_markets)
         self._loss_watch_card.update_count(lw_count)

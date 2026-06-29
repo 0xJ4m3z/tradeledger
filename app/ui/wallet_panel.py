@@ -231,7 +231,7 @@ class WalletPanel(QWidget):
         vbox.setSpacing(8)
 
         # Header
-        title = QLabel("WALLET  (READ-ONLY · POLYGON)")
+        title = QLabel("WALLET")
         title.setStyleSheet(
             f"color: {_MUTED}; font-size: 11px; font-weight: 600; letter-spacing: 0.8px;"
             f" border: none; background: transparent;"
@@ -351,7 +351,7 @@ class WalletPanel(QWidget):
         self._positions_ok = True
         self._set_status(
             f"Wallet: ${self._pending_value:,.2f}  ·  {len(active)} active"
-            f"  ·  {len(resolved)} resolved  ·  {len(closed)} closed",
+            f"  ·  {len(resolved)} resolved",
             _GREEN,
         )
         # Upsert the main-fetch closed positions so they're in the cache alongside backfill data
