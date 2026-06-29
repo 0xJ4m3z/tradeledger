@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import QMainWindow, QStatusBar, QTabWidget, QVBoxLayout, QWidget
 
 from app.adapters.sample_adapter import load_all
-from app.database import load_wallet_snapshots, save_snapshot
+from app.database import load_last_wallet, load_wallet_snapshots, save_snapshot
 from app.services.metrics import compute_dashboard_metrics
 from app.ui.active_positions_table import ActivePositionsTable
 from app.ui.activity_table import ActivityTable
@@ -132,7 +132,8 @@ class MainWindow(QMainWindow):
         self._loss_watch_tab.acknowledged_changed.connect(overview.reload_acknowledged)
 
         # ── Total Tracked Value full-size chart tab ─────────────────────────────
-        self._tv_tab_chart = TotalValueChartWidget(load_wallet_snapshots(), figsize=(10, 5))
+        initial_wallet = load_last_wallet()
+        self._tv_tab_chart = TotalValueChartWidget(load_wallet_snapshots(initial_wallet), figsize=(10, 5))
         overview.snapshots_changed.connect(self._tv_tab_chart.update_snapshots)
         tv_tab = QWidget()
         tv_layout = QVBoxLayout(tv_tab)

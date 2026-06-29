@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.database import (
-    clear_wallet_snapshots,
+    load_last_wallet,
     load_loss_watch_acknowledged,
     load_wallet_snapshots,
     save_loss_watch_acknowledged,
@@ -263,6 +263,8 @@ class OverviewWidget(QWidget):
         self._wallet_usd_value     = 0.0
         self._active_positions     = list(active)
         self._acknowledged_markets = load_loss_watch_acknowledged()
+        # Wallet address for tagging snapshots — updated on confirmed fetch
+        self._confirmed_wallet     = load_last_wallet()
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -294,7 +296,8 @@ class OverviewWidget(QWidget):
         cards_panel = self._build_cards_panel(metrics, active, resolved)
         top_row.addWidget(cards_panel, 42)
 
-        snapshots = load_wallet_snapshots()
+        # Load only this wallet's history (empty for new wallets; never shows dummy data)
+        snapshots = load_wallet_snapshots(self._confirmed_wallet)
         self._chart = TotalValueChartWidget(snapshots)
         top_row.addWidget(self._chart, 58)
 
@@ -376,15 +379,17 @@ class OverviewWidget(QWidget):
 
     # ── Wallet address change (clears stale snapshot history) ─────────────────
 
-    def _on_wallet_address_changed(self, _address: str) -> None:
-        """Called when the wallet address changes (including on first successful fetch).
+    def _on_wallet_address_changed(self, address: str) -> None:
+        """Called when the confirmed wallet address changes (new wallet or first fetch).
 
-        Wipes wallet snapshots so the chart starts fresh for the new wallet instead of
-        mixing data from sample mode or a previous wallet.
+        Loads snapshot history for the new address so the chart only ever shows data
+        for the current wallet.  Old/sample snapshots (stored without an address) are
+        never returned for a real address lookup, so they can't pollute the chart.
         """
-        clear_wallet_snapshots()
-        self._chart.update_snapshots([])
-        self.snapshots_changed.emit([])
+        self._confirmed_wallet = address
+        snaps = load_wallet_snapshots(address)
+        self._chart.update_snapshots(snaps)
+        self.snapshots_changed.emit(snaps)
 
     # ── Wallet value update ────────────────────────────────────────────────────
 
@@ -396,12 +401,13 @@ class OverviewWidget(QWidget):
         self._wallet_card.update_value(f"${wallet_usd_value:,.2f}", _TEXT)
 
         save_wallet_snapshot(
+            wallet_address=self._confirmed_wallet,
             active_positions_value=self._active_value,
             wallet_usd_value=wallet_usd_value,
             unrealized_pnl=self._unrealized_pnl,
             realized_pnl=self._realized_pnl,
         )
-        snaps = load_wallet_snapshots()
+        snaps = load_wallet_snapshots(self._confirmed_wallet)
         self._chart.update_snapshots(snaps)
         self.snapshots_changed.emit(snaps)
 

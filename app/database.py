@@ -39,9 +39,17 @@ def init_db() -> None:
                 wallet_usd_value      REAL NOT NULL DEFAULT 0.0,
                 total_tracked_value   REAL NOT NULL DEFAULT 0.0,
                 unrealized_pnl        REAL NOT NULL DEFAULT 0.0,
-                realized_pnl          REAL NOT NULL DEFAULT 0.0
+                realized_pnl          REAL NOT NULL DEFAULT 0.0,
+                wallet_address        TEXT NOT NULL DEFAULT ''
             )
         """)
+        # Migration: add wallet_address to existing databases that pre-date this column
+        try:
+            conn.execute(
+                "ALTER TABLE wallet_snapshots ADD COLUMN wallet_address TEXT NOT NULL DEFAULT ''"
+            )
+        except Exception:
+            pass  # column already exists
         # Key-value store for app settings (last wallet, loss watch state, etc.)
         # Never commit this DB — it is gitignored via *.db
         conn.execute("""
@@ -113,6 +121,7 @@ def save_snapshot(
 # ── Wallet value snapshots ────────────────────────────────────────────────────
 
 def save_wallet_snapshot(
+    wallet_address: str,
     active_positions_value: float,
     wallet_usd_value: float,
     unrealized_pnl: float,
@@ -124,24 +133,42 @@ def save_wallet_snapshot(
             """
             INSERT INTO wallet_snapshots
                 (captured_at, active_positions_value, wallet_usd_value,
-                 total_tracked_value, unrealized_pnl, realized_pnl)
-            VALUES (datetime('now'), ?, ?, ?, ?, ?)
+                 total_tracked_value, unrealized_pnl, realized_pnl, wallet_address)
+            VALUES (datetime('now'), ?, ?, ?, ?, ?, ?)
             """,
-            (active_positions_value, wallet_usd_value, total, unrealized_pnl, realized_pnl),
+            (active_positions_value, wallet_usd_value, total,
+             unrealized_pnl, realized_pnl, wallet_address),
         )
         conn.commit()
 
 
-def load_wallet_snapshots() -> List[dict]:
+def load_wallet_snapshots(wallet_address: str = "") -> List[dict]:
+    """Load wallet snapshots for the given address, oldest first.
+
+    Pass wallet_address="" to load all snapshots regardless of address (avoid
+    in the UI — this returns old dummy/sample data too).
+    """
     with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT captured_at, active_positions_value, wallet_usd_value,
-                   total_tracked_value, unrealized_pnl, realized_pnl
-            FROM wallet_snapshots
-            ORDER BY captured_at ASC
-            """
-        ).fetchall()
+        if wallet_address:
+            rows = conn.execute(
+                """
+                SELECT captured_at, active_positions_value, wallet_usd_value,
+                       total_tracked_value, unrealized_pnl, realized_pnl
+                FROM wallet_snapshots
+                WHERE wallet_address = ?
+                ORDER BY captured_at ASC
+                """,
+                (wallet_address,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT captured_at, active_positions_value, wallet_usd_value,
+                       total_tracked_value, unrealized_pnl, realized_pnl
+                FROM wallet_snapshots
+                ORDER BY captured_at ASC
+                """
+            ).fetchall()
     return [dict(row) for row in rows]
 
 
