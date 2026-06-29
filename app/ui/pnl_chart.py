@@ -22,6 +22,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 from app.models import ResolvedPosition, UserActivity
+from app.services.chart_utils import pchip_smooth
 from app.services.pnl_points import build_cumulative_pnl_points
 
 _BG    = "#0d1117"
@@ -131,7 +132,7 @@ class PnlChartWidget(QWidget):
         timestamps = [p["timestamp"] for p in points]
         y_vals     = [p["value"]     for p in points]
 
-        # Keep as Python lists so `not self._x_nums` works correctly
+        # Real event points — used for hover snapping (snap to nearest actual event)
         x_nums = list(mdates.date2num(timestamps))
         self._x_nums = x_nums
         self._y_data = list(y_vals)
@@ -140,17 +141,21 @@ class PnlChartWidget(QWidget):
         final = y_vals[-1] if len(y_vals) > 1 else 0.0
         color = _GREEN if final >= 0 else _RED
 
-        ax.plot(x_nums, y_vals, color=color, linewidth=1.8, zorder=3)
+        # Smooth visual series via PCHIP monotone interpolation.
+        # Fewer than 3 real points → falls back to the original series automatically.
+        x_draw, y_draw = pchip_smooth(x_nums, y_vals, n=300)
+
+        ax.plot(x_draw, y_draw, color=color, linewidth=1.8, zorder=3)
         ax.axhline(0, color=_MUTED, linewidth=0.5, alpha=0.5, zorder=1)
 
         ax.fill_between(
-            x_nums, 0, y_vals,
-            where=[v >= 0 for v in y_vals],
+            x_draw, 0, y_draw,
+            where=[v >= 0 for v in y_draw],
             color=_GREEN, alpha=0.12, zorder=2,
         )
         ax.fill_between(
-            x_nums, 0, y_vals,
-            where=[v < 0 for v in y_vals],
+            x_draw, 0, y_draw,
+            where=[v < 0 for v in y_draw],
             color=_RED, alpha=0.12, zorder=2,
         )
 
