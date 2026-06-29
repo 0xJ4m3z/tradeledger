@@ -252,8 +252,8 @@ def upsert_closed_positions_cache(positions: List[ResolvedPosition]) -> None:
         conn.commit()
 
 
-def load_closed_positions_cache() -> List[ResolvedPosition]:
-    """Load all cached closed positions, most-recently-resolved first."""
+def load_closed_positions_cache(limit: int = 500) -> List[ResolvedPosition]:
+    """Load cached closed positions, most-recently-resolved first, capped at limit."""
     with get_connection() as conn:
         rows = conn.execute(
             """
@@ -261,7 +261,9 @@ def load_closed_positions_cache() -> List[ResolvedPosition]:
                    redeem_value, redeemed, resolved_date
             FROM closed_positions_cache
             ORDER BY resolved_date DESC, fetched_at DESC
-            """
+            LIMIT ?
+            """,
+            (limit,),
         ).fetchall()
     return [
         ResolvedPosition(

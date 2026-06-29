@@ -358,20 +358,11 @@ class WalletPanel(QWidget):
         if self._backfill and self._backfill.isRunning():
             return
         self._backfill = _BackfillThread(self._full_address)
-        self._backfill.page_done.connect(self._on_backfill_page)
         self._backfill.done.connect(self._on_backfill_done)
         self._backfill.start()
 
-    def _on_backfill_page(self) -> None:
-        """Emit an incremental update after each backfill page lands in the cache."""
-        try:
-            all_closed = load_closed_positions_cache()
-            self.closed_cache_updated.emit(all_closed)
-        except Exception:
-            pass
-
     def _on_backfill_done(self) -> None:
-        """Final reload after all backfill pages are complete."""
+        """Reload the most recent 500 from cache once all backfill pages are complete."""
         try:
             all_closed = load_closed_positions_cache()
             self.closed_cache_updated.emit(all_closed)

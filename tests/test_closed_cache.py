@@ -91,11 +91,17 @@ class TestClosedPositionsCache:
         isolated_db.upsert_closed_positions_cache([p1, p2])
         assert isolated_db.count_closed_positions_cache() == 2
 
-    def test_all_positions_returned(self, isolated_db):
+    def test_default_limit_returns_up_to_500(self, isolated_db):
         positions = [_rpos(f"Market {i}", cost=float(i * 10)) for i in range(10)]
         isolated_db.upsert_closed_positions_cache(positions)
         results = isolated_db.load_closed_positions_cache()
-        assert len(results) == 10
+        assert len(results) == 10  # under the 500 cap, all returned
+
+    def test_explicit_limit_caps_results(self, isolated_db):
+        positions = [_rpos(f"Market {i}", cost=float(i * 10)) for i in range(10)]
+        isolated_db.upsert_closed_positions_cache(positions)
+        results = isolated_db.load_closed_positions_cache(limit=5)
+        assert len(results) == 5
 
     def test_empty_list_upsert_is_noop(self, isolated_db):
         isolated_db.upsert_closed_positions_cache([])
