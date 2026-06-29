@@ -281,9 +281,24 @@ def load_closed_positions_cache(limit: int = 500) -> List[ResolvedPosition]:
 
 
 def clear_wallet_snapshots() -> None:
-    """Delete all wallet snapshots (used when wallet address changes to avoid mixing data)."""
+    """Delete all wallet snapshots."""
     with get_connection() as conn:
         conn.execute("DELETE FROM wallet_snapshots")
+        conn.commit()
+
+
+def clear_wallet_snapshots_today(wallet_address: str) -> None:
+    """Delete today's snapshots for this wallet (local date).
+
+    Called at the start of each session's first positions fetch so any snapshots
+    saved before real position data arrived (using stale sample values) are wiped,
+    giving the chart a clean baseline for the current day.
+    """
+    with get_connection() as conn:
+        conn.execute(
+            "DELETE FROM wallet_snapshots WHERE wallet_address = ? AND date(captured_at, 'localtime') = date('now', 'localtime')",
+            (wallet_address,),
+        )
         conn.commit()
 
 

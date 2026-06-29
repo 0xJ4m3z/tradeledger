@@ -45,17 +45,27 @@ def _usd_fmt(x, _):
 
 class TotalValueChartWidget(QWidget):
     """
-    Total Tracked Value over time chart with 1D / 1W / 1M / All range buttons.
+    Total Tracked Value over time chart.
+
+    Pass show_range_buttons=False to hide the 1D/1W/1M/All controls
+    (used in the Overview tab where space is tight and range switching
+    is handled by the full-size Total Tracked Value tab).
 
     Public interface:
       update_snapshots(snapshots)  — refresh with new snapshot list
     """
 
-    def __init__(self, snapshots: List[dict], figsize: Tuple[float, float] = (5, 2.8)):
+    def __init__(
+        self,
+        snapshots: List[dict],
+        figsize: Tuple[float, float] = (5, 2.8),
+        show_range_buttons: bool = True,
+    ):
         super().__init__()
-        self._all_snapshots = snapshots
-        self._range_key     = _DEFAULT_RANGE
-        self._figsize       = figsize
+        self._all_snapshots      = snapshots
+        self._range_key          = _DEFAULT_RANGE
+        self._figsize            = figsize
+        self._show_range_buttons = show_range_buttons
         self._build_ui()
         self._redraw()
 
@@ -66,19 +76,20 @@ class TotalValueChartWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        # Range button row — right-aligned above the chart
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
         self._range_btns: dict[str, QPushButton] = {}
-        for key in _RANGES:
-            btn = QPushButton(key)
-            btn.setCheckable(True)
-            btn.setChecked(key == _DEFAULT_RANGE)
-            btn.setStyleSheet(_BTN_STYLE)
-            btn.clicked.connect(lambda _checked, k=key: self._on_range(k))
-            self._range_btns[key] = btn
-            btn_row.addWidget(btn)
-        layout.addLayout(btn_row)
+
+        if self._show_range_buttons:
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+            for key in _RANGES:
+                btn = QPushButton(key)
+                btn.setCheckable(True)
+                btn.setChecked(key == _DEFAULT_RANGE)
+                btn.setStyleSheet(_BTN_STYLE)
+                btn.clicked.connect(lambda _checked, k=key: self._on_range(k))
+                self._range_btns[key] = btn
+                btn_row.addWidget(btn)
+            layout.addLayout(btn_row)
 
         # Matplotlib canvas
         fig = Figure(figsize=self._figsize, tight_layout=True)

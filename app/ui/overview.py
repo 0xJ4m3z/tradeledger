@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.database import (
+    clear_wallet_snapshots_today,
     load_last_wallet,
     load_loss_watch_acknowledged,
     load_wallet_snapshots,
@@ -353,6 +354,8 @@ class OverviewWidget(QWidget):
         self._range                = "1d"
         # Wallet address for tagging snapshots — updated on confirmed fetch
         self._confirmed_wallet     = load_last_wallet()
+        # Guard: clear today's stale snapshots (saved before real positions load) on first fetch
+        self._first_positions_fetch = True
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -390,7 +393,7 @@ class OverviewWidget(QWidget):
 
         # Load only this wallet's history (empty for new wallets; never shows dummy data)
         snapshots = load_wallet_snapshots(self._confirmed_wallet)
-        self._chart = TotalValueChartWidget(snapshots)
+        self._chart = TotalValueChartWidget(snapshots, show_range_buttons=False)
         top_row.addWidget(self._chart, 58)
 
         main.addWidget(top)
@@ -517,20 +520,10 @@ class OverviewWidget(QWidget):
     def _on_wallet_value_changed(self, wallet_usd_value: float) -> None:
         self._wallet_usd_value = wallet_usd_value
         total = compute_total_tracked_value(self._active_value, wallet_usd_value)
-
         self._total_card.update_value(f"${total:,.2f}", _BLUE)
         self._wallet_card.update_value(f"${wallet_usd_value:,.2f}", _TEXT)
-
-        save_wallet_snapshot(
-            wallet_address=self._confirmed_wallet,
-            active_positions_value=self._active_value,
-            wallet_usd_value=wallet_usd_value,
-            unrealized_pnl=self._unrealized_pnl,
-            realized_pnl=self._realized_pnl,
-        )
-        snaps = load_wallet_snapshots(self._confirmed_wallet)
-        self._chart.update_snapshots(snaps)
-        self.snapshots_changed.emit(snaps)
+        # Snapshot is saved in _on_positions_fetched once both wallet USD and
+        # real positions values are known — saving here would use stale sample data
 
     # ── Live positions update ──────────────────────────────────────────────────
 
@@ -554,6 +547,24 @@ class OverviewWidget(QWidget):
 
         filtered = _filter_closed_by_range(closed, self._range)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
+
+        # Save snapshot now that both wallet USD and real positions values are settled.
+        # On the first fetch of each session, wipe today's snapshots first — any that
+        # were saved before positions loaded used stale sample data and are wrong.
+        if self._confirmed_wallet:
+            if self._first_positions_fetch:
+                self._first_positions_fetch = False
+                clear_wallet_snapshots_today(self._confirmed_wallet)
+            save_wallet_snapshot(
+                wallet_address=self._confirmed_wallet,
+                active_positions_value=self._active_value,
+                wallet_usd_value=self._wallet_usd_value,
+                unrealized_pnl=self._unrealized_pnl,
+                realized_pnl=self._realized_pnl,
+            )
+            snaps = load_wallet_snapshots(self._confirmed_wallet)
+            self._chart.update_snapshots(snaps)
+            self.snapshots_changed.emit(snaps)
 
         self.positions_changed.emit(active, resolved, closed)
 
