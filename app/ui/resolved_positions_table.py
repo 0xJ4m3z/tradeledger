@@ -137,6 +137,18 @@ class ResolvedPositionsTable(QWidget):
         for row, p in enumerate(positions):
             _populate_row(self._table, row, p)
 
+    def merge_positions(self, new_records: List[ResolvedPosition]) -> None:
+        """Prepend any new records not already loaded (called on refresh, not first load)."""
+        seen  = {(p.market, p.outcome_held, p.cost_basis) for p in self._all_positions}
+        fresh = [p for p in new_records if (p.market, p.outcome_held, p.cost_basis) not in seen]
+        if not fresh:
+            return
+        self._all_positions = fresh + self._all_positions
+        self._header.setText(f"{self._label}  ({len(self._all_positions)})")
+        for i, p in enumerate(fresh):
+            self._table.insertRow(i)
+            _populate_row(self._table, i, p)
+
     def append_positions(self, new_records: List[ResolvedPosition]) -> None:
         """Append a page of older positions (scroll-triggered load-more)."""
         self._loading = False

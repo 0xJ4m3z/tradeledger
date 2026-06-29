@@ -536,7 +536,14 @@ class OverviewWidget(QWidget):
 
     def _on_positions_fetched(self, active: list, resolved: list, closed: list) -> None:
         self._active_positions = list(active)
-        self._closed_positions = list(closed)
+        # Merge closed: keep everything already loaded, prepend any new records
+        if not self._closed_positions:
+            self._closed_positions = list(closed)
+        else:
+            seen  = {(p.market, p.outcome_held, p.cost_basis) for p in self._closed_positions}
+            fresh = [p for p in closed if (p.market, p.outcome_held, p.cost_basis) not in seen]
+            if fresh:
+                self._closed_positions = fresh + self._closed_positions
         metrics = compute_dashboard_metrics(active, resolved)
         self._active_value   = metrics["active_positions_value"]
         self._unrealized_pnl = metrics["unrealized_pnl"]
@@ -552,7 +559,7 @@ class OverviewWidget(QWidget):
         self._replace_section("_act_section", _active_section(active))
         self._replace_section("_res_section", _resolved_section(resolved))
 
-        filtered = _filter_closed_by_range(closed, self._range)
+        filtered = _filter_closed_by_range(self._closed_positions, self._range)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
         self._update_metric_cards()
 

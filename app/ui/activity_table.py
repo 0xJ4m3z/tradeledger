@@ -144,15 +144,38 @@ class ActivityTable(QWidget):
         layout.addWidget(self._table)
 
     def update_activity(self, activity: List[UserActivity]) -> None:
-        """Replace the full activity list (called on initial/refresh fetch)."""
-        self._all_activity = list(activity)
-        self._has_more     = len(activity) >= 100   # full page → probably more
+        """Merge fresh activity: first call sets the list; subsequent calls prepend new records."""
+        if not self._all_activity:
+            # First load — populate from scratch
+            self._all_activity = list(activity)
+            self._has_more     = len(activity) >= 100
+            self._loading      = False
+            self._load_status.setText("")
+            self._header.setText(f"Activity  ({len(activity)})")
+            self._table.setRowCount(len(activity))
+            for row, a in enumerate(activity):
+                _populate_row(self._table, row, a)
+            return
+
+        # Refresh — prepend any records newer than what we already have
+        seen  = {(a.timestamp, a.type, a.side, a.size) for a in self._all_activity}
+        fresh = [a for a in activity if (a.timestamp, a.type, a.side, a.size) not in seen]
+        if not fresh:
+            return
+        self._all_activity = fresh + self._all_activity
+        self._header.setText(f"Activity  ({len(self._all_activity)})")
+        for i, a in enumerate(fresh):
+            self._table.insertRow(i)
+            _populate_row(self._table, i, a)
+
+    def reset_activity(self) -> None:
+        """Clear all loaded activity (called on wallet change)."""
+        self._all_activity = []
+        self._has_more     = True
         self._loading      = False
         self._load_status.setText("")
-        self._header.setText(f"Activity  ({len(activity)})")
-        self._table.setRowCount(len(activity))
-        for row, a in enumerate(activity):
-            _populate_row(self._table, row, a)
+        self._header.setText("Activity  (0)")
+        self._table.setRowCount(0)
 
     def append_activity(self, new_records: List[UserActivity]) -> None:
         """Append a page of older activity records (called on scroll-triggered load-more)."""

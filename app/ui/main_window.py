@@ -171,11 +171,14 @@ class MainWindow(QMainWindow):
     def _on_positions_changed(self, active: list, resolved: list, closed: list) -> None:
         self._active_tab.update_positions(active)
         self._resolved_tab.update_positions(resolved)
-        self._closed_tab.update_positions(closed)
+        if not self._closed_tab._all_positions:
+            self._closed_tab.update_positions(closed)   # first load
+        else:
+            self._closed_tab.merge_positions(closed)    # refresh — prepend new only
         self._loss_watch_tab.update_positions(active)
         self._status_bar.showMessage(
             f"Live Polymarket data  •  {len(active)} active"
-            f"  •  {len(resolved)} resolved  •  {len(closed)} closed (loading more…)"
+            f"  •  {len(resolved)} resolved  •  {len(self._closed_tab._all_positions)} closed"
         )
 
     def _on_closed_cache_updated(self, all_closed: list) -> None:
