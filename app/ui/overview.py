@@ -20,6 +20,7 @@ from app.database import (
     save_loss_watch_acknowledged,
     save_wallet_snapshot,
 )
+from app.debug import _dlog
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 from app.services.loss_watch import compute_loss_watch_count
 from app.services.metrics import compute_dashboard_metrics, compute_total_tracked_value
@@ -497,11 +498,23 @@ class OverviewWidget(QWidget):
     # ── Wallet address change ──────────────────────────────────────────────────
 
     def _on_wallet_address_changed(self, address: str) -> None:
-        self._confirmed_wallet = address
-        self._activity = []
-        self._chart.update([], [], self._range)
+        # Always refresh the Total Tracked Value chart snapshots
         snaps = load_wallet_snapshots(address)
         self.snapshots_changed.emit(snaps)
+
+        if address == self._confirmed_wallet:
+            # Same wallet re-confirmed (startup refresh or auto-refresh).
+            # Do NOT clear cached data — seed_from_cache already populated it.
+            _dlog("wallet", "same wallet re-confirmed (%s) — keeping %d cached activity rows",
+                  address[:10], len(self._activity))
+            return
+
+        # Truly different wallet: switch caches and clear stale data
+        _dlog("wallet", "wallet changed to %s — clearing cached data", address[:10])
+        self._confirmed_wallet = address
+        self._activity = []
+        self._closed_positions = []
+        self._chart.update([], [], self._range)
 
     # ── Wallet value update ────────────────────────────────────────────────────
 
@@ -567,14 +580,30 @@ class OverviewWidget(QWidget):
     # ── Activity update ────────────────────────────────────────────────────────
 
     def _on_activity_fetched(self, activity: list) -> None:
-        self._activity = activity
+        # Merge fresh API records into the in-memory list; never replace the cached
+        # history with just the newest 100 API rows from the live refresh.
+        before = len(self._activity)
+        if not self._activity:
+            self._activity = list(activity)
+        else:
+            seen  = {(a.timestamp, a.type, a.side, a.size) for a in self._activity}
+            fresh = [a for a in activity if (a.timestamp, a.type, a.side, a.size) not in seen]
+            if fresh:
+                self._activity = fresh + self._activity
+        _dlog("activity", "fetched %d rows → merged to %d total (was %d)",
+              len(activity), len(self._activity), before)
         self.activity_changed.emit(activity)
-        # Redraw 1D chart — REDEEM timestamps just arrived
         self._chart.update(self._activity, self._closed_positions, self._range)
         self._update_metric_cards()
 
     def _on_more_activity_fetched(self, page: list) -> None:
-        self._activity.extend(page)
+        # Scroll-loaded pages are older records — extend without duplicating
+        before = len(self._activity)
+        seen  = {(a.timestamp, a.type, a.side, a.size) for a in self._activity}
+        fresh = [a for a in page if (a.timestamp, a.type, a.side, a.size) not in seen]
+        self._activity.extend(fresh)
+        _dlog("activity", "scroll-load %d rows → %d new, total now %d",
+              len(page), len(fresh), len(self._activity))
         self.more_activity.emit(page)
         self._chart.update(self._activity, self._closed_positions, self._range)
         self._update_metric_cards()
@@ -614,6 +643,8 @@ class OverviewWidget(QWidget):
         self._closed_positions = list(closed)
         if activity is not None:
             self._activity = list(activity)
+        _dlog("cache", "seed_from_cache: %d closed, %d activity",
+              len(self._closed_positions), len(self._activity))
         filtered = filter_closed_by_range(closed, self._range)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
         self._chart.update(self._activity, closed, self._range)

@@ -33,6 +33,7 @@ from app.database import (
     upsert_activity_cache,
     upsert_closed_positions_cache,
 )
+from app.debug import _dlog
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 
 _POLY_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
@@ -428,8 +429,17 @@ class WalletPanel(QWidget):
         if self._activity_page_thread and self._activity_page_thread.isRunning():
             return
         self._activity_page_thread = _ActivityPageThread(self._full_address, offset)
-        self._activity_page_thread.done.connect(self.more_activity_fetched.emit)
+        self._activity_page_thread.done.connect(self._on_activity_page_done)
         self._activity_page_thread.start()
+
+    def _on_activity_page_done(self, page: list) -> None:
+        """Persist scroll-loaded activity to SQLite before forwarding to the UI."""
+        try:
+            upsert_activity_cache(self._full_address, page)
+            _dlog("cache", "persisted %d scroll-loaded activity rows", len(page))
+        except Exception:
+            pass
+        self.more_activity_fetched.emit(page)
 
     def fetch_closed_page(self, offset: int) -> None:
         """Fetch the next closed positions page at offset (scroll-load for Closed tab)."""
@@ -438,5 +448,14 @@ class WalletPanel(QWidget):
         if self._closed_page_thread and self._closed_page_thread.isRunning():
             return
         self._closed_page_thread = _ClosedPageThread(self._full_address, offset)
-        self._closed_page_thread.done.connect(self.more_closed_fetched.emit)
+        self._closed_page_thread.done.connect(self._on_closed_page_done)
         self._closed_page_thread.start()
+
+    def _on_closed_page_done(self, page: list) -> None:
+        """Persist scroll-loaded closed positions to SQLite before forwarding to the UI."""
+        try:
+            upsert_closed_positions_cache(page, self._full_address)
+            _dlog("cache", "persisted %d scroll-loaded closed position rows", len(page))
+        except Exception:
+            pass
+        self.more_closed_fetched.emit(page)

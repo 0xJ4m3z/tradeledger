@@ -251,7 +251,7 @@ TradeLedger caches position and activity data locally in the SQLite database (`t
 
 **Active and resolved positions** are always stale after the app closes — they snapshot the last known state and are replaced entirely on the next live fetch.
 
-**Closed positions and activity** are additive: deduplication ensures the same event is never stored twice. Background backfill and scroll-loaded pages all flow through the same upsert path, so loading more history just adds to the cache without creating duplicates.
+**Closed positions and activity** are additive: deduplication ensures the same event is never stored twice. The initial API fetch, background backfill pages, and scroll-loaded pages all go through the same `upsert_*_cache` path, so loading more history just adds to the cache without creating duplicates.
 
 ### Dedup keys
 
@@ -263,9 +263,10 @@ TradeLedger caches position and activity data locally in the SQLite database (`t
 1. The last-used wallet address is read from the DB.
 2. All four caches are loaded immediately in `MainWindow.__init__`.
 3. The status bar shows **"Loaded from cache • X active • Y resolved • Z closed • Refreshing…"**
-4. The Overview P/L chart and metric cards are pre-populated from cached closed positions (`seed_from_cache`).
+4. The Overview P/L chart and metric cards are pre-populated from cached data (`seed_from_cache`) — the 1D chart already shows intraday steps from cached REDEEM events.
 5. `WalletPanel` auto-triggers a live fetch in the background (deferred with `QTimer.singleShot`).
-6. When the live fetch completes, all tabs update with fresh data and the status bar clears the "Refreshing…" suffix.
+6. When the live fetch completes, **new activity rows are merged into the existing list** — the cached history is never discarded. The same-wallet re-confirmation does not clear cached data.
+7. All tabs update with fresh data; the status bar clears the "Refreshing…" suffix.
 
 **First run / new wallet:** If no cache exists for the wallet, sample data is shown briefly until the live fetch completes.
 
@@ -342,13 +343,15 @@ Tries multiple public Polygon RPCs automatically if one fails. Wallet address is
 - **1Y and YTD ranges** — added to range bar alongside 1D / 1W / 1M / All
 - **Partial data detection** — Realized P/L and Trades cards show `~` prefix when loaded data may not cover the full range
 - **Closed positions as P/L source** — explicitly documented; `filter_closed_by_range` extracted to service layer
-- **Cumulative P/L line chart** — Overview mini-chart replaced with cumulative realized P/L line; starts at $0 at range start; final value matches Realized P/L card; green/red fill; interactive hover crosshair with date + value tooltip
-- **Same-date aggregation** — multiple closed positions on the same calendar day sum to one net data point
-- **Wallet-isolated local caching** — active, resolved, closed, and activity data cached per wallet in SQLite; app pre-populates from cache on startup before the live fetch completes; status bar shows "Loaded from cache • Refreshing…"
-- **Startup cache flow** — cached data shown instantly; `seed_from_cache` pre-populates P/L chart and metric cards; live fetch replaces/extends data in the background
+- **Event-based 1D chart** — cumulative realized P/L; starts at $0 at midnight ET; intraday steps at each REDEEM event's actual timestamp; interactive hover crosshair; green/red fill; steps-post line style
+- **Same-date aggregation** — multiple closed positions on the same calendar day sum to one net data point for 1W+ ranges
+- **Wallet-isolated local caching** — active, resolved, closed, and activity data cached per wallet in SQLite; app pre-populates from cache on startup before the live fetch completes
+- **Full cache persistence for scroll-loads** — scroll-loaded activity and closed position pages are now upserted to SQLite via `_on_activity_page_done` / `_on_closed_page_done`; previously only the initial fetch and backfill were persisted
+- **Activity merge on refresh** — live refresh merges new records into the existing in-memory list instead of replacing it; cached history (up to 500 rows loaded at startup) is never discarded by a refresh
+- **Same-wallet refresh guard** — `_on_wallet_address_changed` only clears data when the wallet address genuinely changes; same-wallet re-confirmation on startup no longer clears the chart seeded by `seed_from_cache`
 - **Insert-or-ignore dedup** — closed positions and activity events accumulate without duplicates across scroll-loads, backfill pages, and refreshes
-- **Comprehensive tests** — 84 new tests covering range/timezone logic, cumulative series builder, and all four wallet-isolated caches
-- 280 passing tests
+- **Debug logging** — set `TRADELEDGER_DEBUG=1` to enable verbose data-flow logs (cache operations, merge counts, wallet confirmations) via Python's `logging` module
+- **324 passing tests** — including 16 new tests in `test_cache_hydration.py` covering scroll-page persistence, in-memory merge logic, and startup hydration scenarios
 
 **v0.4 — Planned**
 - Notes per market
