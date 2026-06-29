@@ -176,7 +176,7 @@ class PnlChartWidget(QWidget):
 
     def _on_motion(self, event) -> None:
         if (
-            event.inaxes != self._ax
+            event.inaxes is not self._ax
             or not self._x_nums
             or self._vline is None
         ):
