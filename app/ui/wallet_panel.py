@@ -143,7 +143,7 @@ class _BackfillThread(QThread):
             if len(page) < 50:
                 break
             offset += len(page)
-            self.msleep(2000)
+            self.msleep(500)
         self.done.emit()
 
 
@@ -446,6 +446,7 @@ class WalletPanel(QWidget):
         _dlog("backfill", "starting closed backfill at offset %d (cache has %d)",
               start_offset, cached_count)
         self._backfill = _BackfillThread(self._full_address, start_offset)
+        self._backfill.page_done.connect(self._on_backfill_page_done)
         self._backfill.done.connect(self._on_backfill_done)
         self._backfill.start()
 
@@ -474,8 +475,21 @@ class WalletPanel(QWidget):
         total = count_activity_cache(self._full_address)
         _dlog("activity_backfill", "done — %d total activity rows in cache", total)
 
+    def _on_backfill_page_done(self) -> None:
+        """After each backfill page: reload from DB and push incremental update to UI.
+
+        This keeps stats cards and the Closed tab growing in near-real-time as
+        pages arrive, rather than waiting until all backfill pages are complete.
+        """
+        try:
+            all_closed = load_closed_positions_cache(self._full_address, limit=2000)
+            _dlog("backfill", "page done — %d in cache", len(all_closed))
+            self.closed_cache_updated.emit(all_closed)
+        except Exception:
+            pass
+
     def _on_backfill_done(self) -> None:
-        """Reload the most recent 2 000 from cache once all backfill pages are complete."""
+        """Final reload once all backfill pages are complete."""
         try:
             all_closed = load_closed_positions_cache(self._full_address, limit=2000)
             _dlog("backfill", "done — %d closed in cache, emitting %d rows",
