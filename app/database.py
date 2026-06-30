@@ -346,29 +346,43 @@ def upsert_closed_positions_cache(
     positions: List[ResolvedPosition],
     wallet_address: str = "",
 ) -> None:
-    """Insert or update cached closed positions keyed by (wallet_address, position_key)."""
+    """Insert or update cached closed positions keyed by (wallet_address, position_key).
+
+    Uses explicit SELECT + INSERT/UPDATE instead of ON CONFLICT so the upsert
+    works regardless of which unique indexes exist on the table (the ON CONFLICT
+    syntax requires a UNIQUE index on exactly those columns to be present at
+    the time the statement executes, which was unreliable across schema versions).
+    """
+    if not positions:
+        return
     with get_connection() as conn:
         for p in positions:
             key = _position_key(p)
-            conn.execute(
-                """
-                INSERT INTO closed_positions_cache
-                    (wallet_address, position_key, market, outcome_held, winning_outcome,
-                     quantity, cost_basis, redeem_value, redeemed, resolved_date, closed_at,
-                     realized_pnl, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-                ON CONFLICT (wallet_address, position_key) DO UPDATE SET
-                    winning_outcome = excluded.winning_outcome,
-                    quantity        = excluded.quantity,
-                    redeem_value    = excluded.redeem_value,
-                    realized_pnl    = excluded.realized_pnl,
-                    closed_at       = COALESCE(excluded.closed_at, closed_positions_cache.closed_at),
-                    fetched_at      = excluded.fetched_at
-                """,
-                (wallet_address, key, p.market, p.outcome_held, p.winning_outcome,
-                 p.quantity, p.cost_basis, p.redeem_value, int(p.redeemed),
-                 p.resolved_date, p.closed_at, p.realized_pnl),
-            )
+            existing = conn.execute(
+                "SELECT id FROM closed_positions_cache "
+                "WHERE wallet_address = ? AND position_key = ? LIMIT 1",
+                (wallet_address, key),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE closed_positions_cache SET "
+                    "winning_outcome = ?, quantity = ?, redeem_value = ?, realized_pnl = ?, "
+                    "closed_at = COALESCE(?, closed_at), fetched_at = datetime('now') "
+                    "WHERE wallet_address = ? AND position_key = ?",
+                    (p.winning_outcome, p.quantity, p.redeem_value, p.realized_pnl,
+                     p.closed_at, wallet_address, key),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO closed_positions_cache "
+                    "(wallet_address, position_key, market, outcome_held, winning_outcome, "
+                    "quantity, cost_basis, redeem_value, redeemed, resolved_date, closed_at, "
+                    "realized_pnl, fetched_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+                    (wallet_address, key, p.market, p.outcome_held, p.winning_outcome,
+                     p.quantity, p.cost_basis, p.redeem_value, int(p.redeemed),
+                     p.resolved_date, p.closed_at, p.realized_pnl),
+                )
         conn.commit()
 
 
