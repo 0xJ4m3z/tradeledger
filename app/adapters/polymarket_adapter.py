@@ -187,18 +187,25 @@ def fetch_activity_page(wallet: str, offset: int, limit: int = 100) -> List[User
     return [_to_activity(row) for row in rows] if rows else []
 
 
-def fetch_closed_positions_page(wallet: str, offset: int, limit: int = 50) -> List[ResolvedPosition]:
-    """Fetch one page of closed positions at the given offset (used by the backfill thread)."""
-    r = _get_with_retry(
-        f"{_DATA_API}/closed-positions",
-        {
-            "user":          wallet,
-            "sortBy":        "TIMESTAMP",
-            "sortDirection": "DESC",
-            "limit":         limit,
-            "offset":        offset,
-        },
-    )
+def fetch_closed_positions_page(
+    wallet: str,
+    offset: int,
+    limit: int = 50,
+    sorted_: bool = True,
+) -> List[ResolvedPosition]:
+    """Fetch one page of closed positions at the given offset.
+
+    sorted_=True (default) adds sortBy=TIMESTAMP/sortDirection=DESC — used for the
+    initial 2-page display fetch where newest-first order matters.
+
+    sorted_=False omits the sort params — used by the backfill thread where row order
+    is irrelevant and the sort clause causes server-side 408 timeouts at high offsets.
+    """
+    params: dict = {"user": wallet, "limit": limit, "offset": offset}
+    if sorted_:
+        params["sortBy"]        = "TIMESTAMP"
+        params["sortDirection"] = "DESC"
+    r = _get_with_retry(f"{_DATA_API}/closed-positions", params)
     page = r.json()
     return [_to_closed(row) for row in page] if page else []
 

@@ -128,23 +128,55 @@ class _BackfillThread(QThread):
     def run(self) -> None:
         offset = self._start_offset
         while True:
-            try:
-                page = fetch_closed_positions_page(self._address, offset)
-            except (PolymarketLookupError, Exception):
+            # Retry each page up to 3 times before aborting.
+            # sorted_=False omits sortBy/sortDirection which cause server-side 408
+            # timeouts at high offsets on wallets with many closed positions.
+            page = None
+            last_exc: Exception | None = None
+            for attempt in range(3):
+                try:
+                    page = fetch_closed_positions_page(
+                        self._address, offset, sorted_=False
+                    )
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    _dlog(
+                        "backfill",
+                        "closed page offset=%d attempt=%d/3 failed: %s",
+                        offset, attempt + 1, exc,
+                    )
+                    if attempt < 2:
+                        self.msleep(3000)
+
+            if page is None:
+                _dlog(
+                    "backfill",
+                    "closed backfill aborted at offset=%d — all retries failed, last: %s",
+                    offset, last_exc,
+                )
                 break
+
             if not page:
-                _dlog("backfill", "closed offset=%d: empty page — done", offset)
+                _dlog("backfill", "closed offset=%d: empty page — API exhausted", offset)
                 break
+
             try:
                 upsert_closed_positions_cache(page, self._address)
-                _dlog("backfill", "closed offset=%d  page_size=%d", offset, len(page))
+                _dlog("backfill", "closed offset=%d  inserted=%d", offset, len(page))
                 self.page_done.emit()
-            except Exception:
-                pass
+            except Exception as exc:
+                _dlog("backfill", "closed persist error at offset=%d: %s", offset, exc)
+
             if len(page) < 50:
+                _dlog(
+                    "backfill",
+                    "closed offset=%d: partial page (%d rows) — done",
+                    offset, len(page),
+                )
                 break
             offset += len(page)
-            self.msleep(500)
+            self.msleep(1000)   # 1 s between pages (was 500 ms)
         self.done.emit()
 
 
@@ -168,7 +200,9 @@ class _ActivityBackfillThread(QThread):
         while True:
             try:
                 page = fetch_activity_page(self._address, offset)
-            except Exception:
+            except Exception as exc:
+                _dlog("activity_backfill",
+                      "offset=%d: fetch failed — %s — stopping backfill", offset, exc)
                 break
             if not page:
                 _dlog("activity_backfill", "offset=%d: empty page — API exhausted", offset)
@@ -176,7 +210,9 @@ class _ActivityBackfillThread(QThread):
             before = count_activity_cache(self._address)
             try:
                 upsert_activity_cache(self._address, page)
-            except Exception:
+            except Exception as exc:
+                _dlog("activity_backfill",
+                      "offset=%d: persist failed — %s — stopping backfill", offset, exc)
                 break
             after    = count_activity_cache(self._address)
             inserted = after - before
@@ -220,14 +256,15 @@ class _ClosedPageThread(QThread):
     done = Signal(list)
     err  = Signal(str)
 
-    def __init__(self, address: str, offset: int):
+    def __init__(self, address: str, offset: int, sorted_: bool = False):
         super().__init__()
         self._address = address
         self._offset  = offset
+        self._sorted  = sorted_
 
     def run(self) -> None:
         try:
-            page = fetch_closed_positions_page(self._address, self._offset)
+            page = fetch_closed_positions_page(self._address, self._offset, sorted_=self._sorted)
             self.done.emit(page)
         except PolymarketLookupError as exc:
             self.err.emit(str(exc))
@@ -563,7 +600,9 @@ class WalletPanel(QWidget):
         if self._closed_page_thread and self._closed_page_thread.isRunning():
             return
         _dlog("cache", "closed page offset=%d: cache miss — fetching from API", offset)
-        self._closed_page_thread = _ClosedPageThread(self._full_address, offset)
+        # sorted_=False: omit sortBy/sortDirection to avoid server-side 408 timeouts
+        # at high offsets; scroll-loaded rows are deduplicated on insert anyway.
+        self._closed_page_thread = _ClosedPageThread(self._full_address, offset, sorted_=False)
         self._closed_page_thread.done.connect(self._on_closed_page_done)
         self._closed_page_thread.start()
 
