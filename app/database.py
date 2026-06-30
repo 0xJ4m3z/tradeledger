@@ -1,9 +1,9 @@
 import json
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 
@@ -142,6 +142,15 @@ def init_db() -> None:
                 UNIQUE (wallet_address, event_key)
             )
         """)
+        # Performance indexes for range queries and scroll pagination
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_closed_wallet_closed_at "
+            "ON closed_positions_cache(wallet_address, closed_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_activity_wallet_ts "
+            "ON activity_cache(wallet_address, timestamp DESC)"
+        )
         conn.commit()
 
 
@@ -631,3 +640,84 @@ def load_activity_cache(
         )
         for r in rows
     ]
+
+
+# ── DB-backed range stat helpers ──────────────────────────────────────────────
+
+def _range_start_epoch(range_key: str) -> Optional[int]:
+    """Return the Unix timestamp (ET-aware) for the start of the given range.
+
+    Returns None for 'all' (no time filter).  Uses closed_at, so positions
+    without a recorded close timestamp are excluded from filtered ranges.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/New_York")
+    except Exception:
+        from datetime import timezone, timedelta as _td
+        tz = timezone(_td(hours=-5))
+
+    now   = datetime.now(tz)
+    today = now.date()
+
+    if range_key == "1d":
+        start = datetime(today.year, today.month, today.day, 0, 0, 0, tzinfo=tz)
+    elif range_key == "1w":
+        start = now - timedelta(days=7)
+    elif range_key == "1m":
+        start = now - timedelta(days=30)
+    elif range_key == "1y":
+        start = now - timedelta(days=365)
+    elif range_key == "ytd":
+        start = datetime(today.year, 1, 1, 0, 0, 0, tzinfo=tz)
+    else:
+        return None  # "all" — no filter
+
+    return int(start.timestamp())
+
+
+def compute_pnl_for_range(wallet_address: str, range_key: str) -> float:
+    """Sum realized_pnl for closed positions in the range, querying SQLite directly.
+
+    Uses closed_at for time filtering — bypasses the in-memory cap so stats are
+    correct even when the wallet has more positions than the scroll-loaded list.
+    Positions without closed_at are only included in the 'all' range.
+    """
+    if not wallet_address:
+        return 0.0
+    since = _range_start_epoch(range_key)
+    with get_connection() as conn:
+        if since is None:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(realized_pnl), 0.0) AS total "
+                "FROM closed_positions_cache WHERE wallet_address = ?",
+                (wallet_address,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(realized_pnl), 0.0) AS total "
+                "FROM closed_positions_cache "
+                "WHERE wallet_address = ? AND COALESCE(closed_at, 0) >= ?",
+                (wallet_address, since),
+            ).fetchone()
+    return round(float(row["total"]), 2) if row else 0.0
+
+
+def count_closed_for_range(wallet_address: str, range_key: str) -> int:
+    """Count closed positions in the range by querying SQLite directly."""
+    if not wallet_address:
+        return 0
+    since = _range_start_epoch(range_key)
+    with get_connection() as conn:
+        if since is None:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM closed_positions_cache WHERE wallet_address = ?",
+                (wallet_address,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM closed_positions_cache "
+                "WHERE wallet_address = ? AND COALESCE(closed_at, 0) >= ?",
+                (wallet_address, since),
+            ).fetchone()
+    return row["n"] if row else 0

@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import List
 
 from PySide6.QtCore import Qt, Signal
@@ -16,9 +17,16 @@ from PySide6.QtWidgets import (
 
 from app.models import ResolvedPosition
 
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    _ET_ZONE = _ZoneInfo("America/New_York")
+except Exception:
+    from datetime import timezone, timedelta as _td
+    _ET_ZONE = timezone(_td(hours=-5))
+
 COLUMNS = [
     "Market", "Outcome Held", "Winning Outcome", "Qty",
-    "Cost Basis", "Redeem Value", "Realized P/L", "P/L %", "Redeemed",
+    "Cost Basis", "Redeem Value", "Realized P/L", "P/L %", "Redeemed", "Closed Date",
 ]
 
 _GREEN = QColor("#3fb950")
@@ -26,6 +34,18 @@ _RED   = QColor("#f85149")
 _MUTED = QColor("#8b949e")
 
 _SCROLL_THRESHOLD_PX = 80
+
+
+def _fmt_closed_date(p: ResolvedPosition) -> str:
+    """Return close date in ET (from closed_at epoch), falling back to resolved_date."""
+    if p.closed_at:
+        try:
+            return datetime.fromtimestamp(p.closed_at, tz=_ET_ZONE).strftime("%Y-%m-%d")
+        except (OSError, OverflowError, ValueError):
+            pass
+    if p.resolved_date:
+        return p.resolved_date[:10]
+    return "—"
 
 
 def _cell(text: str, align=Qt.AlignmentFlag.AlignLeft) -> QTableWidgetItem:
@@ -57,6 +77,10 @@ def _populate_row(table: QTableWidget, row: int, p: ResolvedPosition) -> None:
     status = _cell("Yes" if p.redeemed else "Pending")
     status.setForeground(_GREEN if p.redeemed else _MUTED)
     table.setItem(row, 8, status)
+
+    date_item = _cell(_fmt_closed_date(p))
+    date_item.setForeground(_MUTED)
+    table.setItem(row, 9, date_item)
 
 
 class ResolvedPositionsTable(QWidget):
@@ -118,6 +142,9 @@ class ResolvedPositionsTable(QWidget):
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for col in range(1, len(COLUMNS)):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        # "Closed Date" column: fixed reasonable width to prevent over-stretching
+        hdr.setSectionResizeMode(9, QHeaderView.ResizeMode.Fixed)
+        hdr.resizeSection(9, 90)
 
         if self._infinite_scroll:
             self._table.verticalScrollBar().valueChanged.connect(self._on_scroll)

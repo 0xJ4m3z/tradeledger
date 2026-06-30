@@ -445,3 +445,172 @@ class TestScrollHasMore:
         incoming = [_act(i * 100) for i in range(100)]          # duplicates
         _, has_more = _scroll_merge_activity(existing, incoming)
         assert has_more is False
+
+
+# ── DB-backed range stat helpers ──────────────────────────────────────────────
+
+def _et_midnight_today() -> int:
+    """Return Unix timestamp for midnight ET today."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    tz  = ZoneInfo("America/New_York")
+    today = datetime.now(tz).date()
+    return int(datetime(today.year, today.month, today.day, 0, 0, 0, tzinfo=tz).timestamp())
+
+
+def _closed_ts(
+    market: str,
+    pnl: float = 10.0,
+    cost: float = 50.0,
+    closed_at: int | None = None,
+) -> ResolvedPosition:
+    return ResolvedPosition(
+        market=market, outcome_held="Yes", winning_outcome="Yes",
+        quantity=100.0, cost_basis=cost, redeem_value=cost + pnl,
+        redeemed=True, resolved_date="2025-01-01", closed_at=closed_at,
+    )
+
+
+class TestRangeStatsFromDB:
+    """compute_pnl_for_range / count_closed_for_range query SQLite directly —
+    no in-memory cap, correct time-filtering via closed_at epoch (ET)."""
+
+    def test_compute_pnl_today_includes_today(self, isolated_db):
+        midnight = _et_midnight_today()
+        p = _closed_ts("M", pnl=15.0, closed_at=midnight + 3600)  # 1 AM ET today
+        isolated_db.upsert_closed_positions_cache([p], WALLET)
+        assert isolated_db.compute_pnl_for_range(WALLET, "1d") == 15.0
+
+    def test_compute_pnl_today_excludes_yesterday(self, isolated_db):
+        midnight = _et_midnight_today()
+        p = _closed_ts("M", pnl=15.0, closed_at=midnight - 3600)  # 11 PM ET yesterday
+        isolated_db.upsert_closed_positions_cache([p], WALLET)
+        assert isolated_db.compute_pnl_for_range(WALLET, "1d") == 0.0
+
+    def test_count_closed_today(self, isolated_db):
+        midnight = _et_midnight_today()
+        today_positions = [
+            _closed_ts(f"Today-{i}", pnl=10.0, closed_at=midnight + (i + 1) * 3600)
+            for i in range(3)
+        ]
+        yesterday_pos = _closed_ts("Yesterday", pnl=10.0, closed_at=midnight - 3600)
+        isolated_db.upsert_closed_positions_cache(today_positions + [yesterday_pos], WALLET)
+        assert isolated_db.count_closed_for_range(WALLET, "1d") == 3
+
+    def test_compute_pnl_all_includes_all_positions(self, isolated_db):
+        midnight = _et_midnight_today()
+        positions = [
+            _closed_ts(f"M{i}", pnl=10.0, closed_at=midnight - i * 86400)
+            for i in range(5)
+        ]
+        isolated_db.upsert_closed_positions_cache(positions, WALLET)
+        assert isolated_db.compute_pnl_for_range(WALLET, "all") == 50.0
+
+    def test_pnl_sum_includes_losses(self, isolated_db):
+        midnight = _et_midnight_today()
+        win  = _closed_ts("Win",  pnl= 20.0, closed_at=midnight + 3600)
+        loss = _closed_ts("Loss", pnl=-5.0,  closed_at=midnight + 7200)
+        isolated_db.upsert_closed_positions_cache([win, loss], WALLET)
+        assert isolated_db.compute_pnl_for_range(WALLET, "1d") == 15.0
+
+    def test_empty_wallet_returns_zero(self, isolated_db):
+        assert isolated_db.compute_pnl_for_range("", "1d") == 0.0
+        assert isolated_db.count_closed_for_range("", "1d") == 0
+
+    def test_positions_without_closed_at_excluded_from_range_but_included_in_all(
+        self, isolated_db
+    ):
+        """closed_at=None positions are excluded from time-filtered ranges but appear in 'all'."""
+        p = _closed_ts("M", pnl=99.0, closed_at=None)
+        isolated_db.upsert_closed_positions_cache([p], WALLET)
+        assert isolated_db.compute_pnl_for_range(WALLET, "1d")  == 0.0
+        assert isolated_db.count_closed_for_range(WALLET, "1d")  == 0
+        assert isolated_db.compute_pnl_for_range(WALLET, "all") == 99.0
+        assert isolated_db.count_closed_for_range(WALLET, "all") == 1
+
+    def test_wallet_isolation(self, isolated_db):
+        wallet_b = "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB2"
+        midnight = _et_midnight_today()
+        p_a = _closed_ts("Ma", pnl=50.0,  closed_at=midnight + 3600)
+        p_b = _closed_ts("Mb", pnl=100.0, closed_at=midnight + 3600)
+        isolated_db.upsert_closed_positions_cache([p_a], WALLET)
+        isolated_db.upsert_closed_positions_cache([p_b], wallet_b)
+        assert isolated_db.compute_pnl_for_range(WALLET,   "1d") == 50.0
+        assert isolated_db.count_closed_for_range(WALLET,  "1d") == 1
+        assert isolated_db.compute_pnl_for_range(wallet_b, "1d") == 100.0
+
+    def test_range_start_epoch_1d_is_midnight_et(self, isolated_db):
+        """_range_start_epoch('1d') must equal midnight ET today (not trailing 24h)."""
+        from app.database import _range_start_epoch
+        epoch = _range_start_epoch("1d")
+        assert epoch is not None
+        midnight = _et_midnight_today()
+        assert epoch == midnight
+
+    def test_range_start_epoch_all_returns_none(self, isolated_db):
+        from app.database import _range_start_epoch
+        assert _range_start_epoch("all") is None
+
+
+# ── filter_closed_by_range: uses closed_at not resolved_date ──────────────────
+
+class TestFilterClosedByRangeClosedAt:
+    """filter_closed_by_range must use closed_at (actual close time) for 1D filtering,
+    not resolved_date (market end date) which caused cross-day confusion."""
+
+    def test_1d_uses_closed_at_ignores_old_resolved_date(self):
+        """Position closed today (closed_at=today) with far-past resolved_date still appears in 1D."""
+        from app.services.pnl_today import filter_closed_by_range
+        midnight = _et_midnight_today()
+        p = ResolvedPosition(
+            market="M", outcome_held="Yes", winning_outcome="Yes",
+            quantity=1.0, cost_basis=50.0, redeem_value=60.0,
+            redeemed=True, resolved_date="2020-01-01",    # old resolved_date
+            closed_at=midnight + 3600,                     # closed 1 AM ET today
+        )
+        assert len(filter_closed_by_range([p], "1d")) == 1
+
+    def test_1d_excludes_yesterday_closed_at_even_with_future_resolved_date(self):
+        """Position closed yesterday (closed_at=yesterday) must NOT appear in 1D."""
+        from app.services.pnl_today import filter_closed_by_range
+        midnight = _et_midnight_today()
+        p = ResolvedPosition(
+            market="M", outcome_held="Yes", winning_outcome="Yes",
+            quantity=1.0, cost_basis=50.0, redeem_value=60.0,
+            redeemed=True, resolved_date="2099-12-31",    # future resolved_date
+            closed_at=midnight - 3600,                     # closed 11 PM ET yesterday
+        )
+        assert len(filter_closed_by_range([p], "1d")) == 0
+
+    def test_1d_fallback_to_resolved_date_when_no_closed_at(self):
+        """Legacy positions without closed_at use resolved_date as fallback."""
+        from app.services.pnl_today import filter_closed_by_range, today_date_et
+        today_str = today_date_et().isoformat()
+        p = ResolvedPosition(
+            market="M", outcome_held="Yes", winning_outcome="Yes",
+            quantity=1.0, cost_basis=50.0, redeem_value=60.0,
+            redeemed=True, resolved_date=today_str, closed_at=None,
+        )
+        assert len(filter_closed_by_range([p], "1d")) == 1
+
+    def test_1w_includes_6_days_ago_excludes_8_days_ago(self):
+        """For 1W (7-day trailing window), positions within range are included."""
+        import time
+        from app.services.pnl_today import filter_closed_by_range
+        now = int(time.time())
+        p_in  = _closed_ts("In",  pnl=10.0, closed_at=now - 6 * 86400)   # 6 days ago
+        p_out = _closed_ts("Out", pnl=10.0, closed_at=now - 8 * 86400)   # 8 days ago
+        result = filter_closed_by_range([p_in, p_out], "1w")
+        assert {p.market for p in result} == {"In"}
+
+    def test_all_range_returns_everything(self):
+        """'all' bypasses closed_at filtering entirely."""
+        from app.services.pnl_today import filter_closed_by_range
+        midnight = _et_midnight_today()
+        positions = [
+            _closed_ts("Old",     pnl=1.0, closed_at=midnight - 365 * 86400),
+            _closed_ts("Recent",  pnl=2.0, closed_at=midnight + 3600),
+            _closed_ts("NoDate",  pnl=3.0, closed_at=None),
+        ]
+        result = filter_closed_by_range(positions, "all")
+        assert len(result) == 3

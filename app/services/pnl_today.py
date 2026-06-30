@@ -100,24 +100,42 @@ def filter_closed_by_range(
 ) -> List[ResolvedPosition]:
     """Filter closed positions to those within the given range (ET calendar dates).
 
-    Uses resolved_date (ISO date string) from each ResolvedPosition.
-    Records with missing or unparseable resolved_date are excluded.
+    Prefers closed_at (actual close epoch) over resolved_date (market end date).
+    Using resolved_date caused the 1D view to include positions closed on a different
+    day whose market happened to resolve today, or vice versa.
+
+    For 1D: closed_at date must equal today ET (strict equality — not >= so future
+    dates can't accidentally appear). Falls back to resolved_date for legacy rows
+    without closed_at.
     """
     if range_ == "all":
         return closed
     cutoff = range_cutoff_et(range_)
     if cutoff is None:
         return closed
+
+    tz = _et_zone()
     result = []
     for p in closed:
-        if not p.resolved_date:
+        if p.closed_at:
+            try:
+                close_date = datetime.fromtimestamp(p.closed_at, tz=tz).date()
+            except (OSError, OverflowError, ValueError):
+                continue
+        elif p.resolved_date:
+            try:
+                close_date = date.fromisoformat(p.resolved_date[:10])
+            except (ValueError, TypeError):
+                continue
+        else:
             continue
-        try:
-            d = date.fromisoformat(p.resolved_date[:10])
-            if d >= cutoff:
+
+        if range_ == "1d":
+            if close_date == cutoff:
                 result.append(p)
-        except (ValueError, TypeError):
-            pass
+        else:
+            if close_date >= cutoff:
+                result.append(p)
     return result
 
 

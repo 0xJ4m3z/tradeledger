@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import List
 
 from PySide6.QtCore import Qt, Signal
@@ -14,6 +15,8 @@ from PySide6.QtWidgets import (
 
 from app.database import (
     clear_wallet_snapshots_today,
+    compute_pnl_for_range,
+    count_closed_for_range,
     load_last_wallet,
     load_loss_watch_acknowledged,
     load_wallet_snapshots,
@@ -24,9 +27,16 @@ from app.debug import _dlog
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 from app.services.loss_watch import compute_loss_watch_count
 from app.services.metrics import compute_dashboard_metrics, compute_total_tracked_value
-from app.services.pnl_today import filter_closed_by_range, is_data_partial
+from app.services.pnl_today import filter_closed_by_range
 from app.ui.pnl_chart import PnlChartWidget
 from app.ui.wallet_panel import WalletPanel
+
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    _ET_ZONE = _ZoneInfo("America/New_York")
+except Exception:
+    from datetime import timezone, timedelta as _td
+    _ET_ZONE = timezone(_td(hours=-5))
 
 # ── Palette ────────────────────────────────────────────────────────────────────
 _GREEN   = "#3fb950"
@@ -253,8 +263,20 @@ def _resolved_section(positions: List[ResolvedPosition]) -> QWidget:
 
 # ── Closed positions section ───────────────────────────────────────────────────
 
-_CLS_HDRS  = ["Market", "Outcome", "Result", "Cost Basis", "Proceeds", "Realized P/L", "P/L %", "Resolved"]
+_CLS_HDRS  = ["Market", "Outcome", "Result", "Cost Basis", "Proceeds", "Realized P/L", "P/L %", "Closed"]
 _CLS_ALIGN = [_L, _L, _L, _R, _R, _R, _R, _L]
+
+
+def _fmt_closed_date(p: ResolvedPosition) -> str:
+    """Return the actual close date in ET (from closed_at), falling back to resolved_date."""
+    if p.closed_at:
+        try:
+            return datetime.fromtimestamp(p.closed_at, tz=_ET_ZONE).strftime("%Y-%m-%d")
+        except (OSError, OverflowError, ValueError):
+            pass
+    if p.resolved_date:
+        return p.resolved_date[:10]
+    return "—"
 
 
 def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") -> QWidget:
@@ -279,7 +301,6 @@ def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") 
     for r, p in enumerate(positions, start=1):
         pc = _pnl_color(p.realized_pnl)
         rc = _GREEN if p.is_win else _RED
-        resolved_str = (p.resolved_date or "")[:10] if p.resolved_date else "—"
         cells = [
             (p.market,                         _L, _TEXT),
             (p.outcome_held,                   _L, _TEXT),
@@ -288,7 +309,7 @@ def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") 
             (f"${p.redeem_value:,.2f}",        _R, _TEXT),
             (f"${p.realized_pnl:,.2f}",        _R, pc),
             (f"{p.realized_pnl_pct:+.1f}%",   _R, pc),
-            (resolved_str,                     _L, _MUTED),
+            (_fmt_closed_date(p),              _L, _MUTED),
         ]
         for col, (text, align, color) in enumerate(cells):
             grid.addWidget(_row_cell(text, align, color), r, col)
@@ -610,17 +631,20 @@ class OverviewWidget(QWidget):
         self._update_metric_cards()
 
     def _update_metric_cards(self) -> None:
-        filtered = filter_closed_by_range(self._closed_positions, self._range)
-        partial  = is_data_partial(self._closed_positions, self._range) or self._chart.is_partial
-        prefix   = "~" if partial else ""
+        # Query SQLite directly so stats are not capped by the in-memory scroll list.
+        # This ensures 1W/1M/1Y/YTD/All ranges reflect all persisted history.
+        if self._confirmed_wallet:
+            pnl   = compute_pnl_for_range(self._confirmed_wallet, self._range)
+            count = count_closed_for_range(self._confirmed_wallet, self._range)
+        else:
+            filtered = filter_closed_by_range(self._closed_positions, self._range)
+            pnl   = sum(p.realized_pnl for p in filtered)
+            count = len(filtered)
 
-        pnl   = sum(p.realized_pnl for p in filtered)
-        color = _GREEN if pnl > 0 else (_RED if pnl < 0 else _MUTED)
-        display = f"{prefix}${pnl:+,.2f}" if pnl != 0 else f"{prefix}$0.00"
+        color   = _GREEN if pnl > 0 else (_RED if pnl < 0 else _MUTED)
+        display = f"${pnl:+,.2f}" if pnl != 0 else "$0.00"
         self._pnl_today_card.update_value(display, color)
-        self._trades_today_card.update_value(
-            f"{prefix}{len(filtered)}" if filtered else "0", _TEXT
-        )
+        self._trades_today_card.update_value(str(count) if count else "0", _TEXT)
 
     # ── Closed cache updates (backfill pages) ─────────────────────────────────
 

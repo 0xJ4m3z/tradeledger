@@ -110,30 +110,33 @@ class _FetchThread(QThread):
 
 
 class _BackfillThread(QThread):
-    """Fetch ALL remaining pages of closed positions and upsert into the local cache.
+    """Fetch remaining pages of closed positions and upsert into the local cache.
 
-    Starts at _BACKFILL_START (after the 2-page main fetch) and runs until the API
-    returns an empty or partial page. Emits page_done after each page so the UI can
-    show progressive updates, and done when all pages have been fetched.
+    Accepts a start_offset so that pages already present in the cache are skipped —
+    the caller passes count_closed_positions_cache() so we never re-fetch history
+    that survived from the previous session.
     """
-    page_done = Signal()  # emitted after each page is successfully upserted
-    done      = Signal()  # emitted when backfill is fully complete
+    page_done = Signal()
+    done      = Signal()
 
-    def __init__(self, address: str):
+    def __init__(self, address: str, start_offset: int = _BACKFILL_START):
         super().__init__()
-        self._address = address
+        self._address      = address
+        self._start_offset = start_offset
 
     def run(self) -> None:
-        offset = _BACKFILL_START
+        offset = self._start_offset
         while True:
             try:
                 page = fetch_closed_positions_page(self._address, offset)
             except (PolymarketLookupError, Exception):
                 break
             if not page:
+                _dlog("backfill", "closed offset=%d: empty page — done", offset)
                 break
             try:
                 upsert_closed_positions_cache(page, self._address)
+                _dlog("backfill", "closed offset=%d  page_size=%d", offset, len(page))
                 self.page_done.emit()
             except Exception:
                 pass
@@ -141,6 +144,53 @@ class _BackfillThread(QThread):
                 break
             offset += len(page)
             self.msleep(2000)
+        self.done.emit()
+
+
+class _ActivityBackfillThread(QThread):
+    """Fetch older pages of activity history and persist to the SQLite cache.
+
+    Starts at start_offset (= current cache row count) so that pages already
+    persisted from prior sessions are not re-fetched.  Runs until the API
+    returns an empty or partial page, signalling the end of the history.
+    """
+    page_done = Signal(int, int)  # (rows_inserted, total_in_cache)
+    done      = Signal()
+
+    def __init__(self, address: str, start_offset: int):
+        super().__init__()
+        self._address      = address
+        self._start_offset = start_offset
+
+    def run(self) -> None:
+        offset = self._start_offset
+        while True:
+            try:
+                page = fetch_activity_page(self._address, offset)
+            except Exception:
+                break
+            if not page:
+                _dlog("activity_backfill", "offset=%d: empty page — API exhausted", offset)
+                break
+            before = count_activity_cache(self._address)
+            try:
+                upsert_activity_cache(self._address, page)
+            except Exception:
+                break
+            after    = count_activity_cache(self._address)
+            inserted = after - before
+            _dlog(
+                "activity_backfill",
+                "offset=%d  page=%d  inserted=%d  deduped=%d  total=%d",
+                offset, len(page), inserted, len(page) - inserted, after,
+            )
+            self.page_done.emit(inserted, after)
+            if len(page) < 100:
+                _dlog("activity_backfill", "offset=%d: partial page (%d rows) — done",
+                      offset, len(page))
+                break
+            offset += len(page)
+            self.msleep(500)
         self.done.emit()
 
 
@@ -208,6 +258,7 @@ class WalletPanel(QWidget):
         super().__init__()
         self._thread: _FetchThread | None = None
         self._backfill: _BackfillThread | None = None
+        self._activity_backfill: _ActivityBackfillThread | None = None
         self._activity_page_thread: _ActivityPageThread | None = None
         self._closed_page_thread: _ClosedPageThread | None = None
         self._current_value      = 0.0
@@ -389,7 +440,12 @@ class WalletPanel(QWidget):
     def _start_backfill(self) -> None:
         if self._backfill and self._backfill.isRunning():
             return
-        self._backfill = _BackfillThread(self._full_address)
+        # Start from the current cache size so already-persisted pages are skipped
+        cached_count = count_closed_positions_cache(self._full_address)
+        start_offset = max(_BACKFILL_START, cached_count)
+        _dlog("backfill", "starting closed backfill at offset %d (cache has %d)",
+              start_offset, cached_count)
+        self._backfill = _BackfillThread(self._full_address, start_offset)
         self._backfill.done.connect(self._on_backfill_done)
         self._backfill.start()
 
@@ -401,6 +457,22 @@ class WalletPanel(QWidget):
         except Exception:
             pass
         self.activity_fetched.emit(activity)
+        self._start_activity_backfill()
+
+    def _start_activity_backfill(self) -> None:
+        if self._activity_backfill and self._activity_backfill.isRunning():
+            return
+        start_offset = count_activity_cache(self._full_address)
+        if start_offset == 0:
+            return
+        _dlog("activity_backfill", "starting at offset %d", start_offset)
+        self._activity_backfill = _ActivityBackfillThread(self._full_address, start_offset)
+        self._activity_backfill.done.connect(self._on_activity_backfill_done)
+        self._activity_backfill.start()
+
+    def _on_activity_backfill_done(self) -> None:
+        total = count_activity_cache(self._full_address)
+        _dlog("activity_backfill", "done — %d total activity rows in cache", total)
 
     def _on_backfill_done(self) -> None:
         """Reload the most recent 2 000 from cache once all backfill pages are complete."""
