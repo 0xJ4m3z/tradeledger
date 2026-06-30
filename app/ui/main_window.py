@@ -122,10 +122,10 @@ class MainWindow(QMainWindow):
         # The WalletPanel auto-triggers a live refresh in the background; cached data
         # provides instant display while the fetch completes.
         _init_wallet  = load_last_wallet()
-        cached_active   = load_active_positions_cache(_init_wallet)   if _init_wallet else []
-        cached_resolved = load_resolved_positions_cache(_init_wallet) if _init_wallet else []
-        cached_closed   = load_closed_positions_cache(_init_wallet)   if _init_wallet else []
-        cached_activity = load_activity_cache(_init_wallet)           if _init_wallet else []
+        cached_active   = load_active_positions_cache(_init_wallet)              if _init_wallet else []
+        cached_resolved = load_resolved_positions_cache(_init_wallet)            if _init_wallet else []
+        cached_closed   = load_closed_positions_cache(_init_wallet, limit=2000)  if _init_wallet else []
+        cached_activity = load_activity_cache(_init_wallet, limit=2000)          if _init_wallet else []
 
         _dlog("startup",
               "wallet=%s | active=%d | resolved=%d | closed=%d | activity=%d",

@@ -645,10 +645,9 @@ def load_activity_cache(
 # ── DB-backed range stat helpers ──────────────────────────────────────────────
 
 def _range_start_epoch(range_key: str) -> Optional[int]:
-    """Return the Unix timestamp (ET-aware) for the start of the given range.
+    """Return the Unix timestamp (ET, midnight-aligned for 1D) for the range start.
 
-    Returns None for 'all' (no time filter).  Uses closed_at, so positions
-    without a recorded close timestamp are excluded from filtered ranges.
+    Returns None for 'all' (no time filter).
     """
     try:
         from zoneinfo import ZoneInfo
@@ -676,29 +675,62 @@ def _range_start_epoch(range_key: str) -> Optional[int]:
     return int(start.timestamp())
 
 
+def _range_start_date(range_key: str) -> Optional[str]:
+    """Return ISO date string (ET) for the range start, for use in resolved_date fallback.
+
+    Returns None for 'all'.  Derived from _range_start_epoch so both stay in sync.
+    """
+    since = _range_start_epoch(range_key)
+    if since is None:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/New_York")
+    except Exception:
+        from datetime import timezone, timedelta as _td
+        tz = timezone(_td(hours=-5))
+    return datetime.fromtimestamp(since, tz=tz).date().isoformat()
+
+
+# Common WHERE clause for time-filtered range queries.
+# Prefers closed_at (actual close epoch) when set; falls back to resolved_date
+# (market end date) for legacy rows that pre-date the closed_at column.
+_RANGE_WHERE = """
+    (
+        (closed_at IS NOT NULL AND closed_at >= :epoch)
+        OR (closed_at IS NULL AND resolved_date >= :date)
+    )
+"""
+
+
 def compute_pnl_for_range(wallet_address: str, range_key: str) -> float:
     """Sum realized_pnl for closed positions in the range, querying SQLite directly.
 
-    Uses closed_at for time filtering — bypasses the in-memory cap so stats are
-    correct even when the wallet has more positions than the scroll-loaded list.
-    Positions without closed_at are only included in the 'all' range.
+    For time-filtered ranges (1D, 1W, …):
+      • rows WITH closed_at: filtered by closed_at epoch (correct actual close time)
+      • rows WITHOUT closed_at: filtered by resolved_date string (legacy fallback)
+
+    This means legacy rows (inserted before the closed_at column was added) are still
+    counted, using the market resolution date as an approximation.
+
+    Bypasses the in-memory scroll list so stats are not capped at 2000 rows.
     """
     if not wallet_address:
         return 0.0
-    since = _range_start_epoch(range_key)
+    since_epoch = _range_start_epoch(range_key)
+    since_date  = _range_start_date(range_key)
     with get_connection() as conn:
-        if since is None:
+        if since_epoch is None:
             row = conn.execute(
                 "SELECT COALESCE(SUM(realized_pnl), 0.0) AS total "
-                "FROM closed_positions_cache WHERE wallet_address = ?",
-                (wallet_address,),
+                "FROM closed_positions_cache WHERE wallet_address = :w",
+                {"w": wallet_address},
             ).fetchone()
         else:
             row = conn.execute(
                 "SELECT COALESCE(SUM(realized_pnl), 0.0) AS total "
-                "FROM closed_positions_cache "
-                "WHERE wallet_address = ? AND COALESCE(closed_at, 0) >= ?",
-                (wallet_address, since),
+                "FROM closed_positions_cache WHERE wallet_address = :w AND" + _RANGE_WHERE,
+                {"w": wallet_address, "epoch": since_epoch, "date": since_date},
             ).fetchone()
     return round(float(row["total"]), 2) if row else 0.0
 
@@ -707,17 +739,18 @@ def count_closed_for_range(wallet_address: str, range_key: str) -> int:
     """Count closed positions in the range by querying SQLite directly."""
     if not wallet_address:
         return 0
-    since = _range_start_epoch(range_key)
+    since_epoch = _range_start_epoch(range_key)
+    since_date  = _range_start_date(range_key)
     with get_connection() as conn:
-        if since is None:
+        if since_epoch is None:
             row = conn.execute(
-                "SELECT COUNT(*) AS n FROM closed_positions_cache WHERE wallet_address = ?",
-                (wallet_address,),
+                "SELECT COUNT(*) AS n FROM closed_positions_cache WHERE wallet_address = :w",
+                {"w": wallet_address},
             ).fetchone()
         else:
             row = conn.execute(
                 "SELECT COUNT(*) AS n FROM closed_positions_cache "
-                "WHERE wallet_address = ? AND COALESCE(closed_at, 0) >= ?",
-                (wallet_address, since),
+                "WHERE wallet_address = :w AND" + _RANGE_WHERE,
+                {"w": wallet_address, "epoch": since_epoch, "date": since_date},
             ).fetchone()
     return row["n"] if row else 0

@@ -517,16 +517,32 @@ class TestRangeStatsFromDB:
         assert isolated_db.compute_pnl_for_range("", "1d") == 0.0
         assert isolated_db.count_closed_for_range("", "1d") == 0
 
-    def test_positions_without_closed_at_excluded_from_range_but_included_in_all(
-        self, isolated_db
-    ):
-        """closed_at=None positions are excluded from time-filtered ranges but appear in 'all'."""
-        p = _closed_ts("M", pnl=99.0, closed_at=None)
-        isolated_db.upsert_closed_positions_cache([p], WALLET)
-        assert isolated_db.compute_pnl_for_range(WALLET, "1d")  == 0.0
-        assert isolated_db.count_closed_for_range(WALLET, "1d")  == 0
-        assert isolated_db.compute_pnl_for_range(WALLET, "all") == 99.0
-        assert isolated_db.count_closed_for_range(WALLET, "all") == 1
+    def test_positions_without_closed_at_use_resolved_date_fallback(self, isolated_db):
+        """closed_at=None rows fall back to resolved_date for range filtering.
+
+        If resolved_date matches today the position appears in 1d stats.
+        If resolved_date is old it is excluded from 1d (but included in 'all').
+        """
+        from app.services.pnl_today import today_date_et
+        today_str = today_date_et().isoformat()
+
+        p_today = _closed_ts("Today", pnl=30.0, closed_at=None)
+        # Override resolved_date to today so it matches the 1d fallback filter
+        p_today = ResolvedPosition(
+            market="Today", outcome_held="Yes", winning_outcome="Yes",
+            quantity=100.0, cost_basis=50.0, redeem_value=80.0,
+            redeemed=True, resolved_date=today_str, closed_at=None,
+        )
+        p_old = _closed_ts("Old", pnl=20.0, closed_at=None)  # resolved_date="2025-01-01"
+
+        isolated_db.upsert_closed_positions_cache([p_today, p_old], WALLET)
+
+        # Today's position (resolved_date=today) IS counted via the fallback
+        assert isolated_db.count_closed_for_range(WALLET, "1d")  == 1
+        assert isolated_db.compute_pnl_for_range(WALLET,  "1d")  == 30.0
+        # Old position not in 1d but in 'all'
+        assert isolated_db.compute_pnl_for_range(WALLET, "all") == 50.0
+        assert isolated_db.count_closed_for_range(WALLET, "all") == 2
 
     def test_wallet_isolation(self, isolated_db):
         wallet_b = "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB2"

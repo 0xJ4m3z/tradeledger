@@ -17,6 +17,7 @@ from app.database import (
     clear_wallet_snapshots_today,
     compute_pnl_for_range,
     count_closed_for_range,
+    count_closed_positions_cache,
     load_last_wallet,
     load_loss_watch_acknowledged,
     load_wallet_snapshots,
@@ -631,9 +632,16 @@ class OverviewWidget(QWidget):
         self._update_metric_cards()
 
     def _update_metric_cards(self) -> None:
-        # Query SQLite directly so stats are not capped by the in-memory scroll list.
-        # This ensures 1W/1M/1Y/YTD/All ranges reflect all persisted history.
-        if self._confirmed_wallet:
+        # Primary: query SQLite directly for full history (not capped by scroll list).
+        # Guard: only use DB when it actually has rows for this wallet.  If the cache
+        # is empty (first run, or the "closed positions" API returned nothing yet),
+        # fall back to the in-memory list populated by the live fetch so the cards
+        # still show something meaningful rather than zero.
+        use_db = (
+            bool(self._confirmed_wallet)
+            and count_closed_positions_cache(self._confirmed_wallet) > 0
+        )
+        if use_db:
             pnl   = compute_pnl_for_range(self._confirmed_wallet, self._range)
             count = count_closed_for_range(self._confirmed_wallet, self._range)
         else:
