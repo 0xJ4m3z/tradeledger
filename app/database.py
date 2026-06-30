@@ -151,6 +151,19 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_activity_wallet_ts "
             "ON activity_cache(wallet_address, timestamp DESC)"
         )
+        # Migrate activity cache to v2 dedup key (adds title+outcome to the key).
+        # Old key (ts|type|side|size) caused false dedup collisions when different
+        # markets shared the same timestamp, type, side, and size, capping the cache
+        # at ~2933 rows.  Clear the old rows; the backfill thread will re-hydrate.
+        activity_schema = conn.execute(
+            "SELECT value FROM settings WHERE key = 'activity_key_schema'"
+        ).fetchone()
+        if activity_schema is None or activity_schema["value"] < "2":
+            conn.execute("DELETE FROM activity_cache")
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) "
+                "VALUES ('activity_key_schema', '2')"
+            )
         conn.commit()
 
 
@@ -540,8 +553,12 @@ def load_resolved_positions_cache(wallet_address: str) -> List[ResolvedPosition]
 # ── Activity cache ────────────────────────────────────────────────────────────
 
 def _activity_event_key(a: UserActivity) -> str:
-    """Deterministic dedup key for an activity event."""
-    return f"{a.timestamp}|{a.type}|{a.side}|{a.size:.6f}"
+    """Deterministic dedup key for an activity event.
+
+    Includes title+outcome so two different markets that happen to share the
+    same timestamp, type, side, and size are stored as distinct rows (v2 key).
+    """
+    return f"{a.timestamp}|{a.type}|{a.title}|{a.outcome}|{a.side}|{a.size:.6f}"
 
 
 def upsert_activity_cache(
@@ -609,6 +626,144 @@ def count_activity_cache(wallet_address: str) -> int:
             (wallet_address,),
         ).fetchone()
     return row["n"] if row else 0
+
+
+def load_all_activity_for_wallet(wallet_address: str) -> List[UserActivity]:
+    """Load ALL cached activity for wallet, newest first. No row limit."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT timestamp, type, title, outcome, side, size, usdc_size, price
+            FROM activity_cache WHERE wallet_address = ?
+            ORDER BY timestamp DESC
+            """,
+            (wallet_address,),
+        ).fetchall()
+    return [
+        UserActivity(
+            timestamp=r["timestamp"], type=r["type"], title=r["title"],
+            outcome=r["outcome"], side=r["side"], size=r["size"],
+            usdc_size=r["usdc_size"], price=r["price"],
+        )
+        for r in rows
+    ]
+
+
+def load_all_closed_for_wallet(wallet_address: str) -> List[ResolvedPosition]:
+    """Load ALL cached closed positions for wallet, newest first. No row limit."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT market, outcome_held, winning_outcome, quantity, cost_basis,
+                   redeem_value, redeemed, resolved_date, closed_at
+            FROM closed_positions_cache WHERE wallet_address = ?
+            ORDER BY COALESCE(closed_at, 0) DESC, resolved_date DESC, fetched_at DESC
+            """,
+            (wallet_address,),
+        ).fetchall()
+    return [
+        ResolvedPosition(
+            market=r["market"], outcome_held=r["outcome_held"],
+            winning_outcome=r["winning_outcome"], quantity=r["quantity"],
+            cost_basis=r["cost_basis"], redeem_value=r["redeem_value"],
+            redeemed=bool(r["redeemed"]), resolved_date=r["resolved_date"],
+            closed_at=r["closed_at"],
+        )
+        for r in rows
+    ]
+
+
+def count_trades_from_activity_cache(wallet_address: str, range_key: str) -> int:
+    """Count distinct market titles in activity cache for the given range.
+
+    'Trades' = distinct market windows with any activity in the range.
+    """
+    if not wallet_address:
+        return 0
+    since_epoch = _range_start_epoch(range_key)
+    with get_connection() as conn:
+        if since_epoch is None:
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT title) AS n FROM activity_cache "
+                "WHERE wallet_address = ?",
+                (wallet_address,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT title) AS n FROM activity_cache "
+                "WHERE wallet_address = ? AND timestamp >= ?",
+                (wallet_address, since_epoch),
+            ).fetchone()
+    return row["n"] if row else 0
+
+
+def load_activity_for_range(
+    wallet_address: str, range_key: str
+) -> List[UserActivity]:
+    """Load all activity for wallet in the given time range, newest first."""
+    since_epoch = _range_start_epoch(range_key)
+    with get_connection() as conn:
+        if since_epoch is None:
+            rows = conn.execute(
+                "SELECT timestamp, type, title, outcome, side, size, usdc_size, price "
+                "FROM activity_cache WHERE wallet_address = ? ORDER BY timestamp DESC",
+                (wallet_address,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT timestamp, type, title, outcome, side, size, usdc_size, price "
+                "FROM activity_cache WHERE wallet_address = ? AND timestamp >= ? "
+                "ORDER BY timestamp DESC",
+                (wallet_address, since_epoch),
+            ).fetchall()
+    return [
+        UserActivity(
+            timestamp=r["timestamp"], type=r["type"], title=r["title"],
+            outcome=r["outcome"], side=r["side"], size=r["size"],
+            usdc_size=r["usdc_size"], price=r["price"],
+        )
+        for r in rows
+    ]
+
+
+def load_closed_for_range(
+    wallet_address: str, range_key: str
+) -> List[ResolvedPosition]:
+    """Load closed positions for wallet in the given time range, newest first."""
+    since_epoch = _range_start_epoch(range_key)
+    since_date  = _range_start_date(range_key)
+    with get_connection() as conn:
+        if since_epoch is None:
+            rows = conn.execute(
+                "SELECT market, outcome_held, winning_outcome, quantity, cost_basis, "
+                "redeem_value, redeemed, resolved_date, closed_at "
+                "FROM closed_positions_cache WHERE wallet_address = :w "
+                "ORDER BY COALESCE(closed_at, 0) DESC",
+                {"w": wallet_address},
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT market, outcome_held, winning_outcome, quantity, cost_basis, "
+                "redeem_value, redeemed, resolved_date, closed_at "
+                "FROM closed_positions_cache WHERE wallet_address = :w AND" + _RANGE_WHERE +
+                " ORDER BY COALESCE(closed_at, 0) DESC",
+                {"w": wallet_address, "epoch": since_epoch, "date": since_date},
+            ).fetchall()
+    return [
+        ResolvedPosition(
+            market=r["market"], outcome_held=r["outcome_held"],
+            winning_outcome=r["winning_outcome"], quantity=r["quantity"],
+            cost_basis=r["cost_basis"], redeem_value=r["redeem_value"],
+            redeemed=bool(r["redeemed"]), resolved_date=r["resolved_date"],
+            closed_at=r["closed_at"],
+        )
+        for r in rows
+    ]
+
+
+# Aliases for external callers that use the spec-requested names
+get_activity_cache_count = count_activity_cache
+get_closed_cache_count   = count_closed_positions_cache
 
 
 def load_activity_cache(

@@ -282,3 +282,71 @@ def count_trades_range(
         a.title for a in activity
         if a.title and datetime.fromtimestamp(a.timestamp, tz=tz).date() >= cutoff_date
     })
+
+
+# ── New authoritative helpers (v0.3.1) ────────────────────────────────────────
+
+def filter_activity_by_range(
+    activity: List[UserActivity], range_: str
+) -> List[UserActivity]:
+    """Filter activity to events within the given range using ET calendar dates.
+
+    1D uses strict equality (date == today); other ranges use >= cutoff.
+    """
+    if range_ == "all" or not activity:
+        return list(activity)
+    tz = _et_zone()
+    today = datetime.now(tz).date()
+    cutoff = range_cutoff_et(range_)
+    if cutoff is None:
+        return list(activity)
+    result = []
+    for a in activity:
+        try:
+            a_date = datetime.fromtimestamp(a.timestamp, tz=tz).date()
+        except (OSError, OverflowError, ValueError):
+            continue
+        if range_ == "1d":
+            if a_date == today:
+                result.append(a)
+        else:
+            if a_date >= cutoff:
+                result.append(a)
+    return result
+
+
+def count_trades(activity: List[UserActivity], range_: str) -> int:
+    """Count distinct market titles with any activity in the given range (ET).
+
+    This is the canonical Trades metric: one trade per market window regardless
+    of how many BUY/SELL/REDEEM rows that market generated.
+    """
+    filtered = filter_activity_by_range(activity, range_)
+    return len({a.title for a in filtered if a.title})
+
+
+def classify_closed_positions(
+    closed: List[ResolvedPosition],
+    activity: List[UserActivity],
+) -> None:
+    """Set close_type on each position in-place using Activity SELL cross-reference.
+
+    Priority order:
+      1. Activity contains a SELL for (market, outcome) → SOLD
+      2. realized_pnl > 0                               → REDEEMED_WIN
+      3. redeem_value ≈ 0                               → RESOLVED_LOSS
+      4. realized_pnl < 0 with partial recovery         → SOLD
+      5. Otherwise                                       → UNKNOWN
+    """
+    sell_keys = {(a.title, a.outcome) for a in activity if a.side == "SELL"}
+    for p in closed:
+        if (p.market, p.outcome_held) in sell_keys:
+            p.close_type = "SOLD"
+        elif p.realized_pnl > 0:
+            p.close_type = "REDEEMED_WIN"
+        elif p.redeem_value < 0.005:
+            p.close_type = "RESOLVED_LOSS"
+        elif p.realized_pnl < 0:
+            p.close_type = "SOLD"
+        else:
+            p.close_type = "UNKNOWN"

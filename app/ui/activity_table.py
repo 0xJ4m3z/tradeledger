@@ -37,8 +37,11 @@ _TYPE_COLORS = {
     "WITHDRAWAL":      _RED,
 }
 
-# Trigger a load when this many pixels remain before the very bottom of the scroll
 _SCROLL_THRESHOLD_PX = 80
+
+# Show first 2000 rows immediately; scroll extends from _all_activity before
+# requesting additional data from the API/DB.
+_INITIAL_DISPLAY = 2000
 
 
 def _cell(text: str, align=Qt.AlignmentFlag.AlignLeft) -> QTableWidgetItem:
@@ -57,7 +60,6 @@ def _populate_row(table: QTableWidget, row: int, a: UserActivity) -> None:
     if type_color:
         type_item.setForeground(type_color)
 
-    # For REDEEM events: side column shows "REDEEM"; outcome shows Win/Loss
     if is_redeem:
         side_item = _cell("REDEEM")
         side_item.setForeground(_MUTED)
@@ -85,20 +87,20 @@ def _populate_row(table: QTableWidget, row: int, a: UserActivity) -> None:
 
 
 class ActivityTable(QWidget):
-    refresh_requested  = Signal()
-    load_more_requested = Signal(int)   # emits the current row count as the next offset
+    refresh_requested   = Signal()
+    load_more_requested = Signal(int)  # emits the current row count as the next offset
 
     def __init__(self, activity: List[UserActivity]):
         super().__init__()
         self._all_activity: List[UserActivity] = list(activity)
-        self._has_more  = True   # assume there might be more until proven otherwise
+        self._displayed_count = min(_INITIAL_DISPLAY, len(activity))
+        self._has_more  = True
         self._loading   = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        # Header row
         header_row = QHBoxLayout()
         self._header = QLabel(f"Activity  ({len(activity)})")
         self._header.setStyleSheet("color: #c9d1d9; font-size: 14px; font-weight: 600;")
@@ -121,7 +123,8 @@ class ActivityTable(QWidget):
         search.setMaximumWidth(480)
         layout.addWidget(search)
 
-        self._table = QTableWidget(len(activity), len(COLUMNS))
+        display_slice = self._all_activity[:self._displayed_count]
+        self._table = QTableWidget(len(display_slice), len(COLUMNS))
         self._table.setHorizontalHeaderLabels(COLUMNS)
         self._table.setAlternatingRowColors(True)
         self._table.setShowGrid(False)
@@ -129,7 +132,7 @@ class ActivityTable(QWidget):
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
 
-        for row, a in enumerate(activity):
+        for row, a in enumerate(display_slice):
             _populate_row(self._table, row, a)
 
         hdr = self._table.horizontalHeader()
@@ -137,7 +140,6 @@ class ActivityTable(QWidget):
         for col in [0, 1, 3, 4, 5, 6, 7]:
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
 
-        # Scroll-to-bottom detection
         self._table.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
         search.textChanged.connect(self._apply_filter)
@@ -147,13 +149,15 @@ class ActivityTable(QWidget):
         """Merge fresh activity: first call sets the list; subsequent calls prepend new records."""
         if not self._all_activity:
             # First load — populate from scratch
-            self._all_activity = list(activity)
-            self._has_more     = len(activity) >= 100
-            self._loading      = False
+            self._all_activity    = list(activity)
+            self._displayed_count = min(_INITIAL_DISPLAY, len(activity))
+            self._has_more        = len(activity) >= 100
+            self._loading         = False
             self._load_status.setText("")
             self._header.setText(f"Activity  ({len(activity)})")
-            self._table.setRowCount(len(activity))
-            for row, a in enumerate(activity):
+            display_slice = self._all_activity[:self._displayed_count]
+            self._table.setRowCount(len(display_slice))
+            for row, a in enumerate(display_slice):
                 _populate_row(self._table, row, a)
             return
 
@@ -162,7 +166,8 @@ class ActivityTable(QWidget):
         fresh = [a for a in activity if (a.timestamp, a.type, a.side, a.size) not in seen]
         if not fresh:
             return
-        self._all_activity = fresh + self._all_activity
+        self._all_activity    = fresh + self._all_activity
+        self._displayed_count += len(fresh)
         self._header.setText(f"Activity  ({len(self._all_activity)})")
         for i, a in enumerate(fresh):
             self._table.insertRow(i)
@@ -170,9 +175,10 @@ class ActivityTable(QWidget):
 
     def reset_activity(self) -> None:
         """Clear all loaded activity (called on wallet change)."""
-        self._all_activity = []
-        self._has_more     = True
-        self._loading      = False
+        self._all_activity    = []
+        self._displayed_count = 0
+        self._has_more        = True
+        self._loading         = False
         self._load_status.setText("")
         self._header.setText("Activity  (0)")
         self._table.setRowCount(0)
@@ -195,9 +201,6 @@ class ActivityTable(QWidget):
             return
 
         self._all_activity.extend(fresh)
-        # Keep scrolling enabled as long as fresh rows arrived — the next page may come
-        # from the local cache (partial page) before eventually hitting the API.
-        # _has_more is only cleared when fresh is empty (handled above).
         self._has_more = True
         self._load_status.setText("")
         self._header.setText(f"Activity  ({len(self._all_activity)})")
@@ -206,15 +209,26 @@ class ActivityTable(QWidget):
         self._table.setRowCount(start_row + len(fresh))
         for i, a in enumerate(fresh):
             _populate_row(self._table, start_row + i, a)
+        self._displayed_count += len(fresh)
 
     def _on_scroll(self, value: int) -> None:
         sb = self._table.verticalScrollBar()
-        if (
-            self._has_more
-            and not self._loading
-            and sb.maximum() > 0
-            and value >= sb.maximum() - _SCROLL_THRESHOLD_PX
-        ):
+        if sb.maximum() <= 0 or value < sb.maximum() - _SCROLL_THRESHOLD_PX:
+            return
+        if self._loading:
+            return
+        # Extend the table from in-memory _all_activity before requesting from API/DB
+        if self._displayed_count < len(self._all_activity):
+            start = self._displayed_count
+            end   = min(start + 100, len(self._all_activity))
+            current_rows = self._table.rowCount()
+            self._table.setRowCount(current_rows + (end - start))
+            for i, a in enumerate(self._all_activity[start:end]):
+                _populate_row(self._table, current_rows + i, a)
+            self._displayed_count = end
+            return
+        # All in-memory rows shown — request older data from API/DB
+        if self._has_more:
             self._loading = True
             self._load_status.setText("Loading…")
             self.load_more_requested.emit(len(self._all_activity))

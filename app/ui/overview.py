@@ -15,9 +15,6 @@ from PySide6.QtWidgets import (
 
 from app.database import (
     clear_wallet_snapshots_today,
-    compute_pnl_for_range,
-    count_closed_for_range,
-    count_closed_positions_cache,
     load_last_wallet,
     load_loss_watch_acknowledged,
     load_wallet_snapshots,
@@ -28,7 +25,11 @@ from app.debug import _dlog
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 from app.services.loss_watch import compute_loss_watch_count
 from app.services.metrics import compute_dashboard_metrics, compute_total_tracked_value
-from app.services.pnl_today import filter_closed_by_range
+from app.services.pnl_today import (
+    classify_closed_positions,
+    count_trades,
+    filter_closed_by_range,
+)
 from app.ui.pnl_chart import PnlChartWidget
 from app.ui.wallet_panel import WalletPanel
 
@@ -560,6 +561,7 @@ class OverviewWidget(QWidget):
             fresh = [p for p in closed if (p.market, p.outcome_held, p.cost_basis) not in seen]
             if fresh:
                 self._closed_positions = fresh + self._closed_positions
+        classify_closed_positions(self._closed_positions, self._activity)
         metrics = compute_dashboard_metrics(active, resolved)
         self._active_value   = metrics["active_positions_value"]
         self._unrealized_pnl = metrics["unrealized_pnl"]
@@ -614,6 +616,8 @@ class OverviewWidget(QWidget):
                 self._activity = fresh + self._activity
         _dlog("activity", "fetched %d rows → merged to %d total (was %d)",
               len(activity), len(self._activity), before)
+        # Re-classify positions: new SELLs in activity may change close_type on existing positions
+        classify_closed_positions(self._closed_positions, self._activity)
         # Emit the full merged list so ActivityTable sees all rows, not just the API page.
         self.activity_changed.emit(self._activity)
         self._chart.update(self._activity, self._closed_positions, self._range)
@@ -632,27 +636,17 @@ class OverviewWidget(QWidget):
         self._update_metric_cards()
 
     def _update_metric_cards(self) -> None:
-        # Primary: query SQLite directly for full history (not capped by scroll list).
-        # Guard: only use DB when it actually has rows for this wallet.  If the cache
-        # is empty (first run, or the "closed positions" API returned nothing yet),
-        # fall back to the in-memory list populated by the live fetch so the cards
-        # still show something meaningful rather than zero.
-        use_db = (
-            bool(self._confirmed_wallet)
-            and count_closed_positions_cache(self._confirmed_wallet) > 0
-        )
-        if use_db:
-            pnl   = compute_pnl_for_range(self._confirmed_wallet, self._range)
-            count = count_closed_for_range(self._confirmed_wallet, self._range)
-        else:
-            filtered = filter_closed_by_range(self._closed_positions, self._range)
-            pnl   = sum(p.realized_pnl for p in filtered)
-            count = len(filtered)
+        # Use the complete in-memory lists loaded from SQLite on startup (no DB query).
+        # load_all_closed_for_wallet and load_all_activity_for_wallet bring ALL cached
+        # rows into memory at startup — no scroll, no limit, no DB round-trip here.
+        filtered = filter_closed_by_range(self._closed_positions, self._range)
+        pnl      = sum(p.realized_pnl for p in filtered)
+        trades   = count_trades(self._activity, self._range)
 
         color   = _GREEN if pnl > 0 else (_RED if pnl < 0 else _MUTED)
         display = f"${pnl:+,.2f}" if pnl != 0 else "$0.00"
         self._pnl_today_card.update_value(display, color)
-        self._trades_today_card.update_value(str(count) if count else "0", _TEXT)
+        self._trades_today_card.update_value(str(trades) if trades else "0", _TEXT)
 
     # ── Closed cache updates (backfill pages) ─────────────────────────────────
 
@@ -664,6 +658,7 @@ class OverviewWidget(QWidget):
             extra = [p for p in self._closed_positions
                      if (p.market, p.outcome_held, p.cost_basis) not in seen_backfill]
             self._closed_positions = list(all_closed) + extra
+        classify_closed_positions(self._closed_positions, self._activity)
         _dlog("backfill", "closed_positions now %d rows after cache update",
               len(self._closed_positions))
         filtered = filter_closed_by_range(self._closed_positions, self._range)
@@ -684,11 +679,12 @@ class OverviewWidget(QWidget):
         self._closed_positions = list(closed)
         if activity is not None:
             self._activity = list(activity)
+        classify_closed_positions(self._closed_positions, self._activity)
         _dlog("cache", "seed_from_cache: %d closed, %d activity",
               len(self._closed_positions), len(self._activity))
-        filtered = filter_closed_by_range(closed, self._range)
+        filtered = filter_closed_by_range(self._closed_positions, self._range)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
-        self._chart.update(self._activity, closed, self._range)
+        self._chart.update(self._activity, self._closed_positions, self._range)
         self._update_metric_cards()
 
     def request_refresh(self) -> None:

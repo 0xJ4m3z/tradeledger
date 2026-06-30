@@ -26,14 +26,30 @@ except Exception:
 
 COLUMNS = [
     "Market", "Outcome Held", "Winning Outcome", "Qty",
-    "Cost Basis", "Redeem Value", "Realized P/L", "P/L %", "Redeemed", "Closed Date",
+    "Cost Basis", "Proceeds", "Realized P/L", "P/L %", "Status", "Closed Date",
 ]
 
-_GREEN = QColor("#3fb950")
-_RED   = QColor("#f85149")
-_MUTED = QColor("#8b949e")
+_GREEN  = QColor("#3fb950")
+_RED    = QColor("#f85149")
+_MUTED  = QColor("#8b949e")
+_YELLOW = QColor("#e3b341")
 
 _SCROLL_THRESHOLD_PX = 80
+
+# Show first 2000 rows on startup; scroll extends from _all_positions before
+# emitting load_more_requested to avoid unnecessary network/DB calls.
+_INITIAL_DISPLAY = 2000
+
+_STATUS_TEXT = {
+    "REDEEMED_WIN":  "Win",
+    "SOLD":          "Sold",
+    "RESOLVED_LOSS": "Loss",
+}
+_STATUS_COLOR = {
+    "REDEEMED_WIN":  _GREEN,
+    "SOLD":          _YELLOW,
+    "RESOLVED_LOSS": _RED,
+}
 
 
 def _fmt_closed_date(p: ResolvedPosition) -> str:
@@ -74,9 +90,10 @@ def _populate_row(table: QTableWidget, row: int, p: ResolvedPosition) -> None:
     table.setItem(row, 6, _pnl_cell(p.realized_pnl))
     table.setItem(row, 7, _pnl_cell(p.realized_pnl_pct, "{:+.1f}%"))
 
-    status = _cell("Yes" if p.redeemed else "Pending")
-    status.setForeground(_GREEN if p.redeemed else _MUTED)
-    table.setItem(row, 8, status)
+    ct = getattr(p, "close_type", "UNKNOWN")
+    status_item = _cell(_STATUS_TEXT.get(ct, "—"))
+    status_item.setForeground(_STATUS_COLOR.get(ct, _MUTED))
+    table.setItem(row, 8, status_item)
 
     date_item = _cell(_fmt_closed_date(p))
     date_item.setForeground(_MUTED)
@@ -84,7 +101,7 @@ def _populate_row(table: QTableWidget, row: int, p: ResolvedPosition) -> None:
 
 
 class ResolvedPositionsTable(QWidget):
-    refresh_requested  = Signal()
+    refresh_requested   = Signal()
     load_more_requested = Signal(int)  # emits current row count as next offset
 
     def __init__(
@@ -94,11 +111,12 @@ class ResolvedPositionsTable(QWidget):
         show_refresh: bool = False,
     ):
         super().__init__()
-        self._label          = label
-        self._all_positions  = list(positions)
-        self._has_more       = True
-        self._loading        = False
-        self._infinite_scroll = show_refresh  # only Closed Positions tab uses scroll-load
+        self._label           = label
+        self._all_positions   = list(positions)   # complete in-memory dataset
+        self._displayed_count = min(_INITIAL_DISPLAY, len(positions))
+        self._has_more        = True
+        self._loading         = False
+        self._infinite_scroll = show_refresh  # only Closed Positions tab uses API scroll-load
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -127,7 +145,8 @@ class ResolvedPositionsTable(QWidget):
         search.setMaximumWidth(480)
         layout.addWidget(search)
 
-        self._table = QTableWidget(len(positions), len(COLUMNS))
+        display_slice = self._all_positions[:self._displayed_count]
+        self._table = QTableWidget(len(display_slice), len(COLUMNS))
         self._table.setHorizontalHeaderLabels(COLUMNS)
         self._table.setAlternatingRowColors(True)
         self._table.setShowGrid(False)
@@ -135,33 +154,32 @@ class ResolvedPositionsTable(QWidget):
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
 
-        for row, p in enumerate(positions):
+        for row, p in enumerate(display_slice):
             _populate_row(self._table, row, p)
 
         hdr = self._table.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for col in range(1, len(COLUMNS)):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
-        # "Closed Date" column: fixed reasonable width to prevent over-stretching
         hdr.setSectionResizeMode(9, QHeaderView.ResizeMode.Fixed)
         hdr.resizeSection(9, 90)
 
-        if self._infinite_scroll:
-            self._table.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        self._table.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
-        self._table = self._table
         search.textChanged.connect(self._apply_filter)
         layout.addWidget(self._table)
 
     def update_positions(self, positions: List[ResolvedPosition]) -> None:
         """Replace all positions (called on initial/refresh fetch)."""
-        self._all_positions = list(positions)
-        self._has_more      = len(positions) >= 100
-        self._loading       = False
+        self._all_positions   = list(positions)
+        self._displayed_count = min(_INITIAL_DISPLAY, len(positions))
+        self._has_more        = len(positions) >= 100
+        self._loading         = False
         self._load_status.setText("")
         self._header.setText(f"{self._label}  ({len(positions)})")
-        self._table.setRowCount(len(positions))
-        for row, p in enumerate(positions):
+        display_slice = positions[:self._displayed_count]
+        self._table.setRowCount(len(display_slice))
+        for row, p in enumerate(display_slice):
             _populate_row(self._table, row, p)
 
     def merge_positions(self, new_records: List[ResolvedPosition]) -> None:
@@ -170,21 +188,21 @@ class ResolvedPositionsTable(QWidget):
         fresh = [p for p in new_records if (p.market, p.outcome_held, p.cost_basis) not in seen]
         if not fresh:
             return
-        self._all_positions = fresh + self._all_positions
+        self._all_positions   = fresh + self._all_positions
+        self._displayed_count += len(fresh)
         self._header.setText(f"{self._label}  ({len(self._all_positions)})")
         for i, p in enumerate(fresh):
             self._table.insertRow(i)
             _populate_row(self._table, i, p)
 
     def append_positions(self, new_records: List[ResolvedPosition]) -> None:
-        """Append a page of older positions (scroll-triggered load-more)."""
+        """Append a page of older positions (scroll-triggered load-more from API/DB)."""
         self._loading = False
         if not new_records:
             self._has_more = False
             self._load_status.setText("All positions loaded")
             return
 
-        # Deduplicate by (market, outcome_held, cost_basis) — same key as DB cache
         seen = {(p.market, p.outcome_held, p.cost_basis) for p in self._all_positions}
         fresh = [p for p in new_records if (p.market, p.outcome_held, p.cost_basis) not in seen]
 
@@ -194,8 +212,6 @@ class ResolvedPositionsTable(QWidget):
             return
 
         self._all_positions.extend(fresh)
-        # Keep scrolling enabled as long as fresh rows arrived — partial cache pages
-        # should not stop scroll; only an empty response ends it (handled above).
         self._has_more = True
         self._load_status.setText("")
         self._header.setText(f"{self._label}  ({len(self._all_positions)})")
@@ -204,13 +220,13 @@ class ResolvedPositionsTable(QWidget):
         self._table.setRowCount(start_row + len(fresh))
         for i, p in enumerate(fresh):
             _populate_row(self._table, start_row + i, p)
+        self._displayed_count += len(fresh)
 
     def load_from_cache(self, positions: List[ResolvedPosition]) -> None:
-        """Append cached rows not already in the table.
+        """Extend the in-memory dataset with newly cached rows from backfill.
 
-        Called after backfill completes so the table shows the full cached
-        history without resetting scroll state or the infinite-scroll flag.
-        Unlike append_positions, this does NOT modify _loading or _has_more.
+        Does NOT modify _loading or _has_more; the table display stays as-is
+        and new rows are served by in-memory scroll when the user scrolls down.
         """
         seen  = {(p.market, p.outcome_held, p.cost_basis) for p in self._all_positions}
         fresh = [p for p in positions if (p.market, p.outcome_held, p.cost_basis) not in seen]
@@ -218,19 +234,25 @@ class ResolvedPositionsTable(QWidget):
             return
         self._all_positions.extend(fresh)
         self._header.setText(f"{self._label}  ({len(self._all_positions)})")
-        start_row = self._table.rowCount()
-        self._table.setRowCount(start_row + len(fresh))
-        for i, p in enumerate(fresh):
-            _populate_row(self._table, start_row + i, p)
 
     def _on_scroll(self, value: int) -> None:
         sb = self._table.verticalScrollBar()
-        if (
-            self._has_more
-            and not self._loading
-            and sb.maximum() > 0
-            and value >= sb.maximum() - _SCROLL_THRESHOLD_PX
-        ):
+        if sb.maximum() <= 0 or value < sb.maximum() - _SCROLL_THRESHOLD_PX:
+            return
+        if self._loading:
+            return
+        # Extend the table from in-memory _all_positions before requesting from API/DB
+        if self._displayed_count < len(self._all_positions):
+            start = self._displayed_count
+            end   = min(start + 100, len(self._all_positions))
+            current_rows = self._table.rowCount()
+            self._table.setRowCount(current_rows + (end - start))
+            for i, p in enumerate(self._all_positions[start:end]):
+                _populate_row(self._table, current_rows + i, p)
+            self._displayed_count = end
+            return
+        # In-memory exhausted — request older data from API/DB
+        if self._has_more and self._infinite_scroll:
             self._loading = True
             self._load_status.setText("Loading…")
             self.load_more_requested.emit(len(self._all_positions))

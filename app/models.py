@@ -40,7 +40,8 @@ class ResolvedPosition:
     redeem_value: float
     redeemed: bool
     resolved_date: Optional[str] = None
-    closed_at: Optional[int] = None  # epoch seconds from API timestamp field
+    closed_at: Optional[int] = None   # epoch seconds from API timestamp field
+    close_type: str = "UNKNOWN"       # REDEEMED_WIN | SOLD | RESOLVED_LOSS | UNKNOWN
 
     @property
     def realized_pnl(self) -> float:

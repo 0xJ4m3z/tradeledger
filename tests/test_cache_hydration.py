@@ -630,3 +630,291 @@ class TestFilterClosedByRangeClosedAt:
         ]
         result = filter_closed_by_range(positions, "all")
         assert len(result) == 3
+
+
+# ── Trades counting: distinct market titles in activity ───────────────────────
+
+class TestTradesCounting:
+    """count_trades uses activity list and counts distinct market titles per range."""
+
+    def test_count_trades_all_distinct_titles(self):
+        from app.services.pnl_today import count_trades
+        activity = [
+            UserActivity(timestamp=1000, type="TRADE", title="Market A", outcome="Yes",
+                         side="BUY", size=50.0, usdc_size=50.0, price=0.5),
+            UserActivity(timestamp=2000, type="TRADE", title="Market A", outcome="Yes",
+                         side="SELL", size=50.0, usdc_size=55.0, price=0.55),
+            UserActivity(timestamp=3000, type="TRADE", title="Market B", outcome="No",
+                         side="BUY", size=30.0, usdc_size=30.0, price=0.5),
+        ]
+        assert count_trades(activity, "all") == 2  # A and B are distinct
+
+    def test_multiple_rows_same_market_count_as_one(self):
+        import time
+        from app.services.pnl_today import count_trades
+        now = int(time.time())
+        activity = [
+            UserActivity(timestamp=now,       type="TRADE",  title="Same Market", outcome="Yes",
+                         side="BUY",  size=10.0, usdc_size=10.0, price=0.5),
+            UserActivity(timestamp=now - 100, type="TRADE",  title="Same Market", outcome="Yes",
+                         side="SELL", size=10.0, usdc_size=11.0, price=0.55),
+            UserActivity(timestamp=now - 200, type="REDEEM", title="Same Market", outcome="Yes",
+                         side="",     size=10.0, usdc_size=10.0, price=1.0),
+        ]
+        assert count_trades(activity, "all") == 1
+
+    def test_empty_activity_returns_zero(self):
+        from app.services.pnl_today import count_trades
+        assert count_trades([], "1w") == 0
+        assert count_trades([], "all") == 0
+
+    def test_1d_excludes_yesterday(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from app.services.pnl_today import count_trades
+        tz = ZoneInfo("America/New_York")
+        midnight = int(datetime.now(tz).replace(
+            hour=0, minute=0, second=0, microsecond=0).timestamp())
+        activity = [
+            UserActivity(timestamp=midnight + 3600, type="TRADE", title="Today Market",
+                         outcome="Yes", side="BUY", size=1.0, usdc_size=1.0, price=0.5),
+            UserActivity(timestamp=midnight - 3600, type="TRADE", title="Yesterday Market",
+                         outcome="Yes", side="BUY", size=1.0, usdc_size=1.0, price=0.5),
+        ]
+        assert count_trades(activity, "1d") == 1
+
+    def test_trades_from_activity_cache_db(self, isolated_db):
+        """DB helper counts distinct titles in activity cache."""
+        activities = [
+            UserActivity(timestamp=1_700_000_000, type="TRADE", title="Alpha", outcome="Yes",
+                         side="BUY",  size=50.0, usdc_size=50.0, price=0.5),
+            UserActivity(timestamp=1_700_000_001, type="TRADE", title="Alpha", outcome="Yes",
+                         side="SELL", size=50.0, usdc_size=55.0, price=0.55),
+            UserActivity(timestamp=1_700_000_002, type="TRADE", title="Beta",  outcome="No",
+                         side="BUY",  size=30.0, usdc_size=30.0, price=0.4),
+        ]
+        isolated_db.upsert_activity_cache(WALLET, activities)
+        count = isolated_db.count_trades_from_activity_cache(WALLET, "all")
+        assert count == 2  # Alpha and Beta
+
+    def test_trades_from_activity_cache_1w_excludes_old(self, isolated_db):
+        import time
+        now = int(time.time())
+        activities = [
+            UserActivity(timestamp=now - 3 * 86400, type="TRADE", title="Recent",
+                         outcome="Yes", side="BUY", size=1.0, usdc_size=1.0, price=0.5),
+            UserActivity(timestamp=now - 10 * 86400, type="TRADE", title="OldMarket",
+                         outcome="Yes", side="BUY", size=1.0, usdc_size=1.0, price=0.5),
+        ]
+        isolated_db.upsert_activity_cache(WALLET, activities)
+        count = isolated_db.count_trades_from_activity_cache(WALLET, "1w")
+        assert count == 1  # only "Recent" is within 7 days
+
+
+# ── Loss accounting: close_type classification ────────────────────────────────
+
+class TestLossAccounting:
+    """classify_closed_positions sets close_type using Activity SELL cross-reference."""
+
+    def test_positive_pnl_is_redeemed_win(self):
+        from app.services.pnl_today import classify_closed_positions
+        p = ResolvedPosition(
+            market="M", outcome_held="Yes", winning_outcome="Yes",
+            quantity=100.0, cost_basis=50.0, redeem_value=65.0,
+            redeemed=True,
+        )
+        classify_closed_positions([p], [])
+        assert p.close_type == "REDEEMED_WIN"
+
+    def test_zero_redeem_value_is_resolved_loss(self):
+        from app.services.pnl_today import classify_closed_positions
+        p = ResolvedPosition(
+            market="M", outcome_held="Yes", winning_outcome="No",
+            quantity=100.0, cost_basis=50.0, redeem_value=0.0,
+            redeemed=True,
+        )
+        classify_closed_positions([p], [])
+        assert p.close_type == "RESOLVED_LOSS"
+
+    def test_partial_recovery_is_sold(self):
+        from app.services.pnl_today import classify_closed_positions
+        p = ResolvedPosition(
+            market="M", outcome_held="Yes", winning_outcome="No",
+            quantity=100.0, cost_basis=50.0, redeem_value=30.0,
+            redeemed=True,
+        )
+        classify_closed_positions([p], [])
+        # redeem_value > 0, realized_pnl < 0 → SOLD
+        assert p.close_type == "SOLD"
+
+    def test_activity_sell_overrides_to_sold(self):
+        from app.services.pnl_today import classify_closed_positions
+        p = ResolvedPosition(
+            market="Alpha Market", outcome_held="Yes", winning_outcome="No",
+            quantity=100.0, cost_basis=50.0, redeem_value=0.0,
+            redeemed=True,
+        )
+        sell_activity = UserActivity(
+            timestamp=9999, type="TRADE", title="Alpha Market", outcome="Yes",
+            side="SELL", size=100.0, usdc_size=20.0, price=0.2,
+        )
+        classify_closed_positions([p], [sell_activity])
+        # Activity SELL match → SOLD even though redeem_value=0
+        assert p.close_type == "SOLD"
+
+    def test_losing_position_no_sell_is_resolved_loss(self):
+        from app.services.pnl_today import classify_closed_positions
+        p = ResolvedPosition(
+            market="Loser", outcome_held="Yes", winning_outcome="No",
+            quantity=100.0, cost_basis=50.0, redeem_value=0.0,
+            redeemed=True,
+        )
+        unrelated_sell = UserActivity(
+            timestamp=9999, type="TRADE", title="Different Market", outcome="Yes",
+            side="SELL", size=100.0, usdc_size=20.0, price=0.2,
+        )
+        classify_closed_positions([p], [unrelated_sell])
+        assert p.close_type == "RESOLVED_LOSS"
+
+    def test_resolved_loss_pnl_equals_negative_cost_basis(self):
+        """For a full loss (redeem_value=0), realized_pnl == -cost_basis by formula."""
+        p = ResolvedPosition(
+            market="M", outcome_held="Yes", winning_outcome="No",
+            quantity=100.0, cost_basis=75.0, redeem_value=0.0,
+            redeemed=True,
+        )
+        assert p.realized_pnl == -75.0
+
+    def test_close_type_default_unknown(self):
+        """Default close_type before classification is UNKNOWN."""
+        p = ResolvedPosition(
+            market="M", outcome_held="Yes", winning_outcome="Yes",
+            quantity=1.0, cost_basis=50.0, redeem_value=60.0, redeemed=True,
+        )
+        assert p.close_type == "UNKNOWN"
+
+    def test_classify_runs_on_all_positions(self):
+        from app.services.pnl_today import classify_closed_positions
+        positions = [
+            ResolvedPosition(market="W", outcome_held="Yes", winning_outcome="Yes",
+                             quantity=1.0, cost_basis=50.0, redeem_value=60.0, redeemed=True),
+            ResolvedPosition(market="L", outcome_held="Yes", winning_outcome="No",
+                             quantity=1.0, cost_basis=50.0, redeem_value=0.0,  redeemed=True),
+        ]
+        classify_closed_positions(positions, [])
+        assert positions[0].close_type == "REDEEMED_WIN"
+        assert positions[1].close_type == "RESOLVED_LOSS"
+
+
+# ── Cache preload: load_all_* functions ───────────────────────────────────────
+
+class TestCachePreload:
+    def test_load_all_activity_no_limit(self, isolated_db):
+        """load_all_activity_for_wallet returns all rows with no row cap."""
+        rows = [
+            UserActivity(timestamp=i * 100, type="TRADE", title=f"M{i}", outcome="Yes",
+                         side="BUY", size=1.0, usdc_size=1.0, price=0.5)
+            for i in range(3000)
+        ]
+        isolated_db.upsert_activity_cache(WALLET, rows)
+        loaded = isolated_db.load_all_activity_for_wallet(WALLET)
+        assert len(loaded) == 3000
+
+    def test_load_all_closed_no_limit(self, isolated_db):
+        """load_all_closed_for_wallet returns all rows with no row cap."""
+        positions = [_closed(f"M{i}", cost=float(i + 1), pnl=10.0) for i in range(5000)]
+        isolated_db.upsert_closed_positions_cache(positions, WALLET)
+        loaded = isolated_db.load_all_closed_for_wallet(WALLET)
+        assert len(loaded) == 5000
+
+    def test_load_all_activity_wallet_isolated(self, isolated_db):
+        wallet_b = "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB3"
+        isolated_db.upsert_activity_cache(WALLET, [
+            UserActivity(timestamp=i, type="TRADE", title="MA", outcome="Yes",
+                         side="BUY", size=1.0, usdc_size=1.0, price=0.5)
+            for i in range(100)
+        ])
+        isolated_db.upsert_activity_cache(wallet_b, [
+            UserActivity(timestamp=i, type="TRADE", title="MB", outcome="Yes",
+                         side="BUY", size=1.0, usdc_size=1.0, price=0.5)
+            for i in range(50)
+        ])
+        assert len(isolated_db.load_all_activity_for_wallet(WALLET))   == 100
+        assert len(isolated_db.load_all_activity_for_wallet(wallet_b)) == 50
+
+    def test_load_all_closed_wallet_isolated(self, isolated_db):
+        wallet_b = "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB4"
+        isolated_db.upsert_closed_positions_cache(
+            [_closed(f"A{i}", cost=float(i + 1)) for i in range(200)], WALLET)
+        isolated_db.upsert_closed_positions_cache(
+            [_closed(f"B{i}", cost=float(i + 1)) for i in range(100)], wallet_b)
+        assert len(isolated_db.load_all_closed_for_wallet(WALLET))   == 200
+        assert len(isolated_db.load_all_closed_for_wallet(wallet_b)) == 100
+
+    def test_load_all_activity_newest_first(self, isolated_db):
+        rows = [
+            UserActivity(timestamp=i * 100, type="TRADE", title="M", outcome="Yes",
+                         side="BUY", size=1.0, usdc_size=1.0, price=0.5)
+            for i in range(10)
+        ]
+        isolated_db.upsert_activity_cache(WALLET, rows)
+        loaded = isolated_db.load_all_activity_for_wallet(WALLET)
+        timestamps = [a.timestamp for a in loaded]
+        assert timestamps == sorted(timestamps, reverse=True)
+
+    def test_activity_dedup_key_includes_title(self, isolated_db):
+        """Two events at same ts with different titles must both be stored (new v2 key)."""
+        a1 = UserActivity(timestamp=9999, type="TRADE", title="Market A", outcome="Yes",
+                          side="BUY", size=50.0, usdc_size=50.0, price=0.5)
+        a2 = UserActivity(timestamp=9999, type="TRADE", title="Market B", outcome="Yes",
+                          side="BUY", size=50.0, usdc_size=50.0, price=0.5)
+        isolated_db.upsert_activity_cache(WALLET, [a1, a2])
+        loaded = isolated_db.load_all_activity_for_wallet(WALLET)
+        # Both must be stored — old key would have deduped them
+        assert len(loaded) == 2
+        titles = {a.title for a in loaded}
+        assert titles == {"Market A", "Market B"}
+
+
+# ── filter_activity_by_range ──────────────────────────────────────────────────
+
+class TestFilterActivityByRange:
+    def test_all_returns_everything(self):
+        from app.services.pnl_today import filter_activity_by_range
+        activity = [
+            UserActivity(timestamp=1000, type="TRADE", title="M", outcome="Yes",
+                         side="BUY",  size=1.0, usdc_size=1.0, price=0.5),
+            UserActivity(timestamp=2000, type="TRADE", title="M", outcome="Yes",
+                         side="SELL", size=1.0, usdc_size=1.0, price=0.5),
+        ]
+        assert len(filter_activity_by_range(activity, "all")) == 2
+
+    def test_1d_excludes_yesterday(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from app.services.pnl_today import filter_activity_by_range
+        tz = ZoneInfo("America/New_York")
+        midnight = int(datetime.now(tz).replace(
+            hour=0, minute=0, second=0, microsecond=0).timestamp())
+        today_row = UserActivity(timestamp=midnight + 100, type="TRADE", title="T",
+                                 outcome="Yes", side="BUY", size=1.0, usdc_size=1.0, price=0.5)
+        yest_row  = UserActivity(timestamp=midnight - 100, type="TRADE", title="Y",
+                                 outcome="Yes", side="BUY", size=1.0, usdc_size=1.0, price=0.5)
+        result = filter_activity_by_range([today_row, yest_row], "1d")
+        assert len(result) == 1
+        assert result[0].title == "T"
+
+    def test_1w_includes_recent_excludes_old(self):
+        import time
+        from app.services.pnl_today import filter_activity_by_range
+        now = int(time.time())
+        a_in  = UserActivity(timestamp=now - 5 * 86400, type="TRADE", title="In",
+                             outcome="Yes", side="BUY", size=1.0, usdc_size=1.0, price=0.5)
+        a_out = UserActivity(timestamp=now - 9 * 86400, type="TRADE", title="Out",
+                             outcome="Yes", side="BUY", size=1.0, usdc_size=1.0, price=0.5)
+        result = filter_activity_by_range([a_in, a_out], "1w")
+        assert {a.title for a in result} == {"In"}
+
+    def test_empty_input_returns_empty(self):
+        from app.services.pnl_today import filter_activity_by_range
+        assert filter_activity_by_range([], "1w") == []
