@@ -922,6 +922,106 @@ class TestFilterActivityByRange:
 
 # ── Startup preload: migration idempotency and data-flow correctness ──────────
 
+class TestDeriveClosedFromActivity:
+    """derive_closed_from_activity reconstructs wins from REDEEM events."""
+
+    def test_redeem_event_produces_closed_position(self):
+        from app.services.pnl_today import derive_closed_from_activity
+        activity = [
+            UserActivity(timestamp=1000, type="TRADE", title="M", outcome="Yes",
+                         side="BUY", size=100.0, usdc_size=99.0, price=0.99),
+            UserActivity(timestamp=2000, type="REDEEM", title="M", outcome="Yes",
+                         side="", size=100.0, usdc_size=100.0, price=0.0),
+        ]
+        result = derive_closed_from_activity(activity)
+        assert len(result) == 1
+        p = result[0]
+        assert p.market == "M"
+        assert p.outcome_held == "Yes"
+        assert p.winning_outcome == "Yes"
+        assert p.redeem_value == pytest.approx(100.0)
+        assert p.cost_basis == pytest.approx(99.0)
+        assert p.closed_at == 2000
+
+    def test_cost_basis_aggregates_multiple_buys(self):
+        from app.services.pnl_today import derive_closed_from_activity
+        activity = [
+            UserActivity(timestamp=1000, type="TRADE", title="M", outcome="Yes",
+                         side="BUY", size=50.0, usdc_size=49.5, price=0.99),
+            UserActivity(timestamp=1100, type="TRADE", title="M", outcome="Yes",
+                         side="BUY", size=50.0, usdc_size=49.5, price=0.99),
+            UserActivity(timestamp=2000, type="REDEEM", title="M", outcome="Yes",
+                         side="", size=100.0, usdc_size=100.0, price=0.0),
+        ]
+        result = derive_closed_from_activity(activity)
+        assert len(result) == 1
+        assert result[0].cost_basis == pytest.approx(99.0)
+
+    def test_no_redeem_no_closed_position(self):
+        from app.services.pnl_today import derive_closed_from_activity
+        activity = [
+            UserActivity(timestamp=1000, type="TRADE", title="M", outcome="Yes",
+                         side="BUY", size=100.0, usdc_size=99.0, price=0.99),
+        ]
+        result = derive_closed_from_activity(activity)
+        assert len(result) == 0
+
+    def test_loss_redeem_usdc_zero_not_included(self):
+        """REDEEM events with usdc_size=0 (loss/no-payout) are excluded."""
+        from app.services.pnl_today import derive_closed_from_activity
+        activity = [
+            UserActivity(timestamp=1000, type="REDEEM", title="M", outcome="Yes",
+                         side="", size=100.0, usdc_size=0.0, price=0.0),
+        ]
+        result = derive_closed_from_activity(activity)
+        assert len(result) == 0
+
+    def test_multiple_markets_produce_multiple_positions(self):
+        from app.services.pnl_today import derive_closed_from_activity
+        activity = [
+            UserActivity(timestamp=1000, type="REDEEM", title="A", outcome="Yes",
+                         side="", size=50.0, usdc_size=50.0, price=0.0),
+            UserActivity(timestamp=2000, type="REDEEM", title="B", outcome="No",
+                         side="", size=30.0, usdc_size=30.0, price=0.0),
+        ]
+        result = derive_closed_from_activity(activity)
+        assert len(result) == 2
+        markets = {p.market for p in result}
+        assert markets == {"A", "B"}
+
+    def test_derived_positions_not_inserted_when_api_record_exists(self, isolated_db):
+        """upsert_activity_derived_closed_positions skips if (market, outcome_held) exists."""
+        api_pos = ResolvedPosition(
+            market="M", outcome_held="Yes", winning_outcome="Yes",
+            quantity=100.0, cost_basis=99.0, redeem_value=100.0,
+            redeemed=True,
+        )
+        isolated_db.upsert_closed_positions_cache([api_pos], WALLET)
+        assert isolated_db.count_closed_positions_cache(WALLET) == 1
+
+        derived = ResolvedPosition(
+            market="M", outcome_held="Yes", winning_outcome="Yes",
+            quantity=100.0, cost_basis=99.0, redeem_value=100.0,
+            redeemed=True, closed_at=9999,
+        )
+        n = isolated_db.upsert_activity_derived_closed_positions([derived], WALLET)
+        assert n == 0   # skipped — API record already exists
+        assert isolated_db.count_closed_positions_cache(WALLET) == 1
+
+    def test_derived_positions_inserted_when_no_api_record(self, isolated_db):
+        """upsert_activity_derived_closed_positions inserts when market not in cache."""
+        derived = ResolvedPosition(
+            market="Historic Market", outcome_held="Up", winning_outcome="Up",
+            quantity=654.0, cost_basis=647.0, redeem_value=654.0,
+            redeemed=True, closed_at=1_700_000_000,
+        )
+        n = isolated_db.upsert_activity_derived_closed_positions([derived], WALLET)
+        assert n == 1
+        loaded = isolated_db.load_all_closed_for_wallet(WALLET)
+        assert len(loaded) == 1
+        assert loaded[0].market == "Historic Market"
+
+
 class TestMigrationIdempotency:
     """activity_key_schema migration must run once and never clear cache on restart."""
 

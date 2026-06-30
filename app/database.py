@@ -345,6 +345,49 @@ def upsert_closed_positions_cache(
         conn.commit()
 
 
+def upsert_activity_derived_closed_positions(
+    positions: List[ResolvedPosition],
+    wallet_address: str,
+) -> int:
+    """Insert activity-derived closed positions, skipping any (market, outcome_held)
+    that already has an API-sourced record in the cache.
+
+    This supplements the /closed-positions endpoint which may only return the
+    N most-recent positions.  Returns the number of newly inserted rows.
+    """
+    if not positions or not wallet_address:
+        return 0
+    inserted = 0
+    with get_connection() as conn:
+        for p in positions:
+            existing = conn.execute(
+                """
+                SELECT id FROM closed_positions_cache
+                WHERE wallet_address = ? AND market = ? AND outcome_held = ?
+                LIMIT 1
+                """,
+                (wallet_address, p.market, p.outcome_held),
+            ).fetchone()
+            if existing:
+                continue
+            key = _position_key(p)
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO closed_positions_cache
+                    (wallet_address, position_key, market, outcome_held, winning_outcome,
+                     quantity, cost_basis, redeem_value, redeemed, resolved_date, closed_at,
+                     realized_pnl, fetched_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (wallet_address, key, p.market, p.outcome_held, p.winning_outcome,
+                 p.quantity, p.cost_basis, p.redeem_value, int(p.redeemed),
+                 p.resolved_date, p.closed_at, p.realized_pnl),
+            )
+            inserted += 1
+        conn.commit()
+    return inserted
+
+
 def load_closed_positions_cache(
     wallet_address: str = "",
     limit: int = 500,

@@ -10,7 +10,9 @@ from app.database import (
     load_resolved_positions_cache,
     load_wallet_snapshots,
     save_snapshot,
+    upsert_activity_derived_closed_positions,
 )
+from app.services.pnl_today import derive_closed_from_activity
 from app.services.metrics import compute_dashboard_metrics
 from app.ui.active_positions_table import ActivePositionsTable
 from app.ui.activity_table import ActivityTable
@@ -124,8 +126,21 @@ class MainWindow(QMainWindow):
         _init_wallet    = load_last_wallet()
         cached_active   = load_active_positions_cache(_init_wallet)    if _init_wallet else []
         cached_resolved = load_resolved_positions_cache(_init_wallet)  if _init_wallet else []
-        cached_closed   = load_all_closed_for_wallet(_init_wallet)     if _init_wallet else []
         cached_activity = load_all_activity_for_wallet(_init_wallet)   if _init_wallet else []
+
+        # Derive closed positions from REDEEM events in the activity feed and persist
+        # to SQLite before loading the closed tab.  This fills the gap when the
+        # /closed-positions API only returns the most-recent ~100 records: the activity
+        # feed already contains REDEEM events going back to the start of history.
+        # Records are only inserted when no API-sourced record exists for the same
+        # (market, outcome_held), so API data is never overwritten.
+        if _init_wallet and cached_activity:
+            _derived = derive_closed_from_activity(cached_activity)
+            _n_derived = upsert_activity_derived_closed_positions(_derived, _init_wallet)
+            _dlog("startup", "derived %d new closed positions from activity feed "
+                  "(%d total REDEEM-derived candidates)", _n_derived, len(_derived))
+
+        cached_closed   = load_all_closed_for_wallet(_init_wallet)     if _init_wallet else []
 
         _dlog("startup",
               "wallet=%s | active=%d | resolved=%d | closed=%d | activity=%d",

@@ -15,11 +15,13 @@ from PySide6.QtWidgets import (
 
 from app.database import (
     clear_wallet_snapshots_today,
+    load_all_closed_for_wallet,
     load_last_wallet,
     load_loss_watch_acknowledged,
     load_wallet_snapshots,
     save_loss_watch_acknowledged,
     save_wallet_snapshot,
+    upsert_activity_derived_closed_positions,
 )
 from app.debug import _dlog
 from app.models import ActivePosition, ResolvedPosition, UserActivity
@@ -28,6 +30,7 @@ from app.services.metrics import compute_dashboard_metrics, compute_total_tracke
 from app.services.pnl_today import (
     classify_closed_positions,
     count_trades,
+    derive_closed_from_activity,
     filter_closed_by_range,
 )
 from app.ui.pnl_chart import PnlChartWidget
@@ -619,6 +622,22 @@ class OverviewWidget(QWidget):
                 self._activity = fresh + self._activity
         _dlog("activity", "fetched %d rows → merged to %d total (was %d)",
               len(activity), len(self._activity), before)
+
+        # Derive new closed positions from fresh REDEEM events and persist to DB.
+        # Supplements the /closed-positions API which may only return ~100 recent records.
+        if self._confirmed_wallet and self._activity:
+            derived = derive_closed_from_activity(self._activity)
+            n_new = upsert_activity_derived_closed_positions(derived, self._confirmed_wallet)
+            if n_new > 0:
+                _dlog("activity", "derived %d new closed positions from activity", n_new)
+                all_closed = load_all_closed_for_wallet(self._confirmed_wallet)
+                seen_closed = {(p.market, p.outcome_held, p.cost_basis) for p in self._closed_positions}
+                fresh_closed = [p for p in all_closed
+                                if (p.market, p.outcome_held, p.cost_basis) not in seen_closed]
+                if fresh_closed:
+                    self._closed_positions = fresh_closed + self._closed_positions
+                    self.closed_cache_updated.emit(self._closed_positions)
+
         # Re-classify positions: new SELLs in activity may change close_type on existing positions
         classify_closed_positions(self._closed_positions, self._activity)
         # Emit the full merged list so ActivityTable sees all rows, not just the API page.

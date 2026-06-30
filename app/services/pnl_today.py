@@ -325,6 +325,52 @@ def count_trades(activity: List[UserActivity], range_: str) -> int:
     return len({a.title for a in filtered if a.title})
 
 
+def derive_closed_from_activity(
+    activity: List[UserActivity],
+) -> List[ResolvedPosition]:
+    """Derive ResolvedPositions from REDEEM events in the activity feed.
+
+    Used as a supplementary data source when the /closed-positions API only returns
+    the most-recent N records.  Each REDEEM event with usdc_size > 0 represents a
+    winning closed position.  Cost basis is approximated by summing all BUY USDC
+    for the same (title, outcome) pair.
+
+    Only WIN positions are derivable this way.  Loss positions (resolved to $0)
+    generate no REDEEM event and are left to the API's closed-positions data.
+    """
+    from collections import defaultdict
+
+    cost_by_pos: dict = defaultdict(float)
+    for a in activity:
+        if a.type == "TRADE" and a.side == "BUY" and a.title:
+            cost_by_pos[(a.title, a.outcome)] += a.usdc_size
+
+    latest_redeem: dict = {}
+    for a in activity:
+        if a.type == "REDEEM" and a.title and a.usdc_size > 0:
+            key = (a.title, a.outcome)
+            if key not in latest_redeem or a.timestamp > latest_redeem[key].timestamp:
+                latest_redeem[key] = a
+
+    positions: List[ResolvedPosition] = []
+    for (market, outcome), ev in latest_redeem.items():
+        cost = cost_by_pos.get((market, outcome), 0.0)
+        positions.append(
+            ResolvedPosition(
+                market=market,
+                outcome_held=outcome,
+                winning_outcome=outcome,
+                quantity=ev.size,
+                cost_basis=cost,
+                redeem_value=ev.usdc_size,
+                redeemed=True,
+                resolved_date=None,
+                closed_at=ev.timestamp,
+            )
+        )
+    return positions
+
+
 def classify_closed_positions(
     closed: List[ResolvedPosition],
     activity: List[UserActivity],
