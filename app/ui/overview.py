@@ -599,7 +599,10 @@ class OverviewWidget(QWidget):
             snaps = load_wallet_snapshots(self._confirmed_wallet)
             self.snapshots_changed.emit(snaps)
 
-        self.positions_changed.emit(active, resolved, closed)
+        # Emit self._closed_positions (full merged history), NOT the raw API
+        # `closed` list which is only the most-recent 100 rows.  Emitting the
+        # 100-row slice would replace a larger cached dataset in the Closed tab.
+        self.positions_changed.emit(active, resolved, self._closed_positions)
 
     # ── Activity update ────────────────────────────────────────────────────────
 

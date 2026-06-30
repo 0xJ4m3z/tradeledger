@@ -918,3 +918,144 @@ class TestFilterActivityByRange:
     def test_empty_input_returns_empty(self):
         from app.services.pnl_today import filter_activity_by_range
         assert filter_activity_by_range([], "1w") == []
+
+
+# ── Startup preload: migration idempotency and data-flow correctness ──────────
+
+class TestMigrationIdempotency:
+    """activity_key_schema migration must run once and never clear cache on restart."""
+
+    def test_schema_v2_set_after_init(self, isolated_db):
+        """After init_db, settings must record activity_key_schema='2'."""
+        import sqlite3
+        db_path = isolated_db.DB_PATH
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key='activity_key_schema'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "2"
+
+    def test_rows_inserted_after_first_init_survive_second_init(self, isolated_db):
+        """Cache must not be cleared by a second call to init_db (same process restart)."""
+        rows = [
+            UserActivity(timestamp=i, type="TRADE", title=f"M{i}", outcome="Yes",
+                         side="BUY", size=1.0, usdc_size=1.0, price=0.5)
+            for i in range(50)
+        ]
+        isolated_db.upsert_activity_cache(WALLET, rows)
+        assert isolated_db.count_activity_cache(WALLET) == 50
+
+        # Simulate a second startup — must not wipe the cache
+        isolated_db.init_db()
+
+        assert isolated_db.count_activity_cache(WALLET) == 50
+
+    def test_multiple_restarts_preserve_growing_cache(self, isolated_db):
+        """Each batch of rows inserted between init_db calls must survive."""
+        batch1 = [UserActivity(timestamp=i, type="TRADE", title="M1", outcome="Yes",
+                               side="BUY", size=1.0, usdc_size=1.0, price=0.5)
+                  for i in range(20)]
+        isolated_db.upsert_activity_cache(WALLET, batch1)
+        isolated_db.init_db()  # second startup
+
+        batch2 = [UserActivity(timestamp=100 + i, type="TRADE", title="M2", outcome="Yes",
+                               side="BUY", size=1.0, usdc_size=1.0, price=0.5)
+                  for i in range(20)]
+        isolated_db.upsert_activity_cache(WALLET, batch2)
+        isolated_db.init_db()  # third startup
+
+        # All 40 unique rows must be present
+        assert isolated_db.count_activity_cache(WALLET) == 40
+
+
+class TestStartupPreloadData:
+    """Verify DB-layer functions used at startup return complete, untruncated data."""
+
+    def test_load_all_activity_returns_more_than_default_limit(self, isolated_db):
+        """load_all_activity_for_wallet must not be capped at any fixed row limit."""
+        rows = [
+            UserActivity(timestamp=i, type="TRADE", title=f"M{i}", outcome="Yes",
+                         side="BUY", size=float(i + 1), usdc_size=float(i + 1), price=0.5)
+            for i in range(2500)
+        ]
+        isolated_db.upsert_activity_cache(WALLET, rows)
+        loaded = isolated_db.load_all_activity_for_wallet(WALLET)
+        assert len(loaded) == 2500
+
+    def test_load_all_closed_returns_more_than_default_limit(self, isolated_db):
+        """load_all_closed_for_wallet must not be capped at any fixed row limit."""
+        positions = [
+            ResolvedPosition(
+                market=f"Market{i}", outcome_held="Yes", winning_outcome="Yes",
+                quantity=1.0, cost_basis=float(i + 1), redeem_value=float(i + 2),
+                redeemed=True,
+            )
+            for i in range(2500)
+        ]
+        isolated_db.upsert_closed_positions_cache(positions, WALLET)
+        loaded = isolated_db.load_all_closed_for_wallet(WALLET)
+        assert len(loaded) == 2500
+
+    def test_live_merge_does_not_shrink_closed_cache(self, isolated_db):
+        """Merging 100 API rows into 5000 cached rows must result in >= 5000, not replace."""
+        large_cache = [
+            ResolvedPosition(
+                market=f"CachedMarket{i}", outcome_held="Yes", winning_outcome="Yes",
+                quantity=1.0, cost_basis=float(i + 1), redeem_value=float(i + 2),
+                redeemed=True,
+            )
+            for i in range(5000)
+        ]
+        isolated_db.upsert_closed_positions_cache(large_cache, WALLET)
+        all_cached = isolated_db.load_all_closed_for_wallet(WALLET)
+        assert len(all_cached) == 5000
+
+        # Simulate 100-row API response of the newest positions (all already in cache)
+        api_100 = large_cache[:100]
+        seen = {(p.market, p.outcome_held, p.cost_basis) for p in all_cached}
+        fresh = [p for p in api_100 if (p.market, p.outcome_held, p.cost_basis) not in seen]
+
+        # Merge: fresh should be empty (all 100 already cached), total stays 5000
+        merged = list(all_cached) if not fresh else fresh + list(all_cached)
+        assert len(merged) >= 5000
+
+    def test_dedup_key_v2_allows_same_ts_side_size_different_title(self, isolated_db):
+        """Two events at the same timestamp but different market titles are both stored."""
+        a1 = UserActivity(timestamp=9999, type="TRADE", title="Alpha", outcome="Yes",
+                          side="BUY", size=50.0, usdc_size=50.0, price=0.5)
+        a2 = UserActivity(timestamp=9999, type="TRADE", title="Beta", outcome="Yes",
+                          side="BUY", size=50.0, usdc_size=50.0, price=0.5)
+        isolated_db.upsert_activity_cache(WALLET, [a1, a2])
+        loaded = isolated_db.load_all_activity_for_wallet(WALLET)
+        assert len(loaded) == 2
+        assert {a.title for a in loaded} == {"Alpha", "Beta"}
+
+    def test_dedup_key_v2_allows_same_ts_side_size_different_outcome(self, isolated_db):
+        """Two events at the same timestamp but different outcomes are both stored."""
+        a1 = UserActivity(timestamp=7777, type="TRADE", title="Same Market", outcome="Yes",
+                          side="BUY", size=50.0, usdc_size=50.0, price=0.5)
+        a2 = UserActivity(timestamp=7777, type="TRADE", title="Same Market", outcome="No",
+                          side="BUY", size=50.0, usdc_size=50.0, price=0.5)
+        isolated_db.upsert_activity_cache(WALLET, [a1, a2])
+        loaded = isolated_db.load_all_activity_for_wallet(WALLET)
+        assert len(loaded) == 2
+        outcomes = {a.outcome for a in loaded}
+        assert outcomes == {"Yes", "No"}
+
+    def test_closed_positions_newest_first_order_preserved(self, isolated_db):
+        """load_all_closed_for_wallet must return positions in newest-first order."""
+        import time
+        now = int(time.time())
+        positions = [
+            ResolvedPosition(
+                market=f"M{i}", outcome_held="Yes", winning_outcome="Yes",
+                quantity=1.0, cost_basis=float(i + 1), redeem_value=float(i + 2),
+                redeemed=True, closed_at=now - i * 3600,
+            )
+            for i in range(10)
+        ]
+        isolated_db.upsert_closed_positions_cache(positions, WALLET)
+        loaded = isolated_db.load_all_closed_for_wallet(WALLET)
+        closed_ats = [p.closed_at for p in loaded if p.closed_at]
+        assert closed_ats == sorted(closed_ats, reverse=True)

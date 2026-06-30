@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.debug import _dlog
 from app.models import UserActivity
 
 COLUMNS = ["Time (UTC)", "Type", "Market", "Outcome", "Side", "Tokens", "USDC", "Price"]
@@ -147,6 +148,7 @@ class ActivityTable(QWidget):
 
     def update_activity(self, activity: List[UserActivity]) -> None:
         """Merge fresh activity: first call sets the list; subsequent calls prepend new records."""
+        old_all = len(self._all_activity)
         if not self._all_activity:
             # First load — populate from scratch
             self._all_activity    = list(activity)
@@ -159,12 +161,18 @@ class ActivityTable(QWidget):
             self._table.setRowCount(len(display_slice))
             for row, a in enumerate(display_slice):
                 _populate_row(self._table, row, a)
+            _dlog("activity_table",
+                  "update_activity(REPLACE): incoming=%d  all=%d  displayed=%d",
+                  len(activity), len(self._all_activity), self._displayed_count)
             return
 
         # Refresh — prepend any records newer than what we already have
         seen  = {(a.timestamp, a.type, a.side, a.size) for a in self._all_activity}
         fresh = [a for a in activity if (a.timestamp, a.type, a.side, a.size) not in seen]
         if not fresh:
+            _dlog("activity_table",
+                  "update_activity(MERGE): incoming=%d  0 new  all=%d  displayed=%d",
+                  len(activity), old_all, self._displayed_count)
             return
         self._all_activity    = fresh + self._all_activity
         self._displayed_count += len(fresh)
@@ -172,6 +180,9 @@ class ActivityTable(QWidget):
         for i, a in enumerate(fresh):
             self._table.insertRow(i)
             _populate_row(self._table, i, a)
+        _dlog("activity_table",
+              "update_activity(MERGE): incoming=%d  +%d new  all=%d→%d  displayed=%d",
+              len(activity), len(fresh), old_all, len(self._all_activity), self._displayed_count)
 
     def reset_activity(self) -> None:
         """Clear all loaded activity (called on wallet change)."""
@@ -185,10 +196,12 @@ class ActivityTable(QWidget):
 
     def append_activity(self, new_records: List[UserActivity]) -> None:
         """Append a page of older activity records (called on scroll-triggered load-more)."""
+        old_all = len(self._all_activity)
         self._loading = False
         if not new_records:
             self._has_more = False
             self._load_status.setText("All activity loaded")
+            _dlog("activity_table", "append_activity: empty page — done, all=%d", old_all)
             return
 
         # Deduplicate by (timestamp, type, side, size) — the API can overlap
@@ -198,6 +211,8 @@ class ActivityTable(QWidget):
         if not fresh:
             self._has_more = False
             self._load_status.setText("All activity loaded")
+            _dlog("activity_table",
+                  "append_activity: %d incoming all dupes — done, all=%d", len(new_records), old_all)
             return
 
         self._all_activity.extend(fresh)
@@ -210,6 +225,9 @@ class ActivityTable(QWidget):
         for i, a in enumerate(fresh):
             _populate_row(self._table, start_row + i, a)
         self._displayed_count += len(fresh)
+        _dlog("activity_table",
+              "append_activity: incoming=%d  +%d new  all=%d→%d  displayed=%d",
+              len(new_records), len(fresh), old_all, len(self._all_activity), self._displayed_count)
 
     def _on_scroll(self, value: int) -> None:
         sb = self._table.verticalScrollBar()
@@ -226,11 +244,17 @@ class ActivityTable(QWidget):
             for i, a in enumerate(self._all_activity[start:end]):
                 _populate_row(self._table, current_rows + i, a)
             self._displayed_count = end
+            _dlog("activity_table",
+                  "_on_scroll: rendered in-memory rows %d→%d  (total in-memory=%d)",
+                  start, end, len(self._all_activity))
             return
         # All in-memory rows shown — request older data from API/DB
         if self._has_more:
             self._loading = True
             self._load_status.setText("Loading…")
+            _dlog("activity_table",
+                  "_on_scroll: in-memory exhausted at %d rows — requesting API offset=%d",
+                  self._displayed_count, len(self._all_activity))
             self.load_more_requested.emit(len(self._all_activity))
 
     def _apply_filter(self, text: str) -> None:

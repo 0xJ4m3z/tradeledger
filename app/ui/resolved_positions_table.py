@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.debug import _dlog
 from app.models import ResolvedPosition
 
 try:
@@ -171,6 +172,7 @@ class ResolvedPositionsTable(QWidget):
 
     def update_positions(self, positions: List[ResolvedPosition]) -> None:
         """Replace all positions (called on initial/refresh fetch)."""
+        old_all = len(self._all_positions)
         self._all_positions   = list(positions)
         self._displayed_count = min(_INITIAL_DISPLAY, len(positions))
         self._has_more        = len(positions) >= 100
@@ -181,12 +183,19 @@ class ResolvedPositionsTable(QWidget):
         self._table.setRowCount(len(display_slice))
         for row, p in enumerate(display_slice):
             _populate_row(self._table, row, p)
+        _dlog("closed_tab",
+              "update_positions(REPLACE): incoming=%d  old_all=%d  new_all=%d  displayed=%d",
+              len(positions), old_all, len(self._all_positions), self._displayed_count)
 
     def merge_positions(self, new_records: List[ResolvedPosition]) -> None:
         """Prepend any new records not already loaded (called on refresh, not first load)."""
+        old_all = len(self._all_positions)
         seen  = {(p.market, p.outcome_held, p.cost_basis) for p in self._all_positions}
         fresh = [p for p in new_records if (p.market, p.outcome_held, p.cost_basis) not in seen]
         if not fresh:
+            _dlog("closed_tab",
+                  "merge_positions: incoming=%d  0 new  all=%d  displayed=%d",
+                  len(new_records), old_all, self._displayed_count)
             return
         self._all_positions   = fresh + self._all_positions
         self._displayed_count += len(fresh)
@@ -194,13 +203,18 @@ class ResolvedPositionsTable(QWidget):
         for i, p in enumerate(fresh):
             self._table.insertRow(i)
             _populate_row(self._table, i, p)
+        _dlog("closed_tab",
+              "merge_positions: incoming=%d  +%d new  all=%d→%d  displayed=%d",
+              len(new_records), len(fresh), old_all, len(self._all_positions), self._displayed_count)
 
     def append_positions(self, new_records: List[ResolvedPosition]) -> None:
         """Append a page of older positions (scroll-triggered load-more from API/DB)."""
+        old_all = len(self._all_positions)
         self._loading = False
         if not new_records:
             self._has_more = False
             self._load_status.setText("All positions loaded")
+            _dlog("closed_tab", "append_positions: empty page — done, all=%d", old_all)
             return
 
         seen = {(p.market, p.outcome_held, p.cost_basis) for p in self._all_positions}
@@ -209,6 +223,8 @@ class ResolvedPositionsTable(QWidget):
         if not fresh:
             self._has_more = False
             self._load_status.setText("All positions loaded")
+            _dlog("closed_tab",
+                  "append_positions: %d incoming all dupes — done, all=%d", len(new_records), old_all)
             return
 
         self._all_positions.extend(fresh)
@@ -221,6 +237,9 @@ class ResolvedPositionsTable(QWidget):
         for i, p in enumerate(fresh):
             _populate_row(self._table, start_row + i, p)
         self._displayed_count += len(fresh)
+        _dlog("closed_tab",
+              "append_positions: incoming=%d  +%d new  all=%d→%d  displayed=%d",
+              len(new_records), len(fresh), old_all, len(self._all_positions), self._displayed_count)
 
     def load_from_cache(self, positions: List[ResolvedPosition]) -> None:
         """Extend the in-memory dataset with newly cached rows from backfill.
@@ -228,12 +247,19 @@ class ResolvedPositionsTable(QWidget):
         Does NOT modify _loading or _has_more; the table display stays as-is
         and new rows are served by in-memory scroll when the user scrolls down.
         """
+        old_all = len(self._all_positions)
         seen  = {(p.market, p.outcome_held, p.cost_basis) for p in self._all_positions}
         fresh = [p for p in positions if (p.market, p.outcome_held, p.cost_basis) not in seen]
         if not fresh:
+            _dlog("closed_tab",
+                  "load_from_cache: %d incoming all dupes — all=%d  displayed=%d",
+                  len(positions), old_all, self._displayed_count)
             return
         self._all_positions.extend(fresh)
         self._header.setText(f"{self._label}  ({len(self._all_positions)})")
+        _dlog("closed_tab",
+              "load_from_cache: incoming=%d  +%d new  all=%d→%d  displayed=%d",
+              len(positions), len(fresh), old_all, len(self._all_positions), self._displayed_count)
 
     def _on_scroll(self, value: int) -> None:
         sb = self._table.verticalScrollBar()
@@ -250,11 +276,17 @@ class ResolvedPositionsTable(QWidget):
             for i, p in enumerate(self._all_positions[start:end]):
                 _populate_row(self._table, current_rows + i, p)
             self._displayed_count = end
+            _dlog("closed_tab",
+                  "_on_scroll: rendered in-memory rows %d→%d  (total in-memory=%d)",
+                  start, end, len(self._all_positions))
             return
         # In-memory exhausted — request older data from API/DB
         if self._has_more and self._infinite_scroll:
             self._loading = True
             self._load_status.setText("Loading…")
+            _dlog("closed_tab",
+                  "_on_scroll: in-memory exhausted at %d rows — requesting API offset=%d",
+                  self._displayed_count, len(self._all_positions))
             self.load_more_requested.emit(len(self._all_positions))
 
     def _apply_filter(self, text: str) -> None:

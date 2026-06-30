@@ -28,6 +28,7 @@ from app.database import (
     count_closed_positions_cache,
     init_db,
     load_activity_cache_page,
+    load_all_closed_for_wallet,
     load_closed_positions_cache,
     load_closed_positions_cache_page,
     load_last_wallet,
@@ -476,14 +477,14 @@ class WalletPanel(QWidget):
         _dlog("activity_backfill", "done — %d total activity rows in cache", total)
 
     def _on_backfill_page_done(self) -> None:
-        """After each backfill page: reload from DB and push incremental update to UI.
+        """After each backfill page: reload ALL cached rows from DB and push to UI.
 
-        This keeps stats cards and the Closed tab growing in near-real-time as
-        pages arrive, rather than waiting until all backfill pages are complete.
+        Uses load_all_closed_for_wallet (no row cap) so the full history is emitted,
+        not just the first 2000 rows.
         """
         try:
-            all_closed = load_closed_positions_cache(self._full_address, limit=2000)
-            _dlog("backfill", "page done — %d in cache", len(all_closed))
+            all_closed = load_all_closed_for_wallet(self._full_address)
+            _dlog("backfill", "page done — %d total in cache", len(all_closed))
             self.closed_cache_updated.emit(all_closed)
         except Exception:
             pass
@@ -491,9 +492,8 @@ class WalletPanel(QWidget):
     def _on_backfill_done(self) -> None:
         """Final reload once all backfill pages are complete."""
         try:
-            all_closed = load_closed_positions_cache(self._full_address, limit=2000)
-            _dlog("backfill", "done — %d closed in cache, emitting %d rows",
-                  count_closed_positions_cache(self._full_address), len(all_closed))
+            all_closed = load_all_closed_for_wallet(self._full_address)
+            _dlog("backfill", "done — %d total closed in cache", len(all_closed))
             self.closed_cache_updated.emit(all_closed)
         except Exception:
             pass
