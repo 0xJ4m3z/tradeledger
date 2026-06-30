@@ -523,8 +523,8 @@ class WalletPanel(QWidget):
             all_closed = load_all_closed_for_wallet(self._full_address)
             _dlog("backfill", "page done — %d total in cache", len(all_closed))
             self.closed_cache_updated.emit(all_closed)
-        except Exception:
-            pass
+        except Exception as exc:
+            _dlog("backfill", "ERROR in _on_backfill_page_done: %s", exc)
 
     def _on_backfill_done(self) -> None:
         """Final reload once all backfill pages are complete."""
@@ -532,8 +532,8 @@ class WalletPanel(QWidget):
             all_closed = load_all_closed_for_wallet(self._full_address)
             _dlog("backfill", "done — %d total closed in cache", len(all_closed))
             self.closed_cache_updated.emit(all_closed)
-        except Exception:
-            pass
+        except Exception as exc:
+            _dlog("backfill", "ERROR in _on_backfill_done: %s", exc)
 
     def _set_status(self, text: str, color: str) -> None:
         weight = "600" if color == _GREEN else "normal"
@@ -611,6 +611,7 @@ class WalletPanel(QWidget):
         try:
             upsert_closed_positions_cache(page, self._full_address)
             _dlog("cache", "persisted %d scroll-loaded closed position rows", len(page))
-        except Exception:
-            pass
+        except Exception as exc:
+            _dlog("cache", "ERROR: failed to persist %d scroll-loaded closed positions: %s",
+                  len(page), exc)
         self.more_closed_fetched.emit(page)

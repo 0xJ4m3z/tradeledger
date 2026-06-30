@@ -92,6 +92,33 @@ def init_db() -> None:
             )
         except Exception:
             pass
+        # Migration: ensure the composite unique index exists on (wallet_address, position_key).
+        # Older databases lost this constraint when the wallet_address column was added via
+        # ALTER TABLE and the original single-column auto-index was dropped.  Without it,
+        # ON CONFLICT (wallet_address, position_key) DO UPDATE raises OperationalError,
+        # silently preventing scroll-loaded rows from being persisted across restarts.
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_wallet_poskey "
+                "ON closed_positions_cache(wallet_address, position_key)"
+            )
+        except Exception:
+            # Duplicate rows block index creation — remove them (keep the lowest id),
+            # then retry.  This is safe: duplicates can only exist if the index was
+            # absent, meaning rows are interchangeable for the same (wallet, key) pair.
+            conn.execute(
+                "DELETE FROM closed_positions_cache WHERE id NOT IN ("
+                "  SELECT MIN(id) FROM closed_positions_cache"
+                "  GROUP BY wallet_address, position_key"
+                ")"
+            )
+            try:
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_wallet_poskey "
+                    "ON closed_positions_cache(wallet_address, position_key)"
+                )
+            except Exception:
+                pass
 
         # Active positions cache — replaced in full on each successful fetch
         conn.execute("""

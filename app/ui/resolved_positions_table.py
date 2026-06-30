@@ -37,10 +37,6 @@ _YELLOW = QColor("#e3b341")
 
 _SCROLL_THRESHOLD_PX = 80
 
-# Show first 2000 rows on startup; scroll extends from _all_positions before
-# emitting load_more_requested to avoid unnecessary network/DB calls.
-_INITIAL_DISPLAY = 2000
-
 _STATUS_TEXT = {
     "REDEEMED_WIN":  "Win",
     "SOLD":          "Sold",
@@ -114,7 +110,7 @@ class ResolvedPositionsTable(QWidget):
         super().__init__()
         self._label           = label
         self._all_positions   = list(positions)   # complete in-memory dataset
-        self._displayed_count = min(_INITIAL_DISPLAY, len(positions))
+        self._displayed_count = len(positions)    # render ALL rows at startup — no cap
         self._has_more        = True
         self._loading         = False
         self._infinite_scroll = show_refresh  # only Closed Positions tab uses API scroll-load
@@ -146,8 +142,7 @@ class ResolvedPositionsTable(QWidget):
         search.setMaximumWidth(480)
         layout.addWidget(search)
 
-        display_slice = self._all_positions[:self._displayed_count]
-        self._table = QTableWidget(len(display_slice), len(COLUMNS))
+        self._table = QTableWidget(len(positions), len(COLUMNS))
         self._table.setHorizontalHeaderLabels(COLUMNS)
         self._table.setAlternatingRowColors(True)
         self._table.setShowGrid(False)
@@ -155,7 +150,7 @@ class ResolvedPositionsTable(QWidget):
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
 
-        for row, p in enumerate(display_slice):
+        for row, p in enumerate(positions):
             _populate_row(self._table, row, p)
 
         hdr = self._table.horizontalHeader()
@@ -174,14 +169,13 @@ class ResolvedPositionsTable(QWidget):
         """Replace all positions (called on initial/refresh fetch)."""
         old_all = len(self._all_positions)
         self._all_positions   = list(positions)
-        self._displayed_count = min(_INITIAL_DISPLAY, len(positions))
+        self._displayed_count = len(positions)
         self._has_more        = len(positions) >= 100
         self._loading         = False
         self._load_status.setText("")
         self._header.setText(f"{self._label}  ({len(positions)})")
-        display_slice = positions[:self._displayed_count]
-        self._table.setRowCount(len(display_slice))
-        for row, p in enumerate(display_slice):
+        self._table.setRowCount(len(positions))
+        for row, p in enumerate(positions):
             _populate_row(self._table, row, p)
         _dlog("closed_tab",
               "update_positions(REPLACE): incoming=%d  old_all=%d  new_all=%d  displayed=%d",
@@ -242,10 +236,11 @@ class ResolvedPositionsTable(QWidget):
               len(new_records), len(fresh), old_all, len(self._all_positions), self._displayed_count)
 
     def load_from_cache(self, positions: List[ResolvedPosition]) -> None:
-        """Extend the in-memory dataset with newly cached rows from backfill.
+        """Extend the dataset with newly cached rows from backfill and render them immediately.
 
-        Does NOT modify _loading or _has_more; the table display stays as-is
-        and new rows are served by in-memory scroll when the user scrolls down.
+        Does NOT modify _loading or _has_more so infinite-scroll stays functional.
+        Rows are added to both _all_positions and the table widget so they are
+        visible without the user needing to scroll.
         """
         old_all = len(self._all_positions)
         seen  = {(p.market, p.outcome_held, p.cost_basis) for p in self._all_positions}
@@ -256,6 +251,11 @@ class ResolvedPositionsTable(QWidget):
                   len(positions), old_all, self._displayed_count)
             return
         self._all_positions.extend(fresh)
+        start_row = self._table.rowCount()
+        self._table.setRowCount(start_row + len(fresh))
+        for i, p in enumerate(fresh):
+            _populate_row(self._table, start_row + i, p)
+        self._displayed_count += len(fresh)
         self._header.setText(f"{self._label}  ({len(self._all_positions)})")
         _dlog("closed_tab",
               "load_from_cache: incoming=%d  +%d new  all=%d→%d  displayed=%d",
