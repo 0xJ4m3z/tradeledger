@@ -273,3 +273,175 @@ class TestStartupHydration:
         loaded = isolated_db.load_activity_cache(WALLET)
         today_loaded = [a for a in loaded if a.type == "REDEEM"]
         assert len(today_loaded) == 5
+
+
+# ── Cache-first pagination (load_activity_cache_page / load_closed_positions_cache_page) ──
+
+
+class TestActivityCachePage:
+    """load_activity_cache_page returns the correct slice without touching the API."""
+
+    def test_first_page_matches_load_cache(self, isolated_db):
+        rows = [_act(i * 100) for i in range(200)]
+        isolated_db.upsert_activity_cache(WALLET, rows)
+
+        page0 = isolated_db.load_activity_cache_page(WALLET, offset=0, limit=100)
+        full  = isolated_db.load_activity_cache(WALLET, limit=100)
+        assert len(page0) == 100
+        assert [a.timestamp for a in page0] == [a.timestamp for a in full]
+
+    def test_second_page_is_disjoint_from_first(self, isolated_db):
+        rows = [_act(i * 100) for i in range(200)]
+        isolated_db.upsert_activity_cache(WALLET, rows)
+
+        page0 = isolated_db.load_activity_cache_page(WALLET, offset=0, limit=100)
+        page1 = isolated_db.load_activity_cache_page(WALLET, offset=100, limit=100)
+        ts0 = {a.timestamp for a in page0}
+        ts1 = {a.timestamp for a in page1}
+        assert len(ts0) == 100
+        assert len(ts1) == 100
+        assert ts0.isdisjoint(ts1), "Consecutive pages must not overlap"
+
+    def test_pages_cover_full_dataset(self, isolated_db):
+        rows = [_act(i * 100) for i in range(250)]
+        isolated_db.upsert_activity_cache(WALLET, rows)
+
+        all_ts = []
+        for offset in range(0, 300, 100):
+            page = isolated_db.load_activity_cache_page(WALLET, offset=offset, limit=100)
+            all_ts.extend(a.timestamp for a in page)
+
+        assert len(set(all_ts)) == 250
+
+    def test_offset_beyond_cache_returns_empty(self, isolated_db):
+        """Empty result signals the caller should fall back to the API."""
+        rows = [_act(i * 100) for i in range(50)]
+        isolated_db.upsert_activity_cache(WALLET, rows)
+
+        page = isolated_db.load_activity_cache_page(WALLET, offset=100, limit=100)
+        assert page == []
+
+    def test_wallet_isolation(self, isolated_db):
+        wallet_b = "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB2"
+        isolated_db.upsert_activity_cache(WALLET, [_act(i * 100) for i in range(50)])
+        isolated_db.upsert_activity_cache(wallet_b, [_act(i * 100 + 5) for i in range(50)])
+
+        page_a = isolated_db.load_activity_cache_page(WALLET, offset=0, limit=100)
+        ts_a = {a.timestamp for a in page_a}
+        assert not any(ts % 100 == 5 for ts in ts_a), "Wallet B rows must not appear for Wallet A"
+
+    def test_count_activity_cache(self, isolated_db):
+        isolated_db.upsert_activity_cache(WALLET, [_act(i * 100) for i in range(75)])
+        assert isolated_db.count_activity_cache(WALLET) == 75
+
+    def test_newest_first_ordering(self, isolated_db):
+        rows = [_act(i * 100) for i in range(100)]
+        isolated_db.upsert_activity_cache(WALLET, rows)
+
+        page = isolated_db.load_activity_cache_page(WALLET, offset=0, limit=10)
+        timestamps = [a.timestamp for a in page]
+        assert timestamps == sorted(timestamps, reverse=True)
+
+
+class TestClosedCachePage:
+    """load_closed_positions_cache_page returns the correct slice."""
+
+    def test_first_page_matches_load_closed_cache(self, isolated_db):
+        positions = [_closed(f"M{i}", cost=float(i)) for i in range(100)]
+        isolated_db.upsert_closed_positions_cache(positions, WALLET)
+
+        page0 = isolated_db.load_closed_positions_cache_page(WALLET, offset=0, limit=50)
+        full  = isolated_db.load_closed_positions_cache(WALLET, limit=50)
+        assert len(page0) == 50
+        assert [(p.market, p.cost_basis) for p in page0] == [(p.market, p.cost_basis) for p in full]
+
+    def test_pages_cover_full_dataset(self, isolated_db):
+        positions = [_closed(f"M{i}", cost=float(i)) for i in range(130)]
+        isolated_db.upsert_closed_positions_cache(positions, WALLET)
+
+        seen_markets = set()
+        for offset in range(0, 200, 50):
+            page = isolated_db.load_closed_positions_cache_page(WALLET, offset=offset, limit=50)
+            for p in page:
+                seen_markets.add(p.market)
+
+        assert len(seen_markets) == 130
+
+    def test_offset_beyond_cache_returns_empty(self, isolated_db):
+        positions = [_closed(f"M{i}") for i in range(30)]
+        isolated_db.upsert_closed_positions_cache(positions, WALLET)
+
+        page = isolated_db.load_closed_positions_cache_page(WALLET, offset=100, limit=50)
+        assert page == []
+
+    def test_consecutive_pages_disjoint(self, isolated_db):
+        positions = [_closed(f"M{i}", cost=float(i)) for i in range(100)]
+        isolated_db.upsert_closed_positions_cache(positions, WALLET)
+
+        page0 = isolated_db.load_closed_positions_cache_page(WALLET, offset=0,  limit=50)
+        page1 = isolated_db.load_closed_positions_cache_page(WALLET, offset=50, limit=50)
+        markets0 = {p.market for p in page0}
+        markets1 = {p.market for p in page1}
+        assert markets0.isdisjoint(markets1)
+
+    def test_wallet_isolation(self, isolated_db):
+        wallet_b = "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB2"
+        isolated_db.upsert_closed_positions_cache([_closed("WalletA-Market")], WALLET)
+        isolated_db.upsert_closed_positions_cache([_closed("WalletB-Market")], wallet_b)
+
+        page = isolated_db.load_closed_positions_cache_page(WALLET, offset=0, limit=50)
+        assert all(p.market != "WalletB-Market" for p in page)
+
+
+# ── Scroll _has_more: fresh rows always enable further scrolling ───────────────
+
+def _scroll_merge_closed(existing: list, incoming: list) -> tuple:
+    """Replica of fixed append_positions merge logic. Returns (merged, has_more)."""
+    seen  = {(p.market, p.outcome_held, p.cost_basis) for p in existing}
+    fresh = [p for p in incoming if (p.market, p.outcome_held, p.cost_basis) not in seen]
+    if not fresh:
+        return existing, False
+    return existing + fresh, True   # has_more=True: partial page mustn't stop scroll
+
+
+def _scroll_merge_activity(existing: list, incoming: list) -> tuple:
+    """Replica of fixed append_activity merge logic. Returns (merged, has_more)."""
+    seen  = {(a.timestamp, a.type, a.side, a.size) for a in existing}
+    fresh = [a for a in incoming if (a.timestamp, a.type, a.side, a.size) not in seen]
+    if not fresh:
+        return existing, False
+    return existing + fresh, True
+
+
+class TestScrollHasMore:
+    def test_full_page_keeps_scroll_enabled(self):
+        existing = [_closed(f"M{i}") for i in range(50)]
+        incoming = [_closed(f"New-{i}") for i in range(50)]
+        _, has_more = _scroll_merge_closed(existing, incoming)
+        assert has_more is True
+
+    def test_partial_cache_page_keeps_scroll_enabled(self):
+        """A partial cache page (< 50 rows) must NOT stop scrolling."""
+        existing = [_closed(f"M{i}") for i in range(50)]
+        incoming = [_closed(f"New-{i}") for i in range(20)]   # only 20 fresh
+        _, has_more = _scroll_merge_closed(existing, incoming)
+        assert has_more is True
+
+    def test_zero_fresh_stops_scroll(self):
+        """All-duplicate page: both cache and API exhausted — scroll must stop."""
+        existing = [_closed(f"M{i}") for i in range(50)]
+        incoming = [_closed(f"M{i}") for i in range(50)]       # exact duplicates
+        _, has_more = _scroll_merge_closed(existing, incoming)
+        assert has_more is False
+
+    def test_activity_partial_cache_page_keeps_scroll_enabled(self):
+        existing = [_act(i * 100) for i in range(100)]
+        incoming = [_act((100 + i) * 100) for i in range(30)]  # 30 fresh
+        _, has_more = _scroll_merge_activity(existing, incoming)
+        assert has_more is True
+
+    def test_activity_zero_fresh_stops_scroll(self):
+        existing = [_act(i * 100) for i in range(100)]
+        incoming = [_act(i * 100) for i in range(100)]          # duplicates
+        _, has_more = _scroll_merge_activity(existing, incoming)
+        assert has_more is False

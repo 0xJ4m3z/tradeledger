@@ -167,8 +167,10 @@ class ResolvedPositionsTable(QWidget):
             return
 
         self._all_positions.extend(fresh)
-        self._has_more = len(new_records) >= 50
-        self._load_status.setText("" if self._has_more else "All positions loaded")
+        # Keep scrolling enabled as long as fresh rows arrived — partial cache pages
+        # should not stop scroll; only an empty response ends it (handled above).
+        self._has_more = True
+        self._load_status.setText("")
         self._header.setText(f"{self._label}  ({len(self._all_positions)})")
 
         start_row = self._table.rowCount()

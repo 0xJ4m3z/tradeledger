@@ -195,8 +195,11 @@ class ActivityTable(QWidget):
             return
 
         self._all_activity.extend(fresh)
-        self._has_more = len(new_records) >= 100
-        self._load_status.setText("" if self._has_more else "All activity loaded")
+        # Keep scrolling enabled as long as fresh rows arrived — the next page may come
+        # from the local cache (partial page) before eventually hitting the API.
+        # _has_more is only cleared when fresh is empty (handled above).
+        self._has_more = True
+        self._load_status.setText("")
         self._header.setText(f"Activity  ({len(self._all_activity)})")
 
         start_row = self._table.rowCount()

@@ -77,11 +77,13 @@ class TestBuild1DAnchoring:
         assert diff < 5   # within 5 seconds of test execution
 
     def test_points_are_in_chronological_order(self):
-        t1 = _et(14, 0)
-        t2 = _et(9, 0)   # earlier but listed second
+        # Use timestamps relative to now so both are always in the past at any run time.
+        now_ts = int(datetime.now(_ET).timestamp())
+        t_earlier = now_ts - 120   # 2 minutes ago
+        t_later   = now_ts - 60    # 1 minute ago (closer to now, listed second)
         cps = [
-            _closed(25.0, 75.0, closed_at=_unix(t1)),
-            _closed(40.0, 90.0, closed_at=_unix(t2)),
+            _closed(25.0, 75.0, closed_at=t_later),    # listed first but later
+            _closed(40.0, 90.0, closed_at=t_earlier),  # listed second but earlier
         ]
         points, _ = build_cumulative_pnl_points([], cps, "1d")
         ts_list = [p["timestamp"] for p in points]

@@ -592,7 +592,8 @@ class OverviewWidget(QWidget):
                 self._activity = fresh + self._activity
         _dlog("activity", "fetched %d rows → merged to %d total (was %d)",
               len(activity), len(self._activity), before)
-        self.activity_changed.emit(activity)
+        # Emit the full merged list so ActivityTable sees all rows, not just the API page.
+        self.activity_changed.emit(self._activity)
         self._chart.update(self._activity, self._closed_positions, self._range)
         self._update_metric_cards()
 
@@ -624,12 +625,20 @@ class OverviewWidget(QWidget):
     # ── Closed cache updates (backfill pages) ─────────────────────────────────
 
     def _on_closed_cache_updated(self, all_closed: list) -> None:
-        self._closed_positions = list(all_closed)
-        filtered = filter_closed_by_range(all_closed, self._range)
+        if all_closed:
+            # Merge: prefer the backfill's ordered set but preserve any rows the user
+            # scroll-loaded beyond the backfill's coverage (e.g. older than limit=2000).
+            seen_backfill = {(p.market, p.outcome_held, p.cost_basis) for p in all_closed}
+            extra = [p for p in self._closed_positions
+                     if (p.market, p.outcome_held, p.cost_basis) not in seen_backfill]
+            self._closed_positions = list(all_closed) + extra
+        _dlog("backfill", "closed_positions now %d rows after cache update",
+              len(self._closed_positions))
+        filtered = filter_closed_by_range(self._closed_positions, self._range)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
-        self._chart.update(self._activity, all_closed, self._range)
+        self._chart.update(self._activity, self._closed_positions, self._range)
         self._update_metric_cards()
-        self.closed_cache_updated.emit(all_closed)
+        self.closed_cache_updated.emit(self._closed_positions)
 
     # ── Public ─────────────────────────────────────────────────────────────────
 

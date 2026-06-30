@@ -24,8 +24,12 @@ from app.adapters.polymarket_adapter import (
 )
 from app.adapters.wallet_adapter import WalletLookupError, fetch_wallet_usd_value
 from app.database import (
+    count_activity_cache,
+    count_closed_positions_cache,
     init_db,
+    load_activity_cache_page,
     load_closed_positions_cache,
+    load_closed_positions_cache_page,
     load_last_wallet,
     save_active_positions_cache,
     save_last_wallet,
@@ -392,14 +396,18 @@ class WalletPanel(QWidget):
     def _on_activity_ok(self, activity: list) -> None:
         try:
             upsert_activity_cache(self._full_address, activity)
+            _dlog("cache", "activity: upserted %d rows — total in cache: %d",
+                  len(activity), count_activity_cache(self._full_address))
         except Exception:
             pass
         self.activity_fetched.emit(activity)
 
     def _on_backfill_done(self) -> None:
-        """Reload the most recent 500 from cache once all backfill pages are complete."""
+        """Reload the most recent 2 000 from cache once all backfill pages are complete."""
         try:
-            all_closed = load_closed_positions_cache(self._full_address)
+            all_closed = load_closed_positions_cache(self._full_address, limit=2000)
+            _dlog("backfill", "done — %d closed in cache, emitting %d rows",
+                  count_closed_positions_cache(self._full_address), len(all_closed))
             self.closed_cache_updated.emit(all_closed)
         except Exception:
             pass
@@ -423,11 +431,24 @@ class WalletPanel(QWidget):
             self._on_fetch()
 
     def fetch_activity_page(self, offset: int) -> None:
-        """Fetch the next activity page at offset (called by the Activity tab's scroll handler)."""
+        """Fetch the next activity page at offset — cache-first, API on cache miss."""
         if not self._full_address:
             return
+        # Try the local SQLite cache first (synchronous, no network latency).
+        # The cache is ordered newest-first, matching the UI's in-memory order, so
+        # OFFSET=len(ui_rows) consistently yields the next older page.
+        try:
+            cached = load_activity_cache_page(self._full_address, offset, limit=100)
+            if cached:
+                _dlog("cache", "activity page offset=%d: %d rows from cache", offset, len(cached))
+                self.more_activity_fetched.emit(cached)
+                return
+        except Exception:
+            pass
+        # Cache miss — fetch from API in background thread and persist the result.
         if self._activity_page_thread and self._activity_page_thread.isRunning():
             return
+        _dlog("cache", "activity page offset=%d: cache miss — fetching from API", offset)
         self._activity_page_thread = _ActivityPageThread(self._full_address, offset)
         self._activity_page_thread.done.connect(self._on_activity_page_done)
         self._activity_page_thread.start()
@@ -442,11 +463,20 @@ class WalletPanel(QWidget):
         self.more_activity_fetched.emit(page)
 
     def fetch_closed_page(self, offset: int) -> None:
-        """Fetch the next closed positions page at offset (scroll-load for Closed tab)."""
+        """Fetch the next closed positions page at offset — cache-first, API on cache miss."""
         if not self._full_address:
             return
+        try:
+            cached = load_closed_positions_cache_page(self._full_address, offset, limit=50)
+            if cached:
+                _dlog("cache", "closed page offset=%d: %d rows from cache", offset, len(cached))
+                self.more_closed_fetched.emit(cached)
+                return
+        except Exception:
+            pass
         if self._closed_page_thread and self._closed_page_thread.isRunning():
             return
+        _dlog("cache", "closed page offset=%d: cache miss — fetching from API", offset)
         self._closed_page_thread = _ClosedPageThread(self._full_address, offset)
         self._closed_page_thread.done.connect(self._on_closed_page_done)
         self._closed_page_thread.start()

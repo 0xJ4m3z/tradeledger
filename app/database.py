@@ -378,6 +378,44 @@ def clear_wallet_snapshots_today(wallet_address: str) -> None:
         conn.commit()
 
 
+def load_closed_positions_cache_page(
+    wallet_address: str,
+    offset: int,
+    limit: int = 50,
+) -> List[ResolvedPosition]:
+    """Load one page of cached closed positions at offset, newest-first.
+
+    Used by the cache-first scroll handler so the UI can page through the local
+    SQLite cache without hitting the API until the cache is exhausted.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT market, outcome_held, winning_outcome, quantity, cost_basis,
+                   redeem_value, redeemed, resolved_date, closed_at
+            FROM closed_positions_cache
+            WHERE wallet_address = ?
+            ORDER BY COALESCE(closed_at, 0) DESC, resolved_date DESC, fetched_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (wallet_address, limit, offset),
+        ).fetchall()
+    return [
+        ResolvedPosition(
+            market=r["market"],
+            outcome_held=r["outcome_held"],
+            winning_outcome=r["winning_outcome"],
+            quantity=r["quantity"],
+            cost_basis=r["cost_basis"],
+            redeem_value=r["redeem_value"],
+            redeemed=bool(r["redeemed"]),
+            resolved_date=r["resolved_date"],
+            closed_at=r["closed_at"],
+        )
+        for r in rows
+    ]
+
+
 def count_closed_positions_cache(wallet_address: str = "") -> int:
     with get_connection() as conn:
         row = conn.execute(
@@ -516,6 +554,52 @@ def upsert_activity_cache(
                  a.outcome, a.side, a.size, a.usdc_size, a.price),
             )
         conn.commit()
+
+
+def load_activity_cache_page(
+    wallet_address: str,
+    offset: int,
+    limit: int = 100,
+) -> List[UserActivity]:
+    """Load one page of cached activity at offset, newest-first.
+
+    Used by the cache-first scroll handler so the UI can page through the local
+    SQLite cache without hitting the API until the cache is exhausted.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT timestamp, type, title, outcome, side, size, usdc_size, price
+            FROM activity_cache
+            WHERE wallet_address = ?
+            ORDER BY timestamp DESC
+            LIMIT ? OFFSET ?
+            """,
+            (wallet_address, limit, offset),
+        ).fetchall()
+    return [
+        UserActivity(
+            timestamp=r["timestamp"],
+            type=r["type"],
+            title=r["title"],
+            outcome=r["outcome"],
+            side=r["side"],
+            size=r["size"],
+            usdc_size=r["usdc_size"],
+            price=r["price"],
+        )
+        for r in rows
+    ]
+
+
+def count_activity_cache(wallet_address: str) -> int:
+    """Return total number of cached activity rows for this wallet."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM activity_cache WHERE wallet_address = ?",
+            (wallet_address,),
+        ).fetchone()
+    return row["n"] if row else 0
 
 
 def load_activity_cache(

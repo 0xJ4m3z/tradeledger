@@ -4,6 +4,7 @@ Verifies cost-basis matching, CT-day boundary logic, and rounding.
 """
 
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -12,7 +13,8 @@ from app.services.pnl_today import compute_pnl_today, count_trades_today, today_
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-_CT = timezone(timedelta(hours=-6))  # UTC-6 fixed offset for reproducible timestamps
+# Use ET so timestamps match the ET-based today_date_et() used inside pnl_today.py.
+_CT = ZoneInfo("America/New_York")
 
 
 def _ts_today(hour: int = 12) -> int:
