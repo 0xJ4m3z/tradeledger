@@ -10,7 +10,7 @@ time (1D) or date (1W+) and the cumulative P/L at that point.
 """
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 from zoneinfo import ZoneInfo
 
 import matplotlib
@@ -19,6 +19,7 @@ matplotlib.use("QtAgg")
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 from app.models import ResolvedPosition, UserActivity
@@ -54,6 +55,30 @@ def _xaxis_label(x_num, range_: str) -> str:
     return dt_et.strftime("%b '%y")
 
 
+# ── Background computation worker ─────────────────────────────────────────────
+
+class _ChartWorker(QThread):
+    """Compute P/L chart points off the main thread to keep the UI responsive."""
+    done = Signal(list, bool)   # (points, is_partial)
+
+    def __init__(self, activity, closed, range_):
+        super().__init__(parent=None)
+        self._activity = activity
+        self._closed   = closed
+        self._range    = range_
+
+    def run(self):
+        try:
+            pts, partial = build_cumulative_pnl_points(
+                self._activity, self._closed, self._range
+            )
+        except Exception:
+            pts, partial = [], False
+        self.done.emit(pts, partial)
+
+
+# ── Chart widget ───────────────────────────────────────────────────────────────
+
 class PnlChartWidget(QWidget):
     """Cumulative realized P/L line chart with step-hold and hover crosshair."""
 
@@ -68,7 +93,7 @@ class PnlChartWidget(QWidget):
         self._activity = list(activity or [])
         self._closed   = list(closed or [])
         self._range    = range_
-        self.is_partial = False  # set by _draw(); checked by overview for card ~
+        self.is_partial = False
 
         self._fig, self._ax = plt.subplots(figsize=figsize)
         self._fig.patch.set_facecolor(_BG)
@@ -80,13 +105,15 @@ class PnlChartWidget(QWidget):
         )
 
         # Hover state — all Python lists so bool checks are safe
-        self._x_nums: list = []   # float date numbers
-        self._y_data: list = []   # float P/L values
-        self._x_data: list = []   # aware datetime objects for tooltip
+        self._x_nums: list = []
+        self._y_data: list = []
+        self._x_data: list = []
 
         self._vline = None
         self._dot   = None
         self._annot = None
+
+        self._worker: Optional[_ChartWorker] = None
 
         self._canvas.mpl_connect("motion_notify_event", self._on_motion)
         self._canvas.mpl_connect("axes_leave_event",    self._on_leave)
@@ -95,7 +122,7 @@ class PnlChartWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._canvas)
 
-        self._draw()
+        self._request_draw()
 
     # ── Public ────────────────────────────────────────────────────────────────
 
@@ -108,22 +135,33 @@ class PnlChartWidget(QWidget):
         self._activity = list(activity)
         self._closed   = list(closed)
         self._range    = range_
-        self._draw()
+        self._request_draw()
+
+    # ── Worker management ─────────────────────────────────────────────────────
+
+    def _request_draw(self) -> None:
+        """Cancel any in-progress worker and launch a fresh one."""
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.done.disconnect()
+            self._worker.quit()
+            self._worker.wait(150)          # brief grace period; won't block UI
+        self._worker = _ChartWorker(self._activity, self._closed, self._range)
+        self._worker.done.connect(self._on_points_ready)
+        self._worker.start()
+
+    def _on_points_ready(self, points: list, is_partial: bool) -> None:
+        self.is_partial = is_partial
+        self._draw_points(points)
 
     # ── Drawing ───────────────────────────────────────────────────────────────
 
-    def _draw(self) -> None:
+    def _draw_points(self, points: list) -> None:
         ax = self._ax
         ax.clear()
         ax.set_facecolor(_BG)
 
-        # Reset hover state; the axis was cleared
         self._vline = self._dot = self._annot = None
         self._x_nums = self._y_data = self._x_data = []
-
-        points, self.is_partial = build_cumulative_pnl_points(
-            self._activity, self._closed, self._range
-        )
 
         if not points:
             self._draw_empty()
@@ -132,7 +170,6 @@ class PnlChartWidget(QWidget):
         timestamps = [p["timestamp"] for p in points]
         y_vals     = [p["value"]     for p in points]
 
-        # Real event points — used for hover snapping (snap to nearest actual event)
         x_nums = list(mdates.date2num(timestamps))
         self._x_nums = x_nums
         self._y_data = list(y_vals)
@@ -141,8 +178,6 @@ class PnlChartWidget(QWidget):
         final = y_vals[-1] if len(y_vals) > 1 else 0.0
         color = _GREEN if final >= 0 else _RED
 
-        # Smooth visual series via PCHIP monotone interpolation.
-        # Fewer than 3 real points → falls back to the original series automatically.
         x_draw, y_draw = pchip_smooth(x_nums, y_vals, n=300)
 
         ax.plot(x_draw, y_draw, color=color, linewidth=1.8, zorder=3)
@@ -159,15 +194,13 @@ class PnlChartWidget(QWidget):
             color=_RED, alpha=0.12, zorder=2,
         )
 
-        # X-axis: convert float date numbers back to ET datetimes for labels
-        _rng = self._range  # capture for closure
+        _rng = self._range
         ax.xaxis.set_major_formatter(
             plt.FuncFormatter(lambda x, _: _xaxis_label(x, _rng))
         )
         ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=3, maxticks=7))
         ax.tick_params(axis="x", labelsize=8, colors=_MUTED)
 
-        # Y-axis
         ax.yaxis.set_major_formatter(
             plt.FuncFormatter(lambda v, _: f"${v:+,.0f}" if v != 0 else "$0")
         )
@@ -177,7 +210,6 @@ class PnlChartWidget(QWidget):
             spine.set_visible(False)
         ax.grid(axis="y", color=_MUTED, alpha=0.1, linewidth=0.5, zorder=0)
 
-        # Persistent hover overlay objects (created once per draw, updated on motion)
         self._vline, = ax.plot(
             [], [], color=_MUTED, linewidth=0.8, linestyle="--", zorder=5, visible=False
         )
@@ -191,7 +223,8 @@ class PnlChartWidget(QWidget):
             fontsize=8, color=_TEXT, zorder=7, visible=False,
         )
 
-        self._fig.tight_layout(pad=0.5)
+        # subplots_adjust is ~10x faster than tight_layout for large datasets
+        self._fig.subplots_adjust(left=0.10, right=0.98, top=0.97, bottom=0.18)
         self._canvas.draw_idle()
 
     def _draw_empty(self) -> None:
