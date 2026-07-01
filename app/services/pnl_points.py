@@ -131,6 +131,14 @@ def _build_range_points(
 
     sorted_days = sorted(daily.keys())
 
+    # Diagnostic: log if positions are missing from daily (should never happen after fix).
+    expected_total = round(sum(cp.realized_pnl for cp in filtered), 2)
+    chart_total    = round(sum(daily.values()), 2)
+    _dlog("pnl_check",
+          "range=%s filtered=%d daily_days=%d expected=%.2f chart_total=%.2f diff=%.2f",
+          range_, len(filtered), len(daily), expected_total, chart_total,
+          expected_total - chart_total)
+
     # Anchor: range cutoff date (midnight) for fixed ranges; day before oldest for "all"
     cutoff = range_cutoff_et(range_)  # returns date or None
     if cutoff is not None:

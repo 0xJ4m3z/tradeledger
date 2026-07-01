@@ -560,8 +560,8 @@ class OverviewWidget(QWidget):
         if not self._closed_positions:
             self._closed_positions = list(closed)
         else:
-            seen  = {(p.market, p.outcome_held, p.cost_basis) for p in self._closed_positions}
-            fresh = [p for p in closed if (p.market, p.outcome_held, p.cost_basis) not in seen]
+            seen  = {(p.market, p.outcome_held) for p in self._closed_positions}
+            fresh = [p for p in closed if (p.market, p.outcome_held) not in seen]
             if fresh:
                 self._closed_positions = fresh + self._closed_positions
         classify_closed_positions(self._closed_positions, self._activity)
@@ -631,9 +631,9 @@ class OverviewWidget(QWidget):
             if n_new > 0:
                 _dlog("activity", "derived %d new closed positions from activity", n_new)
                 all_closed = load_all_closed_for_wallet(self._confirmed_wallet)
-                seen_closed = {(p.market, p.outcome_held, p.cost_basis) for p in self._closed_positions}
+                seen_closed = {(p.market, p.outcome_held) for p in self._closed_positions}
                 fresh_closed = [p for p in all_closed
-                                if (p.market, p.outcome_held, p.cost_basis) not in seen_closed]
+                                if (p.market, p.outcome_held) not in seen_closed]
                 if fresh_closed:
                     self._closed_positions = fresh_closed + self._closed_positions
                     self.closed_cache_updated.emit(self._closed_positions)
@@ -664,6 +664,9 @@ class OverviewWidget(QWidget):
         filtered = filter_closed_by_range(self._closed_positions, self._range)
         pnl      = sum(p.realized_pnl for p in filtered)
         trades   = len(filtered)
+        _dlog("pnl_check",
+              "card: range=%s positions=%d filtered=%d pnl=%.2f",
+              self._range, len(self._closed_positions), trades, pnl)
 
         color   = _GREEN if pnl > 0 else (_RED if pnl < 0 else _MUTED)
         display = f"${pnl:+,.2f}" if pnl != 0 else "$0.00"
