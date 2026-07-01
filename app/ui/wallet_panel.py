@@ -312,8 +312,9 @@ class WalletPanel(QWidget):
         self._timer.setInterval(_AUTO_REFRESH_MS)
         self._timer.timeout.connect(self._on_timer_tick)
 
-        self._build_ui()       # setChecked(True) fires toggled -> _on_auto_refresh_toggled -> timer ready
+        self._build_ui()
         self._load_last_wallet()
+        self._timer.start()    # start unconditionally; checkbox is checked by default
 
     def _build_ui(self) -> None:
         frame = QFrame()
@@ -369,7 +370,9 @@ class WalletPanel(QWidget):
         bottom_row.addWidget(self._status, 1)
 
         self._auto_cb = QCheckBox("Auto-refresh every 5 min")
+        self._auto_cb.blockSignals(True)
         self._auto_cb.setChecked(True)
+        self._auto_cb.blockSignals(False)
         self._auto_cb.setStyleSheet(
             f"color: {_MUTED}; font-size: 12px; border: none; background: transparent;"
         )
