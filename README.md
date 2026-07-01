@@ -20,7 +20,7 @@ TradeLedger lets you monitor your open positions, resolved winnings, closed trad
 
 ## Screenshots
 
-![TradeLedger v0.3.1 Overview](docs/screenshots/tradeledger_v0.3.1_overview.png)
+![TradeLedger v0.3.2 Overview](docs/screenshots/tradeledger_v0.3.2_overview.png)
 
 ---
 
@@ -359,6 +359,16 @@ Tries multiple public Polygon RPCs automatically if one fails. Wallet address is
 - **Insert-or-ignore dedup** — closed positions and activity events accumulate without duplicates across scroll-loads, backfill pages, and refreshes
 - **Debug logging** — set `TRADELEDGER_DEBUG=1` to enable verbose data-flow logs via Python's `logging` module
 - **433 passing tests** — including `test_cache_hydration.py` covering scroll-page persistence, in-memory merge logic, startup hydration, and P/L accuracy scenarios
+
+**v0.3.2 — Performance + UI polish** ✓
+- **Non-blocking chart rendering** — P/L chart computation runs in a background thread (`_ChartWorker`); switching to 1Y or All no longer freezes the UI
+- **Overview row cap** — closed positions grid in the Overview panel renders at most 100 rows; shows "N more — see Closed Positions tab" when over the cap; eliminates the multi-second hang when switching to large ranges
+- **Auto-refresh on by default** — "Auto-refresh every 5 min" checkbox is enabled at startup; user can untick if desired
+- **Removed wallet amount from status line** — wallet USD value is already shown in the dedicated card; removed the redundant "Wallet: $X" prefix from the status line below the address field
+- **Realized P/L sign formatting** — positive P/L displays as `$97.46` (no `+` prefix); negative still displays as `-$97.46`; color (green/red) conveys direction
+- **Loss Watch card** — removed "unacknowledged losing positions" subtitle; count and Acknowledge All button remain
+- **Fixed remaining in-memory dedup keys** — two remaining occurrences in the overview used `(market, outcome_held, cost_basis)` for dedup; changed to `(market, outcome_held)` to match the DB key and prevent false duplicates when API and activity sources compute cost_basis differently
+- **433 passing tests**
 
 **v0.4 — Planned**
 - Notes per market
