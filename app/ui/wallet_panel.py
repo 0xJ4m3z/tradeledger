@@ -435,7 +435,7 @@ class WalletPanel(QWidget):
         self._current_value = value
         self._pending_value = value
         self._addr_input.setText(_mask_address(self._full_address))
-        self._set_status(f"Wallet: ${value:,.2f}  ·  Loading positions…", _MUTED)
+        self._set_status("Loading positions…", _MUTED)
         if self._full_address != self._confirmed_address:
             self._confirmed_address = self._full_address
             self.wallet_address_changed.emit(self._full_address)
@@ -447,8 +447,7 @@ class WalletPanel(QWidget):
     def _on_positions_ok(self, active: list, resolved: list, closed: list) -> None:
         self._positions_ok = True
         self._set_status(
-            f"Wallet: ${self._pending_value:,.2f}  ·  {len(active)} active"
-            f"  ·  {len(resolved)} resolved",
+            f"{len(active)} active  ·  {len(resolved)} resolved",
             _TEXT,
         )
         addr = self._full_address
@@ -461,10 +460,7 @@ class WalletPanel(QWidget):
         self.positions_fetched.emit(active, resolved, closed)
 
     def _on_positions_err(self, msg: str) -> None:
-        self._set_status(
-            f"Wallet: ${self._pending_value:,.2f}  ·  Positions unavailable: {msg}",
-            _RED,
-        )
+        self._set_status(f"Positions unavailable: {msg}", _RED)
 
     def _on_fetch_done(self) -> None:
         self._fetch_btn.setEnabled(True)

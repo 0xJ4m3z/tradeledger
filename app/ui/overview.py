@@ -115,9 +115,6 @@ class _LossWatchCard(QFrame):
         self._val.setStyleSheet(f"color: {_MUTED}; font-size: 20px; font-weight: 700;")
         self._val.setAlignment(_L | _V)
 
-        self._sub = QLabel("unacknowledged losing positions")
-        self._sub.setStyleSheet(f"color: {_MUTED}; font-size: 11px;")
-
         self._btn = QPushButton("Acknowledge All")
         self._btn.setStyleSheet(
             f"background-color: #21262d; border: 1px solid {_BORDER}; border-radius: 4px;"
@@ -127,7 +124,6 @@ class _LossWatchCard(QFrame):
 
         vbox.addWidget(t)
         vbox.addWidget(self._val)
-        vbox.addWidget(self._sub)
         vbox.addWidget(self._btn)
 
     def update_count(self, count: int) -> None:
@@ -681,7 +677,7 @@ class OverviewWidget(QWidget):
               self._range, len(self._closed_positions), trades, pnl)
 
         color   = _GREEN if pnl > 0 else (_RED if pnl < 0 else _MUTED)
-        display = f"${pnl:+,.2f}" if pnl != 0 else "$0.00"
+        display = f"${pnl:,.2f}" if pnl >= 0 else f"-${abs(pnl):,.2f}"
         self._pnl_today_card.update_value(display, color)
         self._trades_today_card.update_value(str(trades) if trades else "0", _TEXT)
 
