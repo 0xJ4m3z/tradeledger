@@ -1,7 +1,18 @@
 from PySide6.QtWidgets import QMainWindow, QStatusBar, QTabWidget, QVBoxLayout, QWidget
 
 from app.adapters.sample_adapter import load_all
-from app.database import load_last_wallet, load_wallet_snapshots, save_snapshot
+from app.debug import _dlog
+from app.database import (
+    load_active_positions_cache,
+    load_all_activity_for_wallet,
+    load_all_closed_for_wallet,
+    load_last_wallet,
+    load_resolved_positions_cache,
+    load_wallet_snapshots,
+    save_snapshot,
+    upsert_activity_derived_closed_positions,
+)
+from app.services.pnl_today import derive_closed_from_activity
 from app.services.metrics import compute_dashboard_metrics
 from app.ui.active_positions_table import ActivePositionsTable
 from app.ui.activity_table import ActivityTable
@@ -109,8 +120,42 @@ class MainWindow(QMainWindow):
         self.resize(1440, 940)
         self.setStyleSheet(_STYLE)
 
-        active, resolved = load_all()
-        save_snapshot("sample", active, resolved)
+        # Try to load cached data for the remembered wallet to populate tabs immediately.
+        # The WalletPanel auto-triggers a live refresh in the background; cached data
+        # provides instant display while the fetch completes.
+        _init_wallet    = load_last_wallet()
+        cached_active   = load_active_positions_cache(_init_wallet)    if _init_wallet else []
+        cached_resolved = load_resolved_positions_cache(_init_wallet)  if _init_wallet else []
+        cached_activity = load_all_activity_for_wallet(_init_wallet)   if _init_wallet else []
+
+        # Derive closed positions from REDEEM events in the activity feed and persist
+        # to SQLite before loading the closed tab.  This fills the gap when the
+        # /closed-positions API only returns the most-recent ~100 records: the activity
+        # feed already contains REDEEM events going back to the start of history.
+        # Records are only inserted when no API-sourced record exists for the same
+        # (market, outcome_held), so API data is never overwritten.
+        if _init_wallet and cached_activity:
+            _derived = derive_closed_from_activity(cached_activity)
+            _n_derived = upsert_activity_derived_closed_positions(_derived, _init_wallet)
+            _dlog("startup", "derived %d new closed positions from activity feed "
+                  "(%d total REDEEM-derived candidates)", _n_derived, len(_derived))
+
+        cached_closed   = load_all_closed_for_wallet(_init_wallet)     if _init_wallet else []
+
+        _dlog("startup",
+              "wallet=%s | active=%d | resolved=%d | closed=%d | activity=%d",
+              (_init_wallet[:10] + "...") if _init_wallet else "(none)",
+              len(cached_active), len(cached_resolved),
+              len(cached_closed), len(cached_activity))
+        # Fall back to sample data only when no cache exists (first run / new wallet)
+        if not cached_active and not cached_resolved:
+            active, resolved = load_all()
+            save_snapshot("sample", active, resolved)
+            _from_cache = False
+        else:
+            active, resolved = cached_active, cached_resolved
+            _from_cache = True
+
         metrics = compute_dashboard_metrics(active, resolved)
 
         overview               = OverviewWidget(active, resolved, metrics)
@@ -118,9 +163,9 @@ class MainWindow(QMainWindow):
         self._active_tab       = ActivePositionsTable(active)
         self._resolved_tab     = ResolvedPositionsTable(resolved, label="Resolved Positions")
         self._closed_tab       = ResolvedPositionsTable(
-            [], label="Closed Positions", show_refresh=True
+            cached_closed, label="Closed Positions", show_refresh=True
         )
-        self._activity_tab     = ActivityTable([])
+        self._activity_tab     = ActivityTable(cached_activity)
 
         # ── Signal wiring ───────────────────────────────────────────────────────
         overview.positions_changed.connect(self._on_positions_changed)
@@ -162,19 +207,39 @@ class MainWindow(QMainWindow):
         tabs.addTab(tv_tab,                    "Total Tracked Value")
         self.setCentralWidget(tabs)
 
+        # Pre-populate Overview with cached closed positions so metric cards and
+        # P/L chart render immediately before the live fetch completes.
+        if cached_closed:
+            overview.seed_from_cache(cached_closed, cached_activity)
+
+        _dlog("startup",
+              "closed_tab initialized with %d rows | activity_tab initialized with %d rows",
+              len(self._closed_tab._all_positions),
+              len(self._activity_tab._all_activity))
+
         self._status_bar = QStatusBar()
-        self._status_bar.showMessage(
-            f"Sample data mode  •  {len(active)} active  •  {len(resolved)} resolved"
-        )
+        if _from_cache:
+            self._status_bar.showMessage(
+                f"Loaded from cache  •  {len(active)} active"
+                f"  •  {len(resolved)} resolved  •  {len(cached_closed)} closed  •  Refreshing…"
+            )
+        else:
+            self._status_bar.showMessage(
+                f"Sample data mode  •  {len(active)} active  •  {len(resolved)} resolved"
+            )
         self.setStatusBar(self._status_bar)
 
     def _on_positions_changed(self, active: list, resolved: list, closed: list) -> None:
         self._active_tab.update_positions(active)
         self._resolved_tab.update_positions(resolved)
+        before = len(self._closed_tab._all_positions)
         if not self._closed_tab._all_positions:
             self._closed_tab.update_positions(closed)   # first load
         else:
             self._closed_tab.merge_positions(closed)    # refresh — prepend new only
+        after = len(self._closed_tab._all_positions)
+        _dlog("fetch", "closed_tab: %d → %d rows after live fetch (%d API rows)",
+              before, after, len(closed))
         self._loss_watch_tab.update_positions(active)
         self._status_bar.showMessage(
             f"Live Polymarket data  •  {len(active)} active"
@@ -182,8 +247,14 @@ class MainWindow(QMainWindow):
         )
 
     def _on_closed_cache_updated(self, all_closed: list) -> None:
-        # Do NOT call update_positions here — that would reset the table and lose
-        # scroll progress. The closed tab loads more via scroll-triggered API pages.
+        # Backfill complete: inject any newly-cached rows into the Closed tab.
+        # load_from_cache deduplicates and appends without touching _loading or _has_more,
+        # so infinite-scroll stays functional and the user's scroll position is preserved.
+        if all_closed:
+            before = len(self._closed_tab._all_positions)
+            self._closed_tab.load_from_cache(all_closed)
+            after  = len(self._closed_tab._all_positions)
+            _dlog("backfill", "closed_tab: %d → %d rows after cache injection", before, after)
         self._status_bar.showMessage(
             f"Live Polymarket data  •  {len(all_closed)} closed positions cached"
         )

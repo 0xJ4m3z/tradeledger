@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import List
 
 from PySide6.QtCore import Qt, Signal
@@ -14,18 +15,50 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.debug import _dlog
 from app.models import ResolvedPosition
+
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    _ET_ZONE = _ZoneInfo("America/New_York")
+except Exception:
+    from datetime import timezone, timedelta as _td
+    _ET_ZONE = timezone(_td(hours=-5))
 
 COLUMNS = [
     "Market", "Outcome Held", "Winning Outcome", "Qty",
-    "Cost Basis", "Redeem Value", "Realized P/L", "P/L %", "Redeemed",
+    "Cost Basis", "Proceeds", "Realized P/L", "P/L %", "Status", "Closed Date",
 ]
 
-_GREEN = QColor("#3fb950")
-_RED   = QColor("#f85149")
-_MUTED = QColor("#8b949e")
+_GREEN  = QColor("#3fb950")
+_RED    = QColor("#f85149")
+_MUTED  = QColor("#8b949e")
+_YELLOW = QColor("#e3b341")
 
 _SCROLL_THRESHOLD_PX = 80
+
+_STATUS_TEXT = {
+    "REDEEMED_WIN":  "Win",
+    "SOLD":          "Sold",
+    "RESOLVED_LOSS": "Loss",
+}
+_STATUS_COLOR = {
+    "REDEEMED_WIN":  _GREEN,
+    "SOLD":          _YELLOW,
+    "RESOLVED_LOSS": _RED,
+}
+
+
+def _fmt_closed_date(p: ResolvedPosition) -> str:
+    """Return close date in ET (from closed_at epoch), falling back to resolved_date."""
+    if p.closed_at:
+        try:
+            return datetime.fromtimestamp(p.closed_at, tz=_ET_ZONE).strftime("%Y-%m-%d")
+        except (OSError, OverflowError, ValueError):
+            pass
+    if p.resolved_date:
+        return p.resolved_date[:10]
+    return "—"
 
 
 def _cell(text: str, align=Qt.AlignmentFlag.AlignLeft) -> QTableWidgetItem:
@@ -54,13 +87,18 @@ def _populate_row(table: QTableWidget, row: int, p: ResolvedPosition) -> None:
     table.setItem(row, 6, _pnl_cell(p.realized_pnl))
     table.setItem(row, 7, _pnl_cell(p.realized_pnl_pct, "{:+.1f}%"))
 
-    status = _cell("Yes" if p.redeemed else "Pending")
-    status.setForeground(_GREEN if p.redeemed else _MUTED)
-    table.setItem(row, 8, status)
+    ct = getattr(p, "close_type", "UNKNOWN")
+    status_item = _cell(_STATUS_TEXT.get(ct, "—"))
+    status_item.setForeground(_STATUS_COLOR.get(ct, _MUTED))
+    table.setItem(row, 8, status_item)
+
+    date_item = _cell(_fmt_closed_date(p))
+    date_item.setForeground(_MUTED)
+    table.setItem(row, 9, date_item)
 
 
 class ResolvedPositionsTable(QWidget):
-    refresh_requested  = Signal()
+    refresh_requested   = Signal()
     load_more_requested = Signal(int)  # emits current row count as next offset
 
     def __init__(
@@ -70,11 +108,12 @@ class ResolvedPositionsTable(QWidget):
         show_refresh: bool = False,
     ):
         super().__init__()
-        self._label          = label
-        self._all_positions  = list(positions)
-        self._has_more       = True
-        self._loading        = False
-        self._infinite_scroll = show_refresh  # only Closed Positions tab uses scroll-load
+        self._label           = label
+        self._all_positions   = list(positions)   # complete in-memory dataset
+        self._displayed_count = len(positions)    # render ALL rows at startup — no cap
+        self._has_more        = True
+        self._loading         = False
+        self._infinite_scroll = show_refresh  # only Closed Positions tab uses API scroll-load
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -118,74 +157,136 @@ class ResolvedPositionsTable(QWidget):
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for col in range(1, len(COLUMNS)):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(9, QHeaderView.ResizeMode.Fixed)
+        hdr.resizeSection(9, 90)
 
-        if self._infinite_scroll:
-            self._table.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        self._table.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
-        self._table = self._table
         search.textChanged.connect(self._apply_filter)
         layout.addWidget(self._table)
 
     def update_positions(self, positions: List[ResolvedPosition]) -> None:
         """Replace all positions (called on initial/refresh fetch)."""
-        self._all_positions = list(positions)
-        self._has_more      = len(positions) >= 100
-        self._loading       = False
+        old_all = len(self._all_positions)
+        self._all_positions   = list(positions)
+        self._displayed_count = len(positions)
+        self._has_more        = len(positions) >= 100
+        self._loading         = False
         self._load_status.setText("")
         self._header.setText(f"{self._label}  ({len(positions)})")
         self._table.setRowCount(len(positions))
         for row, p in enumerate(positions):
             _populate_row(self._table, row, p)
+        _dlog("closed_tab",
+              "update_positions(REPLACE): incoming=%d  old_all=%d  new_all=%d  displayed=%d",
+              len(positions), old_all, len(self._all_positions), self._displayed_count)
 
     def merge_positions(self, new_records: List[ResolvedPosition]) -> None:
         """Prepend any new records not already loaded (called on refresh, not first load)."""
-        seen  = {(p.market, p.outcome_held, p.cost_basis) for p in self._all_positions}
-        fresh = [p for p in new_records if (p.market, p.outcome_held, p.cost_basis) not in seen]
+        old_all = len(self._all_positions)
+        seen  = {(p.market, p.outcome_held) for p in self._all_positions}
+        fresh = [p for p in new_records if (p.market, p.outcome_held) not in seen]
         if not fresh:
+            _dlog("closed_tab",
+                  "merge_positions: incoming=%d  0 new  all=%d  displayed=%d",
+                  len(new_records), old_all, self._displayed_count)
             return
-        self._all_positions = fresh + self._all_positions
+        self._all_positions   = fresh + self._all_positions
+        self._displayed_count += len(fresh)
         self._header.setText(f"{self._label}  ({len(self._all_positions)})")
         for i, p in enumerate(fresh):
             self._table.insertRow(i)
             _populate_row(self._table, i, p)
+        _dlog("closed_tab",
+              "merge_positions: incoming=%d  +%d new  all=%d→%d  displayed=%d",
+              len(new_records), len(fresh), old_all, len(self._all_positions), self._displayed_count)
 
     def append_positions(self, new_records: List[ResolvedPosition]) -> None:
-        """Append a page of older positions (scroll-triggered load-more)."""
+        """Append a page of older positions (scroll-triggered load-more from API/DB)."""
+        old_all = len(self._all_positions)
         self._loading = False
         if not new_records:
             self._has_more = False
             self._load_status.setText("All positions loaded")
+            _dlog("closed_tab", "append_positions: empty page — done, all=%d", old_all)
             return
 
-        # Deduplicate by (market, outcome_held, cost_basis) — same key as DB cache
         seen = {(p.market, p.outcome_held, p.cost_basis) for p in self._all_positions}
         fresh = [p for p in new_records if (p.market, p.outcome_held, p.cost_basis) not in seen]
 
         if not fresh:
             self._has_more = False
             self._load_status.setText("All positions loaded")
+            _dlog("closed_tab",
+                  "append_positions: %d incoming all dupes — done, all=%d", len(new_records), old_all)
             return
 
         self._all_positions.extend(fresh)
-        self._has_more = len(new_records) >= 50
-        self._load_status.setText("" if self._has_more else "All positions loaded")
+        self._has_more = True
+        self._load_status.setText("")
         self._header.setText(f"{self._label}  ({len(self._all_positions)})")
 
         start_row = self._table.rowCount()
         self._table.setRowCount(start_row + len(fresh))
         for i, p in enumerate(fresh):
             _populate_row(self._table, start_row + i, p)
+        self._displayed_count += len(fresh)
+        _dlog("closed_tab",
+              "append_positions: incoming=%d  +%d new  all=%d→%d  displayed=%d",
+              len(new_records), len(fresh), old_all, len(self._all_positions), self._displayed_count)
+
+    def load_from_cache(self, positions: List[ResolvedPosition]) -> None:
+        """Extend the dataset with newly cached rows from backfill and render them immediately.
+
+        Does NOT modify _loading or _has_more so infinite-scroll stays functional.
+        Rows are added to both _all_positions and the table widget so they are
+        visible without the user needing to scroll.
+        """
+        old_all = len(self._all_positions)
+        seen  = {(p.market, p.outcome_held, p.cost_basis) for p in self._all_positions}
+        fresh = [p for p in positions if (p.market, p.outcome_held, p.cost_basis) not in seen]
+        if not fresh:
+            _dlog("closed_tab",
+                  "load_from_cache: %d incoming all dupes — all=%d  displayed=%d",
+                  len(positions), old_all, self._displayed_count)
+            return
+        self._all_positions.extend(fresh)
+        start_row = self._table.rowCount()
+        self._table.setRowCount(start_row + len(fresh))
+        for i, p in enumerate(fresh):
+            _populate_row(self._table, start_row + i, p)
+        self._displayed_count += len(fresh)
+        self._header.setText(f"{self._label}  ({len(self._all_positions)})")
+        _dlog("closed_tab",
+              "load_from_cache: incoming=%d  +%d new  all=%d→%d  displayed=%d",
+              len(positions), len(fresh), old_all, len(self._all_positions), self._displayed_count)
 
     def _on_scroll(self, value: int) -> None:
         sb = self._table.verticalScrollBar()
-        if (
-            self._has_more
-            and not self._loading
-            and sb.maximum() > 0
-            and value >= sb.maximum() - _SCROLL_THRESHOLD_PX
-        ):
+        if sb.maximum() <= 0 or value < sb.maximum() - _SCROLL_THRESHOLD_PX:
+            return
+        if self._loading:
+            return
+        # Extend the table from in-memory _all_positions before requesting from API/DB
+        if self._displayed_count < len(self._all_positions):
+            start = self._displayed_count
+            end   = min(start + 100, len(self._all_positions))
+            current_rows = self._table.rowCount()
+            self._table.setRowCount(current_rows + (end - start))
+            for i, p in enumerate(self._all_positions[start:end]):
+                _populate_row(self._table, current_rows + i, p)
+            self._displayed_count = end
+            _dlog("closed_tab",
+                  "_on_scroll: rendered in-memory rows %d→%d  (total in-memory=%d)",
+                  start, end, len(self._all_positions))
+            return
+        # In-memory exhausted — request older data from API/DB
+        if self._has_more and self._infinite_scroll:
             self._loading = True
             self._load_status.setText("Loading…")
+            _dlog("closed_tab",
+                  "_on_scroll: in-memory exhausted at %d rows — requesting API offset=%d",
+                  self._displayed_count, len(self._all_positions))
             self.load_more_requested.emit(len(self._all_positions))
 
     def _apply_filter(self, text: str) -> None:

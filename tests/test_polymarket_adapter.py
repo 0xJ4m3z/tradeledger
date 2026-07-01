@@ -214,15 +214,17 @@ class TestFetchClosedPositions:
         assert p.winning_outcome == "NO"
 
     def test_stop_loss_sell_at_loss_treated_as_loss(self):
-        # Bought at 0.70, stop-loss sold at 0.30 (mid-market, not a resolved price)
+        # Bought 100 shares at $0.70/share → $70 USDC cost.  Stop-loss fired;
+        # sold at mid-market for $30 USDC proceeds → -$40 P/L.
+        # totalBought = 100 shares (NOT USDC), avgPrice = $0.70/share.
         sold_row = {
             "title": "Volatile market",
             "outcome": "YES",
             "oppositeOutcome": "NO",
             "avgPrice": 0.70,
-            "totalBought": 70.0,
-            "realizedPnl": -40.0,   # sold for $30, paid $70 → -$40
-            "curPrice": 0.30,       # mid-market at time of sell (NOT resolution price)
+            "totalBought": 100.0,   # 100 shares
+            "realizedPnl": -40.0,   # $70 cost − $30 proceeds = −$40
+            "curPrice": 0.30,       # mid-market at sell time (NOT resolution price)
             "endDate": None,
         }
         with patch("requests.get", return_value=_mock_response([sold_row])):
@@ -231,7 +233,8 @@ class TestFetchClosedPositions:
         # but realizedPnl=-40 correctly identifies it as a loss
         assert p.is_win is False
         assert p.realized_pnl == pytest.approx(-40.0)
-        assert p.redeem_value == pytest.approx(30.0)  # proceeds received
+        assert p.cost_basis   == pytest.approx(70.0)   # 100 shares × $0.70
+        assert p.redeem_value == pytest.approx(30.0)   # $70 cost + (−$40 pnl)
 
     def test_stop_loss_sell_at_profit_treated_as_win(self):
         sold_row = {
@@ -249,27 +252,28 @@ class TestFetchClosedPositions:
         assert p.is_win is True
         assert p.realized_pnl == pytest.approx(20.0)
 
-    def test_cost_basis_maps_to_total_bought(self):
+    def test_cost_basis_is_shares_times_avg_price(self):
+        # _CLOSED_ROW: totalBought=50 shares, avgPrice=0.5 → cost_basis=25 USDC
         with patch("requests.get", return_value=_mock_response([_CLOSED_ROW])):
             p = fetch_closed_positions(_FAKE_WALLET)[0]
-        assert p.cost_basis == pytest.approx(50.0)
+        assert p.cost_basis == pytest.approx(25.0)
 
     def test_redeem_value_is_cost_plus_pnl(self):
-        # totalBought=50, realizedPnl=50 → proceeds=100
+        # cost_basis=25, realizedPnl=50 → redeem_value=75 USDC received
         with patch("requests.get", return_value=_mock_response([_CLOSED_ROW])):
             p = fetch_closed_positions(_FAKE_WALLET)[0]
-        assert p.redeem_value == pytest.approx(100.0)
+        assert p.redeem_value == pytest.approx(75.0)
 
     def test_realized_pnl_correct(self):
         with patch("requests.get", return_value=_mock_response([_CLOSED_ROW])):
             p = fetch_closed_positions(_FAKE_WALLET)[0]
         assert p.realized_pnl == pytest.approx(50.0)
 
-    def test_quantity_derived_from_total_bought_and_avg_price(self):
-        # totalBought=50, avgPrice=0.5 → 100 shares
+    def test_quantity_is_total_bought_shares(self):
+        # totalBought = shares purchased, not USDC — quantity must equal totalBought directly
         with patch("requests.get", return_value=_mock_response([_CLOSED_ROW])):
             p = fetch_closed_positions(_FAKE_WALLET)[0]
-        assert p.quantity == pytest.approx(100.0)
+        assert p.quantity == pytest.approx(50.0)
 
     def test_empty_response_returns_empty_list(self):
         with patch("requests.get", return_value=_mock_response([])):

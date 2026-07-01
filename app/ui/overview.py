@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import datetime
 from typing import List
 
 from PySide6.QtCore import Qt, Signal
@@ -15,17 +15,33 @@ from PySide6.QtWidgets import (
 
 from app.database import (
     clear_wallet_snapshots_today,
+    load_all_closed_for_wallet,
     load_last_wallet,
     load_loss_watch_acknowledged,
     load_wallet_snapshots,
     save_loss_watch_acknowledged,
     save_wallet_snapshot,
+    upsert_activity_derived_closed_positions,
 )
+from app.debug import _dlog
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 from app.services.loss_watch import compute_loss_watch_count
 from app.services.metrics import compute_dashboard_metrics, compute_total_tracked_value
-from app.ui.total_value_chart import TotalValueChartWidget
+from app.services.pnl_today import (
+    classify_closed_positions,
+    count_trades,
+    derive_closed_from_activity,
+    filter_closed_by_range,
+)
+from app.ui.pnl_chart import PnlChartWidget
 from app.ui.wallet_panel import WalletPanel
+
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    _ET_ZONE = _ZoneInfo("America/New_York")
+except Exception:
+    from datetime import timezone, timedelta as _td
+    _ET_ZONE = timezone(_td(hours=-5))
 
 # ── Palette ────────────────────────────────────────────────────────────────────
 _GREEN   = "#3fb950"
@@ -252,8 +268,20 @@ def _resolved_section(positions: List[ResolvedPosition]) -> QWidget:
 
 # ── Closed positions section ───────────────────────────────────────────────────
 
-_CLS_HDRS  = ["Market", "Outcome", "Result", "Cost Basis", "Proceeds", "Realized P/L", "P/L %", "Resolved"]
+_CLS_HDRS  = ["Market", "Outcome", "Result", "Cost Basis", "Proceeds", "Realized P/L", "P/L %", "Closed"]
 _CLS_ALIGN = [_L, _L, _L, _R, _R, _R, _R, _L]
+
+
+def _fmt_closed_date(p: ResolvedPosition) -> str:
+    """Return the actual close date in ET (from closed_at), falling back to resolved_date."""
+    if p.closed_at:
+        try:
+            return datetime.fromtimestamp(p.closed_at, tz=_ET_ZONE).strftime("%Y-%m-%d")
+        except (OSError, OverflowError, ValueError):
+            pass
+    if p.resolved_date:
+        return p.resolved_date[:10]
+    return "—"
 
 
 def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") -> QWidget:
@@ -278,7 +306,6 @@ def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") 
     for r, p in enumerate(positions, start=1):
         pc = _pnl_color(p.realized_pnl)
         rc = _GREEN if p.is_win else _RED
-        resolved_str = (p.resolved_date or "")[:10] if p.resolved_date else "—"
         cells = [
             (p.market,                         _L, _TEXT),
             (p.outcome_held,                   _L, _TEXT),
@@ -287,7 +314,7 @@ def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") 
             (f"${p.redeem_value:,.2f}",        _R, _TEXT),
             (f"${p.realized_pnl:,.2f}",        _R, pc),
             (f"{p.realized_pnl_pct:+.1f}%",   _R, pc),
-            (resolved_str,                     _L, _MUTED),
+            (_fmt_closed_date(p),              _L, _MUTED),
         ]
         for col, (text, align, color) in enumerate(cells):
             grid.addWidget(_row_cell(text, align, color), r, col)
@@ -299,33 +326,14 @@ def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") 
 
 # ── Date-range filtering ───────────────────────────────────────────────────────
 
-_RANGE_LABELS = {"1d": "1D", "1w": "1W", "1m": "1M", "all": "All"}
-
-
-def _filter_closed_by_range(closed: List[ResolvedPosition], range_: str) -> List[ResolvedPosition]:
-    if range_ == "all" or not closed:
-        return closed
-    today = date.today()
-    if range_ == "1d":
-        cutoff = today
-    elif range_ == "1w":
-        cutoff = today - timedelta(days=7)
-    elif range_ == "1m":
-        cutoff = today - timedelta(days=30)
-    else:
-        return closed
-
-    result = []
-    for p in closed:
-        if not p.resolved_date:
-            continue
-        try:
-            d = date.fromisoformat(p.resolved_date[:10])
-            if d >= cutoff:
-                result.append(p)
-        except (ValueError, TypeError):
-            pass
-    return result
+_RANGE_LABELS = {
+    "1d":  "1D",
+    "1w":  "1W",
+    "1m":  "1M",
+    "1y":  "1Y",
+    "ytd": "YTD",
+    "all": "All",
+}
 
 
 # ── Overview widget ────────────────────────────────────────────────────────────
@@ -397,9 +405,7 @@ class OverviewWidget(QWidget):
         cards_panel = self._build_cards_panel(metrics, active, resolved)
         top_row.addWidget(cards_panel, 42)
 
-        # Load only this wallet's history (empty for new wallets; never shows dummy data)
-        snapshots = load_wallet_snapshots(self._confirmed_wallet)
-        self._chart = TotalValueChartWidget(snapshots, show_range_buttons=False)
+        self._chart = PnlChartWidget([], [], self._range)
         top_row.addWidget(self._chart, 58)
 
         main.addWidget(top)
@@ -456,8 +462,9 @@ class OverviewWidget(QWidget):
         self._range = range_
         for key, btn in self._range_btns.items():
             btn.setStyleSheet(_RANGE_BTN_ACTIVE if key == range_ else _RANGE_BTN_IDLE)
-        filtered = _filter_closed_by_range(self._closed_positions, range_)
+        filtered = filter_closed_by_range(self._closed_positions, range_)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[range_]))
+        self._chart.update(self._activity, self._closed_positions, range_)
         self._update_metric_cards()
 
     # ── Card panel ─────────────────────────────────────────────────────────────
@@ -517,10 +524,23 @@ class OverviewWidget(QWidget):
     # ── Wallet address change ──────────────────────────────────────────────────
 
     def _on_wallet_address_changed(self, address: str) -> None:
-        self._confirmed_wallet = address
+        # Always refresh the Total Tracked Value chart snapshots
         snaps = load_wallet_snapshots(address)
-        self._chart.update_snapshots(snaps)
         self.snapshots_changed.emit(snaps)
+
+        if address == self._confirmed_wallet:
+            # Same wallet re-confirmed (startup refresh or auto-refresh).
+            # Do NOT clear cached data — seed_from_cache already populated it.
+            _dlog("wallet", "same wallet re-confirmed (%s) — keeping %d cached activity rows",
+                  address[:10], len(self._activity))
+            return
+
+        # Truly different wallet: switch caches and clear stale data
+        _dlog("wallet", "wallet changed to %s — clearing cached data", address[:10])
+        self._confirmed_wallet = address
+        self._activity = []
+        self._closed_positions = []
+        self._chart.update([], [], self._range)
 
     # ── Wallet value update ────────────────────────────────────────────────────
 
@@ -544,6 +564,7 @@ class OverviewWidget(QWidget):
             fresh = [p for p in closed if (p.market, p.outcome_held, p.cost_basis) not in seen]
             if fresh:
                 self._closed_positions = fresh + self._closed_positions
+        classify_closed_positions(self._closed_positions, self._activity)
         metrics = compute_dashboard_metrics(active, resolved)
         self._active_value   = metrics["active_positions_value"]
         self._unrealized_pnl = metrics["unrealized_pnl"]
@@ -559,8 +580,9 @@ class OverviewWidget(QWidget):
         self._replace_section("_act_section", _active_section(active))
         self._replace_section("_res_section", _resolved_section(resolved))
 
-        filtered = _filter_closed_by_range(self._closed_positions, self._range)
+        filtered = filter_closed_by_range(self._closed_positions, self._range)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
+        self._chart.update(self._activity, self._closed_positions, self._range)
         self._update_metric_cards()
 
         # Save snapshot now that both wallet USD and real positions values are settled.
@@ -578,44 +600,114 @@ class OverviewWidget(QWidget):
                 realized_pnl=self._realized_pnl,
             )
             snaps = load_wallet_snapshots(self._confirmed_wallet)
-            self._chart.update_snapshots(snaps)
             self.snapshots_changed.emit(snaps)
 
-        self.positions_changed.emit(active, resolved, closed)
+        # Emit self._closed_positions (full merged history), NOT the raw API
+        # `closed` list which is only the most-recent 100 rows.  Emitting the
+        # 100-row slice would replace a larger cached dataset in the Closed tab.
+        self.positions_changed.emit(active, resolved, self._closed_positions)
 
     # ── Activity update ────────────────────────────────────────────────────────
 
     def _on_activity_fetched(self, activity: list) -> None:
-        self._activity = activity
-        self.activity_changed.emit(activity)
+        # Merge fresh API records into the in-memory list; never replace the cached
+        # history with just the newest 100 API rows from the live refresh.
+        before = len(self._activity)
+        if not self._activity:
+            self._activity = list(activity)
+        else:
+            seen  = {(a.timestamp, a.type, a.side, a.size) for a in self._activity}
+            fresh = [a for a in activity if (a.timestamp, a.type, a.side, a.size) not in seen]
+            if fresh:
+                self._activity = fresh + self._activity
+        _dlog("activity", "fetched %d rows → merged to %d total (was %d)",
+              len(activity), len(self._activity), before)
+
+        # Derive new closed positions from fresh REDEEM events and persist to DB.
+        # Supplements the /closed-positions API which may only return ~100 recent records.
+        if self._confirmed_wallet and self._activity:
+            derived = derive_closed_from_activity(self._activity)
+            n_new = upsert_activity_derived_closed_positions(derived, self._confirmed_wallet)
+            if n_new > 0:
+                _dlog("activity", "derived %d new closed positions from activity", n_new)
+                all_closed = load_all_closed_for_wallet(self._confirmed_wallet)
+                seen_closed = {(p.market, p.outcome_held, p.cost_basis) for p in self._closed_positions}
+                fresh_closed = [p for p in all_closed
+                                if (p.market, p.outcome_held, p.cost_basis) not in seen_closed]
+                if fresh_closed:
+                    self._closed_positions = fresh_closed + self._closed_positions
+                    self.closed_cache_updated.emit(self._closed_positions)
+
+        # Re-classify positions: new SELLs in activity may change close_type on existing positions
+        classify_closed_positions(self._closed_positions, self._activity)
+        # Emit the full merged list so ActivityTable sees all rows, not just the API page.
+        self.activity_changed.emit(self._activity)
+        self._chart.update(self._activity, self._closed_positions, self._range)
+        self._update_metric_cards()
 
     def _on_more_activity_fetched(self, page: list) -> None:
-        self._activity.extend(page)
+        # Scroll-loaded pages are older records — extend without duplicating
+        before = len(self._activity)
+        seen  = {(a.timestamp, a.type, a.side, a.size) for a in self._activity}
+        fresh = [a for a in page if (a.timestamp, a.type, a.side, a.size) not in seen]
+        self._activity.extend(fresh)
+        _dlog("activity", "scroll-load %d rows → %d new, total now %d",
+              len(page), len(fresh), len(self._activity))
         self.more_activity.emit(page)
+        self._chart.update(self._activity, self._closed_positions, self._range)
+        self._update_metric_cards()
 
     def _update_metric_cards(self) -> None:
-        """Recompute Realized P/L and Trades cards from closed positions for the current range.
+        # Use the complete in-memory lists loaded from SQLite on startup (no DB query).
+        # load_all_closed_for_wallet and load_all_activity_for_wallet bring ALL cached
+        # rows into memory at startup — no scroll, no limit, no DB round-trip here.
+        filtered = filter_closed_by_range(self._closed_positions, self._range)
+        pnl      = sum(p.realized_pnl for p in filtered)
+        trades   = count_trades(self._activity, self._range)
 
-        Uses closed positions (not activity) so true losses — where redeem_value is $0
-        because the outcome went against the position — are correctly counted as negative P/L.
-        """
-        filtered = _filter_closed_by_range(self._closed_positions, self._range)
-        pnl = sum(p.realized_pnl for p in filtered)
-        color = _GREEN if pnl > 0 else (_RED if pnl < 0 else _MUTED)
+        color   = _GREEN if pnl > 0 else (_RED if pnl < 0 else _MUTED)
         display = f"${pnl:+,.2f}" if pnl != 0 else "$0.00"
         self._pnl_today_card.update_value(display, color)
-        self._trades_today_card.update_value(str(len(filtered)) if filtered else "0", _TEXT)
+        self._trades_today_card.update_value(str(trades) if trades else "0", _TEXT)
 
     # ── Closed cache updates (backfill pages) ─────────────────────────────────
 
     def _on_closed_cache_updated(self, all_closed: list) -> None:
-        self._closed_positions = list(all_closed)
-        filtered = _filter_closed_by_range(all_closed, self._range)
+        if all_closed:
+            # Merge: prefer the backfill's ordered set but preserve any rows the user
+            # scroll-loaded beyond the backfill's coverage (e.g. older than limit=2000).
+            seen_backfill = {(p.market, p.outcome_held, p.cost_basis) for p in all_closed}
+            extra = [p for p in self._closed_positions
+                     if (p.market, p.outcome_held, p.cost_basis) not in seen_backfill]
+            self._closed_positions = list(all_closed) + extra
+        classify_closed_positions(self._closed_positions, self._activity)
+        _dlog("backfill", "closed_positions now %d rows after cache update",
+              len(self._closed_positions))
+        filtered = filter_closed_by_range(self._closed_positions, self._range)
         self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
+        self._chart.update(self._activity, self._closed_positions, self._range)
         self._update_metric_cards()
-        self.closed_cache_updated.emit(all_closed)
+        self.closed_cache_updated.emit(self._closed_positions)
 
     # ── Public ─────────────────────────────────────────────────────────────────
+
+    def seed_from_cache(self, closed: list, activity: list = None) -> None:
+        """Pre-populate with cached data before the first live fetch.
+
+        Called by MainWindow on startup when cached data exists for the wallet.
+        Seeds closed positions and (optionally) activity so the 1D chart can
+        show intraday points immediately from cached REDEEM events.
+        """
+        self._closed_positions = list(closed)
+        if activity is not None:
+            self._activity = list(activity)
+        classify_closed_positions(self._closed_positions, self._activity)
+        _dlog("cache", "seed_from_cache: %d closed, %d activity",
+              len(self._closed_positions), len(self._activity))
+        filtered = filter_closed_by_range(self._closed_positions, self._range)
+        self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
+        self._chart.update(self._activity, self._closed_positions, self._range)
+        self._update_metric_cards()
 
     def request_refresh(self) -> None:
         self._wallet_panel.request_refresh()

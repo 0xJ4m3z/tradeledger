@@ -6,7 +6,7 @@ A local, read-only desktop application for tracking Polymarket positions, wallet
 
 TradeLedger lets you monitor your open positions, resolved winnings, closed trade history, and activity feed — all locally, using public read-only APIs. No account login, no API key, no wallet connection required.
 
-- **Overview** — wallet lookup, time-range filter (1D / 1W / 1M / All), metric cards (Total Tracked Value, Wallet USD Value, Positions Value, Loss Watch, Realized P/L, Trades), Total Tracked Value mini chart, live positions grid
+- **Overview** — wallet lookup, time-range filter (1D / 1W / 1M / 1Y / YTD / All), metric cards (Total Tracked Value, Wallet USD Value, Positions Value, Loss Watch, Realized P/L, Trades), cumulative realized P/L line chart with hover, live positions grid
 - **Loss Watch** — list of open positions with negative unrealized P/L; acknowledge known losers to track new ones
 - **Active Positions** — all open positions currently exposed to market movement
 - **Resolved Positions** — won/resolved markets not yet redeemed; still counted in Positions Value
@@ -20,7 +20,7 @@ TradeLedger lets you monitor your open positions, resolved winnings, closed trad
 
 ## Screenshots
 
-![TradeLedger v0.3 Overview](docs/screenshots/tradeledger_v0.3_overview.png)
+![TradeLedger v0.3.1 Overview](docs/screenshots/tradeledger_v0.3.1_overview.png)
 
 ---
 
@@ -120,6 +120,7 @@ tradeledger/
 │   ├── services/
 │   │   ├── pnl.py                      # P/L calculations and cumulative series
 │   │   ├── pnl_today.py                # Range-aware realized P/L from closed positions
+│   │   ├── pnl_series.py               # Cumulative P/L chart data builder (pure, testable)
 │   │   ├── metrics.py                  # Dashboard metric aggregation, Total Tracked Value
 │   │   ├── loss_watch.py               # Loss Watch: filter losing positions, count unacknowledged
 │   │   ├── positions.py                # Filter and sort helpers
@@ -134,6 +135,7 @@ tradeledger/
 │       ├── overview.py                 # Overview tab: range filter, cards, chart, positions grid
 │       ├── wallet_panel.py             # Wallet input, fetch/refresh, auto-refresh, background threads
 │       ├── total_value_chart.py        # Total Tracked Value chart widget (with range buttons)
+│       ├── pnl_chart.py                # Cumulative P/L line chart with hover crosshair (Overview)
 │       ├── active_positions_table.py   # Active Positions tab with search filter
 │       ├── resolved_positions_table.py # Resolved / Closed Positions tabs with infinite scroll
 │       ├── activity_table.py           # Activity tab with infinite scroll and color-coded types
@@ -149,8 +151,12 @@ tradeledger/
 │   ├── test_wallet_persistence.py      # Last wallet and Loss Watch acknowledgement persistence
 │   ├── test_polymarket_adapter.py      # Polymarket position + activity lookup tests (mocked)
 │   ├── test_closed_cache.py            # Closed positions cache: upsert, dedup, limit tests
+│   ├── test_cache_hydration.py         # Scroll persistence, startup hydration, and merge logic tests
 │   ├── test_loss_watch.py              # Loss Watch filter and count tests
-│   └── test_chart_ranges.py            # Chart range filter tests
+│   ├── test_chart_ranges.py            # Chart range filter tests
+│   ├── test_pnl_ranges.py              # Range/timezone logic, partial data detection
+│   ├── test_pnl_series.py              # Cumulative P/L chart data builder tests
+│   └── test_position_cache.py          # Wallet-isolated cache tests (active/resolved/closed/activity)
 ├── sample_data/
 │   ├── sample_wallet_positions.json    # Example active positions
 │   └── sample_resolved_positions.json  # Example resolved positions
@@ -160,6 +166,7 @@ tradeledger/
 ├── .env.example                        # Environment variable template
 ├── conftest.py                         # pytest path setup
 ├── run.py                              # Launch script
+├── clear_cache.py                      # Developer utility: wipe local cache (preserves wallet address setting)
 ├── requirements.txt
 └── README.md
 ```
@@ -174,10 +181,100 @@ tradeledger/
 | Wallet USD Value | Polygon wallet USDC.e + pUSD balance (live, read-only) |
 | Positions Value | Current value of all Active + Resolved positions |
 | Loss Watch | Count of open positions with negative unrealized P/L that have not been acknowledged. "Acknowledge All" marks current losers as known; new losers still appear. |
-| Realized P/L | Net profit/loss from closed positions in the selected time range (1D / 1W / 1M / All). Uses `redeem_value − cost_basis` so losses (redeem at $0) are correctly counted. |
-| Trades | Number of closed positions in the selected time range |
+| Realized P/L | Net profit/loss from closed positions in the selected time range. Uses `redeem_value − cost_basis` so losses (redeem at $0) are correctly counted. Prefixed with `~` when loaded data may be incomplete for the range. |
+| Trades | Count of closed positions in the selected time range. Prefixed with `~` when loaded data may be incomplete. |
 
-The **1D / 1W / 1M / All** range buttons above the cards and chart control all three at once: the closed positions grid in the overview, the Realized P/L card, and the Trades card.
+The **1D / 1W / 1M / 1Y / YTD / All** range buttons above the cards and chart control all of these at once: the closed positions grid in the overview, the Realized P/L card, the Trades card, and the cumulative P/L line chart.
+
+---
+
+## P/L calculation rules
+
+### Source of truth
+
+Realized P/L uses **closed positions** (`ResolvedPosition.realized_pnl`), not activity events. This ensures losses are correctly counted: when a position expires worthless, `redeem_value = 0`, so `realized_pnl = redeem_value − cost_basis = −cost_basis`.
+
+Activity events (BUY/SELL/REDEEM) are used only in the legacy activity-based functions retained for backward compatibility. They are not used for the Overview cards.
+
+### Timezone
+
+All calendar-day boundaries use **America/New_York (ET)** — Eastern Time, handles EST (UTC-5) and EDT (UTC-4) automatically via the system timezone database.
+
+### Range definitions
+
+| Button | Definition |
+|--------|-----------|
+| **1D** | Current calendar day from midnight ET to now |
+| **1W** | Trailing 7 days from now |
+| **1M** | Trailing 30 days from now |
+| **1Y** | Trailing 365 days from now |
+| **YTD** | January 1 midnight ET to now |
+| **All** | All loaded data (no date filter) |
+
+### Partial data detection
+
+Closed positions are loaded newest-first (most recent 100 on initial fetch, then page-by-page via scroll or background backfill). If the **oldest loaded record** still falls within the selected range window, there may be older records in the same window not yet fetched.
+
+When partial data is detected, the Realized P/L and Trades cards are prefixed with **`~`** to indicate the number may be understated. Scrolling down in the Closed Positions tab loads more history and will eventually clear the `~` prefix once data extends beyond the range cutoff.
+
+`All` is never marked partial — it means "all currently loaded data" by definition.
+
+---
+
+## P/L chart
+
+The Overview chart shows **cumulative realized P/L over time** for the selected range. It is a line chart, not a bar chart.
+
+- **Starts at $0** at the range start date (range cutoff for fixed ranges; one day before the oldest closed position for "All"). The line always anchors at zero.
+- **Final value equals the Realized P/L card.** The rightmost point is always `sum(realized_pnl)` for the same filtered set of closed positions.
+- **Same-date aggregation.** Multiple closed positions on the same calendar day are summed to one net data point before building the cumulative series.
+- **Color.** Green line and fill when the final value ≥ $0; red when negative.
+- **Hover crosshair.** Move the mouse over the chart to see a vertical crosshair, a dot on the line, and a tooltip showing the date and cumulative P/L at that point (`+$X.XX` / `-$X.XX`).
+- **X-axis format** adapts to the range: times for 1D, month-day for 1W/1M, month-year for 1Y/YTD/All.
+- **Single data point.** If only one date has closed positions, the chart shows the anchor + that one point (a straight line from $0 to the final value). This is honest — no interpolation.
+- **No data.** If no closed positions exist for the selected range, the chart shows "No closed positions in this range" as a text label.
+
+Chart data is built by `app/services/pnl_series.py` (`build_pnl_series`), a pure function with no Qt or matplotlib dependencies. It is fully covered by `tests/test_pnl_series.py`.
+
+---
+
+## Local caching
+
+TradeLedger caches position and activity data locally in the SQLite database (`tradeledger.db`, gitignored) so the app populates instantly on startup — no waiting for a live fetch before you can see your positions.
+
+### What is cached (per wallet address)
+
+| Cache | Key | Strategy |
+|-------|-----|----------|
+| Active positions | wallet_address | Replace-all on each fetch |
+| Resolved positions | wallet_address | Replace-all on each fetch |
+| Closed positions | wallet_address + position_key | Insert-or-ignore (dedup); accumulates over time |
+| Activity events | wallet_address + event_key | Insert-or-ignore (dedup); accumulates over time |
+
+**Active and resolved positions** are always stale after the app closes — they snapshot the last known state and are replaced entirely on the next live fetch.
+
+**Closed positions and activity** are additive: deduplication ensures the same event is never stored twice. The initial API fetch, background backfill pages, and scroll-loaded pages all go through the same `upsert_*_cache` path, so loading more history just adds to the cache without creating duplicates.
+
+### Dedup keys
+
+- Closed position: `f"{market}|{outcome_held}"` — cost_basis is intentionally excluded; the API and activity-derived sources compute it slightly differently due to float rounding, so including it caused false duplicates
+- Activity event: `f"{timestamp}|{type}|{side}|{size:.6f}"`
+
+### Startup behavior
+
+1. The last-used wallet address is read from the DB.
+2. All four caches are loaded immediately in `MainWindow.__init__`.
+3. The status bar shows **"Loaded from cache • X active • Y resolved • Z closed • Refreshing…"**
+4. The Overview P/L chart and metric cards are pre-populated from cached data (`seed_from_cache`) — the 1D chart already shows intraday steps from cached REDEEM events.
+5. `WalletPanel` auto-triggers a live fetch in the background (deferred with `QTimer.singleShot`).
+6. When the live fetch completes, **new activity rows are merged into the existing list** — the cached history is never discarded. The same-wallet re-confirmation does not clear cached data.
+7. All tabs update with fresh data; the status bar clears the "Refreshing…" suffix.
+
+**First run / new wallet:** If no cache exists for the wallet, sample data is shown briefly until the live fetch completes.
+
+### Cache invalidation
+
+There is no explicit TTL. Active and resolved caches are replaced on every successful live fetch. Closed and activity caches only grow (dedup-protected). Switching wallets reads a separate, isolated cache for the new address — wallets never share cached rows.
 
 ---
 
@@ -243,8 +340,27 @@ Tries multiple public Polygon RPCs automatically if one fails. Wallet address is
 - **Wallet-address-tagged snapshots** — chart never shows data from a different wallet; stale same-day snapshots are cleared on first fetch
 - 196 passing tests
 
+**v0.3.1 — P/L accuracy audit + cache fixes + chart** ✓
+- **ET timezone** — all calendar-day calculations use America/New_York (was: Chicago); 1D = today ET midnight to now
+- **1Y and YTD ranges** — added to range bar alongside 1D / 1W / 1M / All
+- **Partial data detection** — Realized P/L and Trades cards show `~` prefix when loaded data may not cover the full range
+- **Closed positions as P/L source** — explicitly documented; `filter_closed_by_range` extracted to service layer
+- **Correct cost basis calculation** — Polymarket's `totalBought` field is shares, not USDC; `cost_basis` is now correctly computed as `totalBought × avgPrice`; `redeem_value = cost_basis + realizedPnl`; previously these were wrong, causing significantly inflated P/L figures
+- **Fixed closed-position dedup key** — key is now `market|outcome_held` only; previously included `cost_basis`, which caused float-precision differences between API and activity-derived sources to produce two DB rows for the same trade (duplicate entries in the Closed Positions tab and double-counted P/L)
+- **Fixed SQLite schema migration** — closed positions cache now uses a composite `UNIQUE(wallet_address, position_key)` constraint; a startup migration rebuilds legacy DBs and reassigns rows with missing wallet addresses
+- **Fixed closed-position persistence** — scroll-loaded and backfill-loaded pages now correctly persist across app restarts; the old single-column unique constraint silently dropped all inserts on existing DBs
+- **Fixed `derive_closed_from_activity`** — REDEEM events in the activity feed often have an empty outcome field; the correct outcome is now inferred from the corresponding BUY events; stale zero-cost rows in the DB are replaced when fresh activity data is available
+- **Event-based 1D chart** — cumulative realized P/L; starts at $0 at midnight ET; intraday steps at each closed position's actual close timestamp; interactive hover crosshair; green/red fill
+- **Same-date aggregation** — multiple closed positions on the same calendar day sum to one net data point for 1W+ chart ranges
+- **Wallet-isolated local caching** — active, resolved, closed, and activity data cached per wallet in SQLite; app pre-populates from cache on startup before the live fetch completes
+- **Full cache persistence for scroll-loads** — scroll-loaded activity and closed position pages are upserted to SQLite; previously only the initial fetch and backfill were persisted
+- **Activity merge on refresh** — live refresh merges new records into the existing in-memory list instead of replacing it; cached history is never discarded by a refresh
+- **Same-wallet refresh guard** — `_on_wallet_address_changed` only clears data when the wallet address genuinely changes; same-wallet re-confirmation on startup no longer clears chart data
+- **Insert-or-ignore dedup** — closed positions and activity events accumulate without duplicates across scroll-loads, backfill pages, and refreshes
+- **Debug logging** — set `TRADELEDGER_DEBUG=1` to enable verbose data-flow logs via Python's `logging` module
+- **433 passing tests** — including `test_cache_hydration.py` covering scroll-page persistence, in-memory merge logic, startup hydration, and P/L accuracy scenarios
+
 **v0.4 — Planned**
 - Notes per market
 - Export to CSV
-- Cumulative realized P/L chart
 - No trading execution, no order placement, no private key storage

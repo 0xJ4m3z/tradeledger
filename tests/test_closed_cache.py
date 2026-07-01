@@ -85,11 +85,15 @@ class TestClosedPositionsCache:
         results = isolated_db.load_closed_positions_cache()
         assert results[0].redeem_value == 75.0
 
-    def test_different_cost_basis_creates_new_row(self, isolated_db):
+    def test_different_cost_basis_upserts_same_row(self, isolated_db):
+        # Same market + outcome_held is the same position — cost_basis difference must NOT
+        # create a second row (that was the old bug: API vs activity sources produced
+        # slightly different cost_basis values, causing double-counted P/L).
         p1 = _rpos("Market", cost=100.0, pnl=10.0)
-        p2 = _rpos("Market", cost=200.0, pnl=20.0)  # different cost_basis → different key
-        isolated_db.upsert_closed_positions_cache([p1, p2])
-        assert isolated_db.count_closed_positions_cache() == 2
+        p2 = _rpos("Market", cost=200.0, pnl=20.0)
+        isolated_db.upsert_closed_positions_cache([p1])
+        isolated_db.upsert_closed_positions_cache([p2])
+        assert isolated_db.count_closed_positions_cache() == 1
 
     def test_default_limit_returns_up_to_500(self, isolated_db):
         positions = [_rpos(f"Market {i}", cost=float(i * 10)) for i in range(10)]
@@ -111,4 +115,4 @@ class TestClosedPositionsCache:
         from app.database import _position_key
         p = _rpos("BTC Market", cost=123.456789)
         key = _position_key(p)
-        assert key == "BTC Market|Yes|123.456789"
+        assert key == "BTC Market|Yes"

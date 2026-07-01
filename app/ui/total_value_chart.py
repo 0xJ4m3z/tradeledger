@@ -144,9 +144,15 @@ class TotalValueChartWidget(QWidget):
 
         if len(dates) == 1:
             ax.plot(dates, values, "o", color=_LINE_COLOR, markersize=7)
+            v = values[0]
+            pad = max(v * 0.04, 1.0)
+            ax.set_ylim(v - pad * 0.6, v + pad * 1.2)
         else:
             ax.plot(dates, values, color=_LINE_COLOR, linewidth=2)
             ax.fill_between(dates, values, alpha=0.15, color=_FILL_COLOR)
+            mn, mx   = min(values), max(values)
+            spread   = max(mx - mn, max(mx * 0.005, 1.0))
+            ax.set_ylim(mn - spread * 0.3, mx + spread * 0.5)
 
         tick_step = max(1, len(dates) // 6)
         ax.set_xticks(dates[::tick_step])
