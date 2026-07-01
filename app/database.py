@@ -168,6 +168,42 @@ def init_db() -> None:
             )
         except Exception:
             pass
+        # Migration: dedup existing rows and rewrite position_key to market|outcome_held format.
+        # Previously position_key included cost_basis (market|outcome|cost:.6f), which caused
+        # two DB rows for the same real-world position when the API and activity-derived sources
+        # computed cost_basis slightly differently.  For each (wallet, market, outcome_held)
+        # group keep the row with the highest cost_basis (tie-break: highest id), delete the
+        # rest, then rewrite all position_keys to the new short format.
+        try:
+            needs_dedup = conn.execute(
+                "SELECT COUNT(*) FROM closed_positions_cache "
+                "WHERE position_key LIKE '%|%|%'"
+            ).fetchone()[0]
+            if needs_dedup:
+                conn.execute("""
+                    DELETE FROM closed_positions_cache
+                    WHERE id NOT IN (
+                        SELECT id FROM closed_positions_cache c1
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM closed_positions_cache c2
+                            WHERE c2.wallet_address = c1.wallet_address
+                              AND c2.market         = c1.market
+                              AND c2.outcome_held   = c1.outcome_held
+                              AND (c2.cost_basis > c1.cost_basis
+                                   OR (c2.cost_basis = c1.cost_basis AND c2.id > c1.id))
+                        )
+                    )
+                """)
+                conn.execute(
+                    "UPDATE closed_positions_cache "
+                    "SET position_key = market || '|' || outcome_held"
+                )
+                print(
+                    "[MIGRATION] deduped closed_positions_cache and rewrote position_keys",
+                    flush=True,
+                )
+        except Exception as _exc:
+            print(f"[MIGRATION] dedup failed (non-fatal): {_exc}", flush=True)
 
         # Active positions cache — replaced in full on each successful fetch
         conn.execute("""
@@ -387,8 +423,15 @@ def load_loss_watch_acknowledged() -> List[str]:
 # ── Closed positions cache ────────────────────────────────────────────────────
 
 def _position_key(p: ResolvedPosition) -> str:
-    """Deterministic dedup key for a closed position (wallet-independent part)."""
-    return f"{p.market}|{p.outcome_held}|{p.cost_basis:.6f}"
+    """Deterministic dedup key for a closed position (wallet-independent part).
+
+    Intentionally excludes cost_basis: the API and activity-derived sources compute
+    cost_basis slightly differently (API: totalBought×avgPrice with float rounding;
+    activity: sum of BUY usdc_size rows).  Including cost_basis caused two DB rows
+    for the same real-world position, producing duplicates in the UI and double-
+    counted P/L.
+    """
+    return f"{p.market}|{p.outcome_held}"
 
 
 def upsert_closed_positions_cache(

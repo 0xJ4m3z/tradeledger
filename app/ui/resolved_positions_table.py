@@ -184,8 +184,8 @@ class ResolvedPositionsTable(QWidget):
     def merge_positions(self, new_records: List[ResolvedPosition]) -> None:
         """Prepend any new records not already loaded (called on refresh, not first load)."""
         old_all = len(self._all_positions)
-        seen  = {(p.market, p.outcome_held, p.cost_basis) for p in self._all_positions}
-        fresh = [p for p in new_records if (p.market, p.outcome_held, p.cost_basis) not in seen]
+        seen  = {(p.market, p.outcome_held) for p in self._all_positions}
+        fresh = [p for p in new_records if (p.market, p.outcome_held) not in seen]
         if not fresh:
             _dlog("closed_tab",
                   "merge_positions: incoming=%d  0 new  all=%d  displayed=%d",

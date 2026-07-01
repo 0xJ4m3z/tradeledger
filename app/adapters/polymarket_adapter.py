@@ -100,6 +100,14 @@ def _to_closed(row: dict) -> ResolvedPosition:
     realizedPnl is the only reliable win indicator across all types —
     curPrice is the mid-market at close time, not the final resolution
     price, so it cannot be used for sold positions.
+
+    Field semantics from the Polymarket API:
+      totalBought  — total SHARES/tokens purchased (NOT USDC spent)
+      avgPrice     — average price per share in USDC
+      realizedPnl  — net profit/loss in USDC
+    Derived:
+      cost_basis   = totalBought × avgPrice   (USDC actually spent buying)
+      redeem_value = cost_basis + realizedPnl (USDC received on close)
     """
     avg_price    = float(row.get("avgPrice") or 0)
     total_bought = float(row.get("totalBought") or 0)
@@ -110,15 +118,17 @@ def _to_closed(row: dict) -> ResolvedPosition:
     is_win          = realized_pnl > 0
     winning_outcome = outcome if is_win else opposite
 
-    quantity = (total_bought / avg_price) if avg_price > 0 else 0.0
+    quantity   = total_bought                       # shares bought
+    cost_basis = total_bought * avg_price           # USDC spent
+    redeem_value = cost_basis + realized_pnl        # USDC received
 
     return ResolvedPosition(
         market          = row.get("title") or "Unknown",
         outcome_held    = outcome,
         winning_outcome = winning_outcome,
         quantity        = quantity,
-        cost_basis      = total_bought,
-        redeem_value    = total_bought + realized_pnl,
+        cost_basis      = cost_basis,
+        redeem_value    = redeem_value,
         redeemed        = True,
         resolved_date   = row.get("endDate"),
         closed_at       = int(row.get("timestamp") or 0) or None,

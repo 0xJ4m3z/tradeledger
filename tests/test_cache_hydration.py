@@ -132,7 +132,7 @@ class TestClosedPositionsScrollPersistence:
         isolated_db.upsert_closed_positions_cache(batch2, WALLET)
 
         count = isolated_db.count_closed_positions_cache(WALLET)
-        # 40 + 20 - 10 overlap = 50 unique
+        # 40 + 20 - 10 overlap = 50 unique (overlap matched by market+outcome_held, not cost_basis)
         assert count == 50
 
     def test_cached_closed_survive_restart(self, isolated_db):
@@ -397,8 +397,8 @@ class TestClosedCachePage:
 
 def _scroll_merge_closed(existing: list, incoming: list) -> tuple:
     """Replica of fixed append_positions merge logic. Returns (merged, has_more)."""
-    seen  = {(p.market, p.outcome_held, p.cost_basis) for p in existing}
-    fresh = [p for p in incoming if (p.market, p.outcome_held, p.cost_basis) not in seen]
+    seen  = {(p.market, p.outcome_held) for p in existing}
+    fresh = [p for p in incoming if (p.market, p.outcome_held) not in seen]
     if not fresh:
         return existing, False
     return existing + fresh, True   # has_more=True: partial page mustn't stop scroll
@@ -1113,8 +1113,8 @@ class TestStartupPreloadData:
 
         # Simulate 100-row API response of the newest positions (all already in cache)
         api_100 = large_cache[:100]
-        seen = {(p.market, p.outcome_held, p.cost_basis) for p in all_cached}
-        fresh = [p for p in api_100 if (p.market, p.outcome_held, p.cost_basis) not in seen]
+        seen = {(p.market, p.outcome_held) for p in all_cached}
+        fresh = [p for p in api_100 if (p.market, p.outcome_held) not in seen]
 
         # Merge: fresh should be empty (all 100 already cached), total stays 5000
         merged = list(all_cached) if not fresh else fresh + list(all_cached)
