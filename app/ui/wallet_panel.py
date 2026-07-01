@@ -163,9 +163,11 @@ class _BackfillThread(QThread):
 
             try:
                 upsert_closed_positions_cache(page, self._address)
+                print(f"[BACKFILL] persisted offset={offset} rows={len(page)}", flush=True)
                 _dlog("backfill", "closed offset=%d  inserted=%d", offset, len(page))
                 self.page_done.emit()
             except Exception as exc:
+                print(f"[BACKFILL] ERROR at offset={offset}: {exc}", flush=True)
                 _dlog("backfill", "closed persist error at offset=%d: %s", offset, exc)
 
             if len(page) < 50:
@@ -481,6 +483,7 @@ class WalletPanel(QWidget):
         # Start from the current cache size so already-persisted pages are skipped
         cached_count = count_closed_positions_cache(self._full_address)
         start_offset = max(_BACKFILL_START, cached_count)
+        print(f"[BACKFILL] starting at offset={start_offset} (DB has {cached_count} rows)", flush=True)
         _dlog("backfill", "starting closed backfill at offset %d (cache has %d)",
               start_offset, cached_count)
         self._backfill = _BackfillThread(self._full_address, start_offset)
@@ -608,10 +611,14 @@ class WalletPanel(QWidget):
 
     def _on_closed_page_done(self, page: list) -> None:
         """Persist scroll-loaded closed positions to SQLite before forwarding to the UI."""
+        before = count_closed_positions_cache(self._full_address)
         try:
             upsert_closed_positions_cache(page, self._full_address)
+            after = count_closed_positions_cache(self._full_address)
+            print(f"[SCROLL-PERSIST] {len(page)} rows → DB: {before}→{after}", flush=True)
             _dlog("cache", "persisted %d scroll-loaded closed position rows", len(page))
         except Exception as exc:
+            print(f"[SCROLL-PERSIST] ERROR: {exc}", flush=True)
             _dlog("cache", "ERROR: failed to persist %d scroll-loaded closed positions: %s",
                   len(page), exc)
         self.more_closed_fetched.emit(page)
