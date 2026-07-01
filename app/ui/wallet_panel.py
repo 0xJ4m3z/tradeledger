@@ -368,7 +368,7 @@ class WalletPanel(QWidget):
         bottom_row.addWidget(self._status, 1)
 
         self._auto_cb = QCheckBox("Auto-refresh every 5 min")
-        self._auto_cb.setChecked(False)
+        self._auto_cb.setChecked(True)
         self._auto_cb.setStyleSheet(
             f"color: {_MUTED}; font-size: 12px; border: none; background: transparent;"
         )
