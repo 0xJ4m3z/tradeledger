@@ -147,8 +147,6 @@ class MainWindow(QMainWindow):
               (_init_wallet[:10] + "...") if _init_wallet else "(none)",
               len(cached_active), len(cached_resolved),
               len(cached_closed), len(cached_activity))
-        print(f"[STARTUP] DB has {len(cached_closed)} closed positions", flush=True)
-
         # Fall back to sample data only when no cache exists (first run / new wallet)
         if not cached_active and not cached_resolved:
             active, resolved = load_all()
