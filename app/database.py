@@ -92,33 +92,82 @@ def init_db() -> None:
             )
         except Exception:
             pass
-        # Migration: ensure the composite unique index exists on (wallet_address, position_key).
-        # Older databases lost this constraint when the wallet_address column was added via
-        # ALTER TABLE and the original single-column auto-index was dropped.  Without it,
-        # ON CONFLICT (wallet_address, position_key) DO UPDATE raises OperationalError,
-        # silently preventing scroll-loaded rows from being persisted across restarts.
+        # Migration: rebuild table if the old single-column UNIQUE(position_key) constraint
+        # is still present.  That constraint makes inserts fail for any new row whose
+        # position_key matches an old empty-wallet row, even when the wallet_address differs.
+        # SQLite won't let us drop an autoindex, so we recreate the table with the correct
+        # composite UNIQUE(wallet_address, position_key) and reassign orphaned rows.
+        try:
+            old_constraint = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master "
+                "WHERE type='index' AND name='sqlite_autoindex_closed_positions_cache_1' "
+                "AND tbl_name='closed_positions_cache'"
+            ).fetchone()[0]
+            if old_constraint:
+                conn.execute("DROP TABLE IF EXISTS _cpc_rebuild_tmp")
+                conn.execute("""
+                    CREATE TABLE _cpc_rebuild_tmp (
+                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        wallet_address  TEXT NOT NULL DEFAULT '',
+                        position_key    TEXT NOT NULL,
+                        market          TEXT NOT NULL,
+                        outcome_held    TEXT NOT NULL,
+                        winning_outcome TEXT NOT NULL,
+                        quantity        REAL NOT NULL,
+                        cost_basis      REAL NOT NULL,
+                        redeem_value    REAL NOT NULL,
+                        redeemed        INTEGER NOT NULL,
+                        resolved_date   TEXT,
+                        closed_at       INTEGER,
+                        realized_pnl    REAL NOT NULL,
+                        fetched_at      TEXT NOT NULL,
+                        UNIQUE (wallet_address, position_key)
+                    )
+                """)
+                conn.execute("""
+                    INSERT OR IGNORE INTO _cpc_rebuild_tmp
+                        (id, wallet_address, position_key, market, outcome_held,
+                         winning_outcome, quantity, cost_basis, redeem_value,
+                         redeemed, resolved_date, closed_at, realized_pnl, fetched_at)
+                    SELECT id, wallet_address, position_key, market, outcome_held,
+                           winning_outcome, quantity, cost_basis, redeem_value,
+                           redeemed, resolved_date, closed_at, realized_pnl, fetched_at
+                    FROM closed_positions_cache
+                """)
+                conn.execute("DROP TABLE closed_positions_cache")
+                conn.execute(
+                    "ALTER TABLE _cpc_rebuild_tmp RENAME TO closed_positions_cache"
+                )
+                # Reassign orphaned empty-wallet rows to the saved wallet.
+                # UPDATE OR IGNORE skips any that would collide with a real-wallet row;
+                # DELETE removes the remaining empty-wallet rows (they are duplicates).
+                wallet_row = conn.execute(
+                    "SELECT value FROM settings WHERE key = 'last_wallet'"
+                ).fetchone()
+                if wallet_row and wallet_row[0]:
+                    actual_wallet = wallet_row["value"]
+                    conn.execute(
+                        "UPDATE OR IGNORE closed_positions_cache "
+                        "SET wallet_address = ? WHERE wallet_address = ''",
+                        (actual_wallet,),
+                    )
+                    conn.execute(
+                        "DELETE FROM closed_positions_cache WHERE wallet_address = ''"
+                    )
+                print(
+                    "[MIGRATION] rebuilt closed_positions_cache with composite unique index",
+                    flush=True,
+                )
+        except Exception as _exc:
+            print(f"[MIGRATION] rebuild failed (non-fatal): {_exc}", flush=True)
+        # Ensure the explicit composite unique index exists (complements the table constraint).
         try:
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_wallet_poskey "
                 "ON closed_positions_cache(wallet_address, position_key)"
             )
         except Exception:
-            # Duplicate rows block index creation — remove them (keep the lowest id),
-            # then retry.  This is safe: duplicates can only exist if the index was
-            # absent, meaning rows are interchangeable for the same (wallet, key) pair.
-            conn.execute(
-                "DELETE FROM closed_positions_cache WHERE id NOT IN ("
-                "  SELECT MIN(id) FROM closed_positions_cache"
-                "  GROUP BY wallet_address, position_key"
-                ")"
-            )
-            try:
-                conn.execute(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_wallet_poskey "
-                    "ON closed_positions_cache(wallet_address, position_key)"
-                )
-            except Exception:
-                pass
+            pass
 
         # Active positions cache — replaced in full on each successful fetch
         conn.execute("""
