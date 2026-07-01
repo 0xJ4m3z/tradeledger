@@ -440,10 +440,13 @@ def upsert_activity_derived_closed_positions(
     wallet_address: str,
 ) -> int:
     """Insert activity-derived closed positions, skipping any (market, outcome_held)
-    that already has an API-sourced record in the cache.
+    that already has a good API-sourced record in the cache.
 
-    This supplements the /closed-positions endpoint which may only return the
-    N most-recent positions.  Returns the number of newly inserted rows.
+    If an existing row has cost_basis=0 (stale derivation where REDEEM outcome
+    was empty so BUY costs couldn't be matched), it is replaced with the newly
+    derived row which now carries a real cost_basis via the per-title fallback.
+
+    Returns the number of rows inserted or corrected.
     """
     if not positions or not wallet_address:
         return 0
@@ -451,24 +454,34 @@ def upsert_activity_derived_closed_positions(
     with get_connection() as conn:
         for p in positions:
             existing = conn.execute(
-                """
-                SELECT id FROM closed_positions_cache
-                WHERE wallet_address = ? AND market = ? AND outcome_held = ?
-                LIMIT 1
-                """,
-                (wallet_address, p.market, p.outcome_held),
+                # Match by market only — a wallet cannot hold both sides of the
+                # same market, so one row per market is the expected invariant.
+                # Matching on outcome_held too would miss stale rows where the
+                # REDEEM event had outcome="" (stored as outcome_held="") while
+                # the BUY event had outcome="Yes" (stored in earlier rows).
+                "SELECT id, cost_basis FROM closed_positions_cache "
+                "WHERE wallet_address = ? AND market = ? LIMIT 1",
+                (wallet_address, p.market),
             ).fetchone()
             if existing:
-                continue
+                # Replace stale zero-cost rows with the corrected derivation.
+                # cost_basis=0 means a prior derivation failed to match BUY costs;
+                # if we now have a positive cost, delete and re-insert with correct data.
+                if existing["cost_basis"] == 0.0 and p.cost_basis > 0:
+                    conn.execute(
+                        "DELETE FROM closed_positions_cache WHERE id = ?",
+                        (existing["id"],),
+                    )
+                    # fall through to INSERT below
+                else:
+                    continue  # has good data; preserve it
             key = _position_key(p)
             conn.execute(
-                """
-                INSERT OR IGNORE INTO closed_positions_cache
-                    (wallet_address, position_key, market, outcome_held, winning_outcome,
-                     quantity, cost_basis, redeem_value, redeemed, resolved_date, closed_at,
-                     realized_pnl, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-                """,
+                "INSERT OR IGNORE INTO closed_positions_cache "
+                "(wallet_address, position_key, market, outcome_held, winning_outcome, "
+                "quantity, cost_basis, redeem_value, redeemed, resolved_date, closed_at, "
+                "realized_pnl, fetched_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
                 (wallet_address, key, p.market, p.outcome_held, p.winning_outcome,
                  p.quantity, p.cost_basis, p.redeem_value, int(p.redeemed),
                  p.resolved_date, p.closed_at, p.realized_pnl),

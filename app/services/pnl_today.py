@@ -342,10 +342,15 @@ def derive_closed_from_activity(
 
     cost_by_pos: dict = defaultdict(float)
     cost_by_title: dict = defaultdict(float)
+    # Track the bought outcome per title so REDEEM events with outcome=""
+    # can be matched to the correct side.
+    bought_outcome: dict = {}
     for a in activity:
         if a.type == "TRADE" and a.side == "BUY" and a.title:
             cost_by_pos[(a.title, a.outcome)] += a.usdc_size
             cost_by_title[a.title] += a.usdc_size
+            if a.title not in bought_outcome and a.outcome:
+                bought_outcome[a.title] = a.outcome
 
     latest_redeem: dict = {}
     for a in activity:
@@ -357,13 +362,15 @@ def derive_closed_from_activity(
     positions: List[ResolvedPosition] = []
     for (market, outcome), ev in latest_redeem.items():
         # REDEEM events often have outcome="" while BUY events have "Yes"/"No".
-        # Fall back to per-title total when the exact (title, outcome) key gives 0.
+        # Fall back to per-title total cost when the exact (title, outcome) key gives 0,
+        # and infer the actual outcome held from the BUY events for that title.
         cost = cost_by_pos.get((market, outcome)) or cost_by_title.get(market, 0.0)
+        actual_outcome = outcome or bought_outcome.get(market, outcome)
         positions.append(
             ResolvedPosition(
                 market=market,
-                outcome_held=outcome,
-                winning_outcome=outcome,
+                outcome_held=actual_outcome,
+                winning_outcome=actual_outcome,
                 quantity=ev.size,
                 cost_basis=cost,
                 redeem_value=ev.usdc_size,
