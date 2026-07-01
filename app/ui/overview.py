@@ -663,7 +663,7 @@ class OverviewWidget(QWidget):
         # rows into memory at startup — no scroll, no limit, no DB round-trip here.
         filtered = filter_closed_by_range(self._closed_positions, self._range)
         pnl      = sum(p.realized_pnl for p in filtered)
-        trades   = count_trades(self._activity, self._range)
+        trades   = len(filtered)
 
         color   = _GREEN if pnl > 0 else (_RED if pnl < 0 else _MUTED)
         display = f"${pnl:+,.2f}" if pnl != 0 else "$0.00"
@@ -676,9 +676,9 @@ class OverviewWidget(QWidget):
         if all_closed:
             # Merge: prefer the backfill's ordered set but preserve any rows the user
             # scroll-loaded beyond the backfill's coverage (e.g. older than limit=2000).
-            seen_backfill = {(p.market, p.outcome_held, p.cost_basis) for p in all_closed}
+            seen_backfill = {(p.market, p.outcome_held) for p in all_closed}
             extra = [p for p in self._closed_positions
-                     if (p.market, p.outcome_held, p.cost_basis) not in seen_backfill]
+                     if (p.market, p.outcome_held) not in seen_backfill]
             self._closed_positions = list(all_closed) + extra
         classify_closed_positions(self._closed_positions, self._activity)
         _dlog("backfill", "closed_positions now %d rows after cache update",

@@ -109,15 +109,23 @@ def _build_range_points(
     now = datetime.now(tz)
     filtered = filter_closed_by_range(closed, range_)
 
-    # Aggregate realized P/L by calendar date
+    # Aggregate realized P/L by calendar date.
+    # Mirror filter_closed_by_range: prefer closed_at (actual close epoch), fall back to
+    # resolved_date.  This ensures activity-derived wins (resolved_date=None but
+    # closed_at set) are included, so the chart final value matches the P/L card.
     daily: Dict[date, float] = {}
     for cp in filtered:
-        d_str = _cp_date_str(cp)
-        if not d_str:
-            continue
-        try:
-            d = date.fromisoformat(d_str)
-        except ValueError:
+        if cp.closed_at:
+            try:
+                d = datetime.fromtimestamp(cp.closed_at, tz=tz).date()
+            except (OSError, OverflowError, ValueError):
+                continue
+        elif cp.resolved_date:
+            try:
+                d = date.fromisoformat(cp.resolved_date[:10])
+            except (ValueError, TypeError):
+                continue
+        else:
             continue
         daily[d] = round(daily.get(d, 0.0) + cp.realized_pnl, 6)
 
