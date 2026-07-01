@@ -284,13 +284,17 @@ def _fmt_closed_date(p: ResolvedPosition) -> str:
     return "—"
 
 
+_OVERVIEW_ROW_CAP = 100   # max rows rendered in the overview panel grid
+
+
 def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") -> QWidget:
     outer = QWidget()
     vbox = QVBoxLayout(outer)
     vbox.setContentsMargins(0, 0, 0, 0)
     vbox.setSpacing(8)
 
-    lbl = QLabel(f"Closed Positions — {range_label}  ({len(positions)})")
+    total = len(positions)
+    lbl = QLabel(f"Closed Positions — {range_label}  ({total})")
     lbl.setStyleSheet(_SECTION_HDR_S)
     vbox.addWidget(lbl)
 
@@ -303,7 +307,8 @@ def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") 
     for col, (h, a) in enumerate(zip(_CLS_HDRS, _CLS_ALIGN)):
         grid.addWidget(_col_hdr(h, a), 0, col)
 
-    for r, p in enumerate(positions, start=1):
+    visible = positions[:_OVERVIEW_ROW_CAP]
+    for r, p in enumerate(visible, start=1):
         pc = _pnl_color(p.realized_pnl)
         rc = _GREEN if p.is_win else _RED
         cells = [
@@ -318,6 +323,13 @@ def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") 
         ]
         for col, (text, align, color) in enumerate(cells):
             grid.addWidget(_row_cell(text, align, color), r, col)
+
+    if total > _OVERVIEW_ROW_CAP:
+        overflow_lbl = QLabel(
+            f"  … {total - _OVERVIEW_ROW_CAP:,} more — see Closed Positions tab"
+        )
+        overflow_lbl.setStyleSheet(f"color: {_MUTED}; font-size: 11px; padding: 4px 6px;")
+        grid.addWidget(overflow_lbl, len(visible) + 1, 0, 1, len(_CLS_HDRS))
 
     grid.setColumnStretch(0, 1)
     vbox.addWidget(frame)
