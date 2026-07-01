@@ -307,12 +307,13 @@ class WalletPanel(QWidget):
         self._positions_ok       = False
 
         init_db()
-        self._build_ui()
-        self._load_last_wallet()
 
         self._timer = QTimer(self)
         self._timer.setInterval(_AUTO_REFRESH_MS)
         self._timer.timeout.connect(self._on_timer_tick)
+
+        self._build_ui()       # setChecked(True) fires toggled -> _on_auto_refresh_toggled -> timer ready
+        self._load_last_wallet()
 
     def _build_ui(self) -> None:
         frame = QFrame()
