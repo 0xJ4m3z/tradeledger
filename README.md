@@ -20,7 +20,7 @@ TradeLedger lets you monitor your open positions, resolved winnings, closed trad
 
 ## Screenshots
 
-![TradeLedger v0.3 Overview](docs/screenshots/tradeledger_v0.3_overview.png)
+![TradeLedger v0.3.1 Overview](docs/screenshots/tradeledger_v0.3.1_overview.png)
 
 ---
 
@@ -151,6 +151,7 @@ tradeledger/
 │   ├── test_wallet_persistence.py      # Last wallet and Loss Watch acknowledgement persistence
 │   ├── test_polymarket_adapter.py      # Polymarket position + activity lookup tests (mocked)
 │   ├── test_closed_cache.py            # Closed positions cache: upsert, dedup, limit tests
+│   ├── test_cache_hydration.py         # Scroll persistence, startup hydration, and merge logic tests
 │   ├── test_loss_watch.py              # Loss Watch filter and count tests
 │   ├── test_chart_ranges.py            # Chart range filter tests
 │   ├── test_pnl_ranges.py              # Range/timezone logic, partial data detection
@@ -165,6 +166,7 @@ tradeledger/
 ├── .env.example                        # Environment variable template
 ├── conftest.py                         # pytest path setup
 ├── run.py                              # Launch script
+├── clear_cache.py                      # Developer utility: wipe local cache (preserves wallet address setting)
 ├── requirements.txt
 └── README.md
 ```
@@ -255,7 +257,7 @@ TradeLedger caches position and activity data locally in the SQLite database (`t
 
 ### Dedup keys
 
-- Closed position: `f"{market}|{outcome_held}|{cost_basis:.6f}"`
+- Closed position: `f"{market}|{outcome_held}"` — cost_basis is intentionally excluded; the API and activity-derived sources compute it slightly differently due to float rounding, so including it caused false duplicates
 - Activity event: `f"{timestamp}|{type}|{side}|{size:.6f}"`
 
 ### Startup behavior
@@ -338,20 +340,25 @@ Tries multiple public Polygon RPCs automatically if one fails. Wallet address is
 - **Wallet-address-tagged snapshots** — chart never shows data from a different wallet; stale same-day snapshots are cleared on first fetch
 - 196 passing tests
 
-**v0.3.1 — P/L accuracy audit + chart + caching** ✓
+**v0.3.1 — P/L accuracy audit + cache fixes + chart** ✓
 - **ET timezone** — all calendar-day calculations use America/New_York (was: Chicago); 1D = today ET midnight to now
 - **1Y and YTD ranges** — added to range bar alongside 1D / 1W / 1M / All
 - **Partial data detection** — Realized P/L and Trades cards show `~` prefix when loaded data may not cover the full range
 - **Closed positions as P/L source** — explicitly documented; `filter_closed_by_range` extracted to service layer
-- **Event-based 1D chart** — cumulative realized P/L; starts at $0 at midnight ET; intraday steps at each REDEEM event's actual timestamp; interactive hover crosshair; green/red fill; steps-post line style
-- **Same-date aggregation** — multiple closed positions on the same calendar day sum to one net data point for 1W+ ranges
+- **Correct cost basis calculation** — Polymarket's `totalBought` field is shares, not USDC; `cost_basis` is now correctly computed as `totalBought × avgPrice`; `redeem_value = cost_basis + realizedPnl`; previously these were wrong, causing significantly inflated P/L figures
+- **Fixed closed-position dedup key** — key is now `market|outcome_held` only; previously included `cost_basis`, which caused float-precision differences between API and activity-derived sources to produce two DB rows for the same trade (duplicate entries in the Closed Positions tab and double-counted P/L)
+- **Fixed SQLite schema migration** — closed positions cache now uses a composite `UNIQUE(wallet_address, position_key)` constraint; a startup migration rebuilds legacy DBs and reassigns rows with missing wallet addresses
+- **Fixed closed-position persistence** — scroll-loaded and backfill-loaded pages now correctly persist across app restarts; the old single-column unique constraint silently dropped all inserts on existing DBs
+- **Fixed `derive_closed_from_activity`** — REDEEM events in the activity feed often have an empty outcome field; the correct outcome is now inferred from the corresponding BUY events; stale zero-cost rows in the DB are replaced when fresh activity data is available
+- **Event-based 1D chart** — cumulative realized P/L; starts at $0 at midnight ET; intraday steps at each closed position's actual close timestamp; interactive hover crosshair; green/red fill
+- **Same-date aggregation** — multiple closed positions on the same calendar day sum to one net data point for 1W+ chart ranges
 - **Wallet-isolated local caching** — active, resolved, closed, and activity data cached per wallet in SQLite; app pre-populates from cache on startup before the live fetch completes
-- **Full cache persistence for scroll-loads** — scroll-loaded activity and closed position pages are now upserted to SQLite via `_on_activity_page_done` / `_on_closed_page_done`; previously only the initial fetch and backfill were persisted
-- **Activity merge on refresh** — live refresh merges new records into the existing in-memory list instead of replacing it; cached history (up to 500 rows loaded at startup) is never discarded by a refresh
-- **Same-wallet refresh guard** — `_on_wallet_address_changed` only clears data when the wallet address genuinely changes; same-wallet re-confirmation on startup no longer clears the chart seeded by `seed_from_cache`
+- **Full cache persistence for scroll-loads** — scroll-loaded activity and closed position pages are upserted to SQLite; previously only the initial fetch and backfill were persisted
+- **Activity merge on refresh** — live refresh merges new records into the existing in-memory list instead of replacing it; cached history is never discarded by a refresh
+- **Same-wallet refresh guard** — `_on_wallet_address_changed` only clears data when the wallet address genuinely changes; same-wallet re-confirmation on startup no longer clears chart data
 - **Insert-or-ignore dedup** — closed positions and activity events accumulate without duplicates across scroll-loads, backfill pages, and refreshes
-- **Debug logging** — set `TRADELEDGER_DEBUG=1` to enable verbose data-flow logs (cache operations, merge counts, wallet confirmations) via Python's `logging` module
-- **324 passing tests** — including 16 new tests in `test_cache_hydration.py` covering scroll-page persistence, in-memory merge logic, and startup hydration scenarios
+- **Debug logging** — set `TRADELEDGER_DEBUG=1` to enable verbose data-flow logs via Python's `logging` module
+- **433 passing tests** — including `test_cache_hydration.py` covering scroll-page persistence, in-memory merge logic, startup hydration, and P/L accuracy scenarios
 
 **v0.4 — Planned**
 - Notes per market
