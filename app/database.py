@@ -467,12 +467,14 @@ def upsert_closed_positions_cache(
             if existing:
                 conn.execute(
                     "UPDATE closed_positions_cache SET "
-                    "winning_outcome = ?, quantity = ?, redeem_value = ?, realized_pnl = ?, "
+                    "winning_outcome = ?, quantity = ?, cost_basis = ?, "
+                    "redeem_value = ?, realized_pnl = ?, "
                     "closed_at = COALESCE(?, closed_at), "
                     "slug = COALESCE(?, slug), "
                     "fetched_at = datetime('now') "
                     "WHERE wallet_address = ? AND position_key = ?",
-                    (p.winning_outcome, p.quantity, p.redeem_value, p.realized_pnl,
+                    (p.winning_outcome, p.quantity, p.cost_basis,
+                     p.redeem_value, p.realized_pnl,
                      p.closed_at, p.slug, wallet_address, key),
                 )
             else:
