@@ -16,12 +16,12 @@ QMenu {
     background-color: #1c2128;
     color: #c9d1d9;
     border: 2px solid #484f58;
-    padding: 4px;
+    padding: 3px;
     font-size: 13px;
 }
 QMenu::item {
-    padding: 8px 36px 8px 14px;
-    min-width: 190px;
+    padding: 5px 20px;
+    text-align: center;
 }
 QMenu::item:selected {
     background-color: #1f6feb;
@@ -32,7 +32,7 @@ QMenu::item:disabled {
 }
 """
 
-_MENU_MIN_WIDTH = 220
+_MENU_MIN_WIDTH = 200
 
 
 def open_polymarket(slug: Optional[str]) -> None:
