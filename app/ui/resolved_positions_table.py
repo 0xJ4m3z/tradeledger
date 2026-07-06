@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from app.debug import _dlog
 from app.models import ResolvedPosition
+from app.services.daily_pnl import sort_closed_positions_newest_first
 
 try:
     from zoneinfo import ZoneInfo as _ZoneInfo
@@ -165,24 +166,30 @@ class ResolvedPositionsTable(QWidget):
         search.textChanged.connect(self._apply_filter)
         layout.addWidget(self._table)
 
+    def _rebuild_table(self) -> None:
+        """Sort _all_positions newest-first and re-render the table widget."""
+        self._all_positions = sort_closed_positions_newest_first(self._all_positions)
+        n = len(self._all_positions)
+        self._table.setRowCount(n)
+        for row, p in enumerate(self._all_positions):
+            _populate_row(self._table, row, p)
+        self._displayed_count = n
+        self._header.setText(f"{self._label}  ({n})")
+
     def update_positions(self, positions: List[ResolvedPosition]) -> None:
         """Replace all positions (called on initial/refresh fetch)."""
         old_all = len(self._all_positions)
         self._all_positions   = list(positions)
-        self._displayed_count = len(positions)
         self._has_more        = len(positions) >= 100
         self._loading         = False
         self._load_status.setText("")
-        self._header.setText(f"{self._label}  ({len(positions)})")
-        self._table.setRowCount(len(positions))
-        for row, p in enumerate(positions):
-            _populate_row(self._table, row, p)
+        self._rebuild_table()
         _dlog("closed_tab",
               "update_positions(REPLACE): incoming=%d  old_all=%d  new_all=%d  displayed=%d",
               len(positions), old_all, len(self._all_positions), self._displayed_count)
 
     def merge_positions(self, new_records: List[ResolvedPosition]) -> None:
-        """Prepend any new records not already loaded (called on refresh, not first load)."""
+        """Merge new records into the table, re-sorting newest-first (called on refresh)."""
         old_all = len(self._all_positions)
         seen  = {(p.market, p.outcome_held) for p in self._all_positions}
         fresh = [p for p in new_records if (p.market, p.outcome_held) not in seen]
@@ -191,12 +198,8 @@ class ResolvedPositionsTable(QWidget):
                   "merge_positions: incoming=%d  0 new  all=%d  displayed=%d",
                   len(new_records), old_all, self._displayed_count)
             return
-        self._all_positions   = fresh + self._all_positions
-        self._displayed_count += len(fresh)
-        self._header.setText(f"{self._label}  ({len(self._all_positions)})")
-        for i, p in enumerate(fresh):
-            self._table.insertRow(i)
-            _populate_row(self._table, i, p)
+        self._all_positions = fresh + self._all_positions
+        self._rebuild_table()
         _dlog("closed_tab",
               "merge_positions: incoming=%d  +%d new  all=%d→%d  displayed=%d",
               len(new_records), len(fresh), old_all, len(self._all_positions), self._displayed_count)
@@ -224,23 +227,17 @@ class ResolvedPositionsTable(QWidget):
         self._all_positions.extend(fresh)
         self._has_more = True
         self._load_status.setText("")
-        self._header.setText(f"{self._label}  ({len(self._all_positions)})")
-
-        start_row = self._table.rowCount()
-        self._table.setRowCount(start_row + len(fresh))
-        for i, p in enumerate(fresh):
-            _populate_row(self._table, start_row + i, p)
-        self._displayed_count += len(fresh)
+        self._rebuild_table()
         _dlog("closed_tab",
               "append_positions: incoming=%d  +%d new  all=%d→%d  displayed=%d",
               len(new_records), len(fresh), old_all, len(self._all_positions), self._displayed_count)
 
     def load_from_cache(self, positions: List[ResolvedPosition]) -> None:
-        """Extend the dataset with newly cached rows from backfill and render them immediately.
+        """Extend the dataset with newly cached rows from backfill and render them.
 
         Does NOT modify _loading or _has_more so infinite-scroll stays functional.
-        Rows are added to both _all_positions and the table widget so they are
-        visible without the user needing to scroll.
+        Re-sorts and re-renders the full table so newly-discovered rows appear
+        in the correct newest-first position.
         """
         old_all = len(self._all_positions)
         seen  = {(p.market, p.outcome_held, p.cost_basis) for p in self._all_positions}
@@ -251,12 +248,7 @@ class ResolvedPositionsTable(QWidget):
                   len(positions), old_all, self._displayed_count)
             return
         self._all_positions.extend(fresh)
-        start_row = self._table.rowCount()
-        self._table.setRowCount(start_row + len(fresh))
-        for i, p in enumerate(fresh):
-            _populate_row(self._table, start_row + i, p)
-        self._displayed_count += len(fresh)
-        self._header.setText(f"{self._label}  ({len(self._all_positions)})")
+        self._rebuild_table()
         _dlog("closed_tab",
               "load_from_cache: incoming=%d  +%d new  all=%d→%d  displayed=%d",
               len(positions), len(fresh), old_all, len(self._all_positions), self._displayed_count)

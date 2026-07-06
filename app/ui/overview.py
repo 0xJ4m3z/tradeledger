@@ -27,6 +27,7 @@ from app.debug import _dlog
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 from app.services.loss_watch import compute_loss_watch_count
 from app.services.metrics import compute_dashboard_metrics, compute_total_tracked_value
+from app.services.daily_pnl import sort_closed_positions_newest_first
 from app.services.pnl_today import (
     classify_closed_positions,
     count_trades,
@@ -566,12 +567,14 @@ class OverviewWidget(QWidget):
         self._active_positions = list(active)
         # Merge closed: keep everything already loaded, prepend any new records
         if not self._closed_positions:
-            self._closed_positions = list(closed)
+            self._closed_positions = sort_closed_positions_newest_first(list(closed))
         else:
             seen  = {(p.market, p.outcome_held) for p in self._closed_positions}
             fresh = [p for p in closed if (p.market, p.outcome_held) not in seen]
             if fresh:
-                self._closed_positions = fresh + self._closed_positions
+                self._closed_positions = sort_closed_positions_newest_first(
+                    fresh + self._closed_positions
+                )
         classify_closed_positions(self._closed_positions, self._activity)
         metrics = compute_dashboard_metrics(active, resolved)
         self._active_value   = metrics["active_positions_value"]
@@ -643,7 +646,9 @@ class OverviewWidget(QWidget):
                 fresh_closed = [p for p in all_closed
                                 if (p.market, p.outcome_held) not in seen_closed]
                 if fresh_closed:
-                    self._closed_positions = fresh_closed + self._closed_positions
+                    self._closed_positions = sort_closed_positions_newest_first(
+                        fresh_closed + self._closed_positions
+                    )
                     self.closed_cache_updated.emit(self._closed_positions)
 
         # Re-classify positions: new SELLs in activity may change close_type on existing positions
@@ -690,7 +695,9 @@ class OverviewWidget(QWidget):
             seen_backfill = {(p.market, p.outcome_held) for p in all_closed}
             extra = [p for p in self._closed_positions
                      if (p.market, p.outcome_held) not in seen_backfill]
-            self._closed_positions = list(all_closed) + extra
+            self._closed_positions = sort_closed_positions_newest_first(
+                list(all_closed) + extra
+            )
         classify_closed_positions(self._closed_positions, self._activity)
         _dlog("backfill", "closed_positions now %d rows after cache update",
               len(self._closed_positions))
@@ -709,7 +716,7 @@ class OverviewWidget(QWidget):
         Seeds closed positions and (optionally) activity so the 1D chart can
         show intraday points immediately from cached REDEEM events.
         """
-        self._closed_positions = list(closed)
+        self._closed_positions = sort_closed_positions_newest_first(list(closed))
         if activity is not None:
             self._activity = list(activity)
         classify_closed_positions(self._closed_positions, self._activity)

@@ -18,6 +18,7 @@ from app.ui.active_positions_table import ActivePositionsTable
 from app.ui.activity_table import ActivityTable
 from app.ui.loss_watch_tab import LossWatchTab
 from app.ui.overview import OverviewWidget
+from app.ui.pnl_tab import PnlTab
 from app.ui.resolved_positions_table import ResolvedPositionsTable
 from app.ui.total_value_chart import TotalValueChartWidget
 
@@ -166,6 +167,7 @@ class MainWindow(QMainWindow):
             cached_closed, label="Closed Positions", show_refresh=True
         )
         self._activity_tab     = ActivityTable(cached_activity)
+        self._pnl_tab          = PnlTab(cached_closed)
 
         # ── Signal wiring ───────────────────────────────────────────────────────
         overview.positions_changed.connect(self._on_positions_changed)
@@ -176,8 +178,9 @@ class MainWindow(QMainWindow):
         # Loss Watch tab ↔ Overview card stay in sync via DB
         self._loss_watch_tab.acknowledged_changed.connect(overview.reload_acknowledged)
 
-        # Closed positions: backfill pages arrive incrementally → push to Closed tab
+        # Closed positions: backfill pages arrive incrementally → push to Closed tab + P/L tab
         overview.closed_cache_updated.connect(self._on_closed_cache_updated)
+        overview.closed_cache_updated.connect(self._pnl_tab.update_positions)
 
         # Activity: scroll-to-bottom → fetch next page → append rows
         self._activity_tab.load_more_requested.connect(overview.on_load_more_activity)
@@ -199,6 +202,7 @@ class MainWindow(QMainWindow):
         # ── Tabs ────────────────────────────────────────────────────────────────
         tabs = QTabWidget()
         tabs.addTab(overview,                  "Overview")
+        tabs.addTab(self._pnl_tab,             "P/L")
         tabs.addTab(self._loss_watch_tab,      "Loss Watch")
         tabs.addTab(self._active_tab,          "Active Positions")
         tabs.addTab(self._resolved_tab,        "Resolved Positions")
@@ -240,6 +244,7 @@ class MainWindow(QMainWindow):
         after = len(self._closed_tab._all_positions)
         _dlog("fetch", "closed_tab: %d → %d rows after live fetch (%d API rows)",
               before, after, len(closed))
+        self._pnl_tab.update_positions(closed)
         self._loss_watch_tab.update_positions(active)
         self._status_bar.showMessage(
             f"Live Polymarket data  •  {len(active)} active"
