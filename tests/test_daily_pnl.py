@@ -9,6 +9,7 @@ import pytest
 from app.models import ResolvedPosition
 from app.services.daily_pnl import (
     build_daily_pnl_rows,
+    get_positions_for_date,
     sort_closed_positions_newest_first,
 )
 
@@ -216,3 +217,97 @@ class TestBuildDailyPnlRows:
         rows = build_daily_pnl_rows([p_no_date, p_with_ts], "all")
         assert len(rows) == 1
         assert rows[0]["date"] == date(2025, 1, 1)
+
+
+# ── get_positions_for_date ─────────────────────────────────────────────────────
+
+class TestGetPositionsForDate:
+    def test_returns_positions_for_matching_date(self):
+        target = date(2025, 6, 15)
+        other  = date(2025, 6, 14)
+        p_match = _pos("A", closed_at=_ts(target))
+        p_other = _pos("B", closed_at=_ts(other))
+        result = get_positions_for_date([p_match, p_other], target)
+        assert len(result) == 1
+        assert result[0].market == "A"
+
+    def test_uses_closed_at_first(self):
+        """closed_at determines the date, not resolved_date."""
+        target = date(2025, 6, 15)
+        # closed_at lands on target date but resolved_date is a different day
+        p = _pos("A", closed_at=_ts(target), resolved_date="2025-01-01")
+        result = get_positions_for_date([p], target)
+        assert len(result) == 1
+
+    def test_resolved_date_fallback(self):
+        """Falls back to resolved_date when closed_at is absent."""
+        target = date(2025, 3, 10)
+        p = _pos("A", resolved_date="2025-03-10")
+        result = get_positions_for_date([p], target)
+        assert len(result) == 1
+        assert result[0].market == "A"
+
+    def test_resolved_date_does_not_match_wrong_day(self):
+        target = date(2025, 3, 10)
+        p = _pos("A", resolved_date="2025-03-11")
+        assert get_positions_for_date([p], target) == []
+
+    def test_excludes_positions_on_other_dates(self):
+        target = date(2025, 6, 15)
+        positions = [
+            _pos("A", closed_at=_ts(target)),
+            _pos("B", closed_at=_ts(date(2025, 6, 14))),
+            _pos("C", closed_at=_ts(date(2025, 6, 16))),
+        ]
+        result = get_positions_for_date(positions, target)
+        assert len(result) == 1
+        assert result[0].market == "A"
+
+    def test_returns_empty_when_no_match(self):
+        target = date(2025, 6, 15)
+        p = _pos("A", closed_at=_ts(date(2025, 1, 1)))
+        assert get_positions_for_date([p], target) == []
+
+    def test_result_sorted_newest_first(self):
+        """Multiple positions on same day are sorted newest-first by closed_at."""
+        target = date(2025, 6, 15)
+        p_morning   = _pos("AM", closed_at=_ts(target, hour=9))
+        p_afternoon = _pos("PM", closed_at=_ts(target, hour=15))
+        result = get_positions_for_date([p_morning, p_afternoon], target)
+        assert result[0].market == "PM"
+        assert result[1].market == "AM"
+
+    def test_popup_totals_match_daily_row(self):
+        """P/L sum from get_positions_for_date matches the corresponding build_daily_pnl_rows entry."""
+        d1 = date(2025, 6, 1)
+        d2 = date(2025, 6, 2)
+        positions = [
+            _pos("A", cost=10.0, redeem=25.0, closed_at=_ts(d1)),   # +15
+            _pos("B", cost=20.0, redeem=5.0,  closed_at=_ts(d1)),   # -15
+            _pos("C", cost=10.0, redeem=30.0, closed_at=_ts(d2)),   # +20
+        ]
+        rows = build_daily_pnl_rows(positions, "all")
+
+        for row in rows:
+            day_positions = get_positions_for_date(positions, row["date"])
+            popup_pnl = round(sum(p.realized_pnl for p in day_positions), 2)
+            assert popup_pnl == pytest.approx(row["pnl"]), (
+                f"Mismatch on {row['date']}: popup={popup_pnl} row={row['pnl']}"
+            )
+
+    def test_popup_count_matches_daily_row(self):
+        target = date(2025, 5, 20)
+        positions = [
+            _pos("A", cost=10.0, redeem=15.0, closed_at=_ts(target)),
+            _pos("B", cost=10.0, redeem=0.0,  closed_at=_ts(target)),
+            _pos("C", cost=10.0, redeem=20.0, closed_at=_ts(target)),
+        ]
+        rows = build_daily_pnl_rows(positions, "all")
+        day_positions = get_positions_for_date(positions, target)
+        assert len(day_positions) == rows[0]["count"]
+
+    def test_no_date_positions_excluded(self):
+        """Positions with neither closed_at nor resolved_date never match any date."""
+        target = date(2025, 6, 15)
+        p_no_date = _pos("X")
+        assert get_positions_for_date([p_no_date], target) == []

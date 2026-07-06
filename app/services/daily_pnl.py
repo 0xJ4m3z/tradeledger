@@ -84,6 +84,21 @@ def build_daily_pnl_rows(
     return rows
 
 
+def get_positions_for_date(
+    positions: List[ResolvedPosition],
+    target_date: date,
+    timezone: str = "America/New_York",
+) -> List[ResolvedPosition]:
+    """Return positions whose close date matches target_date, sorted newest-first.
+
+    Date matching mirrors build_daily_pnl_rows: closed_at epoch converted to
+    ET calendar date first, resolved_date string fallback for legacy rows.
+    """
+    tz = ZoneInfo(timezone)
+    matched = [p for p in positions if _close_date(p, tz) == target_date]
+    return sort_closed_positions_newest_first(matched)
+
+
 def _close_date(p: ResolvedPosition, tz: ZoneInfo) -> Optional[date]:
     """Extract the close date, preferring closed_at epoch over resolved_date string."""
     if p.closed_at:
