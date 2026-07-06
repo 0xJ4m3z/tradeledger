@@ -13,14 +13,15 @@ from app.services.polymarket_links import polymarket_url_for_slug
 
 MENU_STYLE = """
 QMenu {
-    background-color: #161b22;
+    background-color: #1c2128;
     color: #c9d1d9;
-    border: 1px solid #30363d;
-    padding: 6px;
+    border: 2px solid #484f58;
+    padding: 4px;
+    font-size: 13px;
 }
 QMenu::item {
-    padding: 8px 34px 8px 14px;
-    min-width: 180px;
+    padding: 8px 36px 8px 14px;
+    min-width: 190px;
 }
 QMenu::item:selected {
     background-color: #1f6feb;
@@ -31,7 +32,7 @@ QMenu::item:disabled {
 }
 """
 
-_MENU_MIN_WIDTH = 210
+_MENU_MIN_WIDTH = 220
 
 
 def open_polymarket(slug: Optional[str]) -> None:
@@ -54,7 +55,7 @@ def show_table_context_menu(table, pos, market_col: int = 0) -> None:
     slug = mkt_item.data(Qt.ItemDataRole.UserRole) if mkt_item else None
     if not slug:
         return
-    menu = QMenu()
+    menu = QMenu(table)  # parent required on Windows for stylesheet to apply
     menu.setStyleSheet(MENU_STYLE)
     menu.setMinimumWidth(_MENU_MIN_WIDTH)
     action = menu.addAction("Open on Polymarket")
