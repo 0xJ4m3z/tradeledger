@@ -16,20 +16,24 @@ QMenu {
     background-color: #161b22;
     color: #c9d1d9;
     border: 1px solid #30363d;
+    border-radius: 6px;
     padding: 6px;
-    min-width: 180px;
 }
 QMenu::item {
-    padding: 7px 24px 7px 12px;
+    padding: 8px 34px 8px 14px;
+    min-width: 180px;
 }
 QMenu::item:selected {
     background-color: #1f6feb;
     color: #ffffff;
+    border-radius: 4px;
 }
 QMenu::item:disabled {
     color: #6e7681;
 }
 """
+
+_MENU_MIN_WIDTH = 210
 
 
 def open_polymarket(slug: Optional[str]) -> None:
@@ -54,6 +58,7 @@ def show_table_context_menu(table, pos, market_col: int = 0) -> None:
         return
     menu = QMenu()
     menu.setStyleSheet(MENU_STYLE)
+    menu.setMinimumWidth(_MENU_MIN_WIDTH)
     action = menu.addAction("Open on Polymarket")
     if menu.exec(table.viewport().mapToGlobal(pos)) == action:
         open_polymarket(slug)

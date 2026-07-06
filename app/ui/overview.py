@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.ui.polymarket_menu import MENU_STYLE, open_polymarket
+from app.ui.polymarket_menu import MENU_STYLE, _MENU_MIN_WIDTH, open_polymarket
 
 from app.database import (
     clear_wallet_snapshots_today,
@@ -174,6 +174,7 @@ def _market_row_cell(text: str, slug: str = None) -> QLabel:
         def _show_menu(pos, _s=slug, _lbl=lbl):
             menu = QMenu(_lbl)
             menu.setStyleSheet(MENU_STYLE)
+            menu.setMinimumWidth(_MENU_MIN_WIDTH)
             action = menu.addAction("Open on Polymarket")
             if menu.exec(_lbl.mapToGlobal(pos)) == action:
                 open_polymarket(_s)
