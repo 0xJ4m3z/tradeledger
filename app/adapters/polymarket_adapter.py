@@ -122,6 +122,8 @@ def _to_closed(row: dict) -> ResolvedPosition:
     cost_basis = total_bought * avg_price           # USDC spent
     redeem_value = cost_basis + realized_pnl        # USDC received
 
+    slug = row.get("eventSlug") or row.get("slug") or None
+
     return ResolvedPosition(
         market          = row.get("title") or "Unknown",
         outcome_held    = outcome,
@@ -132,6 +134,7 @@ def _to_closed(row: dict) -> ResolvedPosition:
         redeemed        = True,
         resolved_date   = row.get("endDate"),
         closed_at       = int(row.get("timestamp") or 0) or None,
+        slug            = slug,
     )
 
 

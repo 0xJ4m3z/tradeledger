@@ -5,14 +5,16 @@ from datetime import date, datetime
 from typing import List, Optional
 from zoneinfo import ZoneInfo
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QPushButton,
     QSplitter,
     QTableWidget,
@@ -23,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from app.models import ResolvedPosition
 from app.services.daily_pnl import build_daily_pnl_rows, get_positions_for_date
+from app.services.polymarket_links import polymarket_url_for_slug
 from app.ui.pnl_chart import PnlChartWidget
 
 _BG     = "#0d1117"
@@ -75,6 +78,19 @@ _Q_GREEN = QColor(_GREEN)
 _Q_RED   = QColor(_RED)
 _Q_MUTED = QColor(_MUTED)
 _Q_TEXT  = QColor(_TEXT)
+
+
+def _open_polymarket(slug: Optional[str]) -> None:
+    url = polymarket_url_for_slug(slug)
+    if url:
+        QDesktopServices.openUrl(QUrl(url))
+
+
+_MENU_STYLE = (
+    "QMenu { background-color: #21262d; color: #c9d1d9; border: 1px solid #30363d;"
+    " border-radius: 4px; font-size: 12px; }"
+    "QMenu::item:selected { background-color: #388bfd22; }"
+)
 
 
 # ── Shared cell helpers ────────────────────────────────────────────────────────
@@ -228,15 +244,18 @@ class DayDetailDialog(QDialog):
         layout.addLayout(summary_row)
 
         # ── Positions table ────────────────────────────────────────────────────
-        table = QTableWidget(len(positions), len(_DETAIL_COLS))
-        table.setHorizontalHeaderLabels(_DETAIL_COLS)
-        table.setAlternatingRowColors(False)
-        table.setShowGrid(False)
-        table.verticalHeader().setVisible(False)
-        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table = QTableWidget(len(positions), len(_DETAIL_COLS))
+        self._table.setHorizontalHeaderLabels(_DETAIL_COLS)
+        self._table.setAlternatingRowColors(False)
+        self._table.setShowGrid(False)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._show_context_menu)
+        self._table.itemClicked.connect(self._on_item_clicked)
 
-        hdr = table.horizontalHeader()
+        hdr = self._table.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for col in range(1, len(_DETAIL_COLS)):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
@@ -256,15 +275,20 @@ class DayDetailDialog(QDialog):
             time_item = _cell(_fmt_close_time(p))
             time_item.setForeground(_Q_MUTED)
 
-            table.setItem(row, 0, _cell(p.market))
-            table.setItem(row, 1, outcome_item)
-            table.setItem(row, 2, result_item)
-            table.setItem(row, 3, _cell(f"${p.cost_basis:,.2f}",   Qt.AlignmentFlag.AlignRight))
-            table.setItem(row, 4, _cell(f"${p.redeem_value:,.2f}", Qt.AlignmentFlag.AlignRight))
-            table.setItem(row, 5, _pnl_cell(p.realized_pnl))
-            table.setItem(row, 6, time_item)
+            mkt_item = _cell(p.market)
+            if p.slug:
+                mkt_item.setData(Qt.ItemDataRole.UserRole, p.slug)
+                mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
 
-        layout.addWidget(table, 1)
+            self._table.setItem(row, 0, mkt_item)
+            self._table.setItem(row, 1, outcome_item)
+            self._table.setItem(row, 2, result_item)
+            self._table.setItem(row, 3, _cell(f"${p.cost_basis:,.2f}",   Qt.AlignmentFlag.AlignRight))
+            self._table.setItem(row, 4, _cell(f"${p.redeem_value:,.2f}", Qt.AlignmentFlag.AlignRight))
+            self._table.setItem(row, 5, _pnl_cell(p.realized_pnl))
+            self._table.setItem(row, 6, time_item)
+
+        layout.addWidget(self._table, 1)
 
         # ── Close button ───────────────────────────────────────────────────────
         btn_row = QHBoxLayout()
@@ -274,6 +298,27 @@ class DayDetailDialog(QDialog):
         close_btn.clicked.connect(self.accept)
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
+
+    def _show_context_menu(self, pos) -> None:
+        item = self._table.itemAt(pos)
+        if item is None:
+            return
+        mkt_item = self._table.item(item.row(), 0)
+        slug = mkt_item.data(Qt.ItemDataRole.UserRole) if mkt_item else None
+        if not slug:
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet(_MENU_STYLE)
+        action = menu.addAction("Open on Polymarket")
+        if menu.exec(self._table.viewport().mapToGlobal(pos)) == action:
+            _open_polymarket(slug)
+
+    def _on_item_clicked(self, item) -> None:
+        if not (QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier):
+            return
+        mkt_item = self._table.item(item.row(), 0)
+        slug = mkt_item.data(Qt.ItemDataRole.UserRole) if mkt_item else None
+        _open_polymarket(slug)
 
 
 # ── Main P/L tab ───────────────────────────────────────────────────────────────

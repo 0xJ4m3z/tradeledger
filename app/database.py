@@ -92,6 +92,13 @@ def init_db() -> None:
             )
         except Exception:
             pass
+        # Migration: add slug (Polymarket eventSlug for browser links) if not present
+        try:
+            conn.execute(
+                "ALTER TABLE closed_positions_cache ADD COLUMN slug TEXT"
+            )
+        except Exception:
+            pass
         # Migration: rebuild table if the old single-column UNIQUE(position_key) constraint
         # is still present.  That constraint makes inserts fail for any new row whose
         # position_key matches an old empty-wallet row, even when the wallet_address differs.
@@ -120,6 +127,7 @@ def init_db() -> None:
                         resolved_date   TEXT,
                         closed_at       INTEGER,
                         realized_pnl    REAL NOT NULL,
+                        slug            TEXT,
                         fetched_at      TEXT NOT NULL,
                         UNIQUE (wallet_address, position_key)
                     )
@@ -128,10 +136,11 @@ def init_db() -> None:
                     INSERT OR IGNORE INTO _cpc_rebuild_tmp
                         (id, wallet_address, position_key, market, outcome_held,
                          winning_outcome, quantity, cost_basis, redeem_value,
-                         redeemed, resolved_date, closed_at, realized_pnl, fetched_at)
+                         redeemed, resolved_date, closed_at, realized_pnl, slug, fetched_at)
                     SELECT id, wallet_address, position_key, market, outcome_held,
                            winning_outcome, quantity, cost_basis, redeem_value,
-                           redeemed, resolved_date, closed_at, realized_pnl, fetched_at
+                           redeemed, resolved_date, closed_at, realized_pnl,
+                           COALESCE(slug, NULL), fetched_at
                     FROM closed_positions_cache
                 """)
                 conn.execute("DROP TABLE closed_positions_cache")
@@ -459,21 +468,23 @@ def upsert_closed_positions_cache(
                 conn.execute(
                     "UPDATE closed_positions_cache SET "
                     "winning_outcome = ?, quantity = ?, redeem_value = ?, realized_pnl = ?, "
-                    "closed_at = COALESCE(?, closed_at), fetched_at = datetime('now') "
+                    "closed_at = COALESCE(?, closed_at), "
+                    "slug = COALESCE(?, slug), "
+                    "fetched_at = datetime('now') "
                     "WHERE wallet_address = ? AND position_key = ?",
                     (p.winning_outcome, p.quantity, p.redeem_value, p.realized_pnl,
-                     p.closed_at, wallet_address, key),
+                     p.closed_at, p.slug, wallet_address, key),
                 )
             else:
                 conn.execute(
                     "INSERT INTO closed_positions_cache "
                     "(wallet_address, position_key, market, outcome_held, winning_outcome, "
                     "quantity, cost_basis, redeem_value, redeemed, resolved_date, closed_at, "
-                    "realized_pnl, fetched_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+                    "realized_pnl, slug, fetched_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
                     (wallet_address, key, p.market, p.outcome_held, p.winning_outcome,
                      p.quantity, p.cost_basis, p.redeem_value, int(p.redeemed),
-                     p.resolved_date, p.closed_at, p.realized_pnl),
+                     p.resolved_date, p.closed_at, p.realized_pnl, p.slug),
                 )
         conn.commit()
 
@@ -543,7 +554,7 @@ def load_closed_positions_cache(
         rows = conn.execute(
             """
             SELECT market, outcome_held, winning_outcome, quantity, cost_basis,
-                   redeem_value, redeemed, resolved_date, closed_at
+                   redeem_value, redeemed, resolved_date, closed_at, slug
             FROM closed_positions_cache
             WHERE wallet_address = ?
             ORDER BY COALESCE(closed_at, 0) DESC, resolved_date DESC, fetched_at DESC
@@ -562,6 +573,7 @@ def load_closed_positions_cache(
             redeemed=bool(r["redeemed"]),
             resolved_date=r["resolved_date"],
             closed_at=r["closed_at"],
+            slug=r["slug"],
         )
         for r in rows
     ]
@@ -603,7 +615,7 @@ def load_closed_positions_cache_page(
         rows = conn.execute(
             """
             SELECT market, outcome_held, winning_outcome, quantity, cost_basis,
-                   redeem_value, redeemed, resolved_date, closed_at
+                   redeem_value, redeemed, resolved_date, closed_at, slug
             FROM closed_positions_cache
             WHERE wallet_address = ?
             ORDER BY COALESCE(closed_at, 0) DESC, resolved_date DESC, fetched_at DESC
@@ -622,6 +634,7 @@ def load_closed_positions_cache_page(
             redeemed=bool(r["redeemed"]),
             resolved_date=r["resolved_date"],
             closed_at=r["closed_at"],
+            slug=r["slug"],
         )
         for r in rows
     ]
@@ -844,7 +857,7 @@ def load_all_closed_for_wallet(wallet_address: str) -> List[ResolvedPosition]:
         rows = conn.execute(
             """
             SELECT market, outcome_held, winning_outcome, quantity, cost_basis,
-                   redeem_value, redeemed, resolved_date, closed_at
+                   redeem_value, redeemed, resolved_date, closed_at, slug
             FROM closed_positions_cache WHERE wallet_address = ?
             ORDER BY COALESCE(closed_at, 0) DESC, resolved_date DESC, fetched_at DESC
             """,
@@ -856,7 +869,7 @@ def load_all_closed_for_wallet(wallet_address: str) -> List[ResolvedPosition]:
             winning_outcome=r["winning_outcome"], quantity=r["quantity"],
             cost_basis=r["cost_basis"], redeem_value=r["redeem_value"],
             redeemed=bool(r["redeemed"]), resolved_date=r["resolved_date"],
-            closed_at=r["closed_at"],
+            closed_at=r["closed_at"], slug=r["slug"],
         )
         for r in rows
     ]
@@ -925,7 +938,7 @@ def load_closed_for_range(
         if since_epoch is None:
             rows = conn.execute(
                 "SELECT market, outcome_held, winning_outcome, quantity, cost_basis, "
-                "redeem_value, redeemed, resolved_date, closed_at "
+                "redeem_value, redeemed, resolved_date, closed_at, slug "
                 "FROM closed_positions_cache WHERE wallet_address = :w "
                 "ORDER BY COALESCE(closed_at, 0) DESC",
                 {"w": wallet_address},
@@ -933,7 +946,7 @@ def load_closed_for_range(
         else:
             rows = conn.execute(
                 "SELECT market, outcome_held, winning_outcome, quantity, cost_basis, "
-                "redeem_value, redeemed, resolved_date, closed_at "
+                "redeem_value, redeemed, resolved_date, closed_at, slug "
                 "FROM closed_positions_cache WHERE wallet_address = :w AND" + _RANGE_WHERE +
                 " ORDER BY COALESCE(closed_at, 0) DESC",
                 {"w": wallet_address, "epoch": since_epoch, "date": since_date},
@@ -944,10 +957,48 @@ def load_closed_for_range(
             winning_outcome=r["winning_outcome"], quantity=r["quantity"],
             cost_basis=r["cost_basis"], redeem_value=r["redeem_value"],
             redeemed=bool(r["redeemed"]), resolved_date=r["resolved_date"],
-            closed_at=r["closed_at"],
+            closed_at=r["closed_at"], slug=r["slug"],
         )
         for r in rows
     ]
+
+
+def count_null_slug_positions(wallet_address: str) -> int:
+    """Return the number of cached closed positions that are missing a slug."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM closed_positions_cache "
+            "WHERE wallet_address = ? AND slug IS NULL",
+            (wallet_address,),
+        ).fetchone()
+    return row["n"] if row else 0
+
+
+def update_slugs_for_positions(
+    positions: List[ResolvedPosition],
+    wallet_address: str,
+) -> int:
+    """For each position with a non-NULL slug, update the matching cache row if its
+    slug IS currently NULL.  Never overwrites an existing slug.
+
+    Returns the number of rows actually updated.
+    """
+    if not positions or not wallet_address:
+        return 0
+    updated = 0
+    with get_connection() as conn:
+        for p in positions:
+            if not p.slug:
+                continue
+            key = _position_key(p)
+            cursor = conn.execute(
+                "UPDATE closed_positions_cache SET slug = ? "
+                "WHERE wallet_address = ? AND position_key = ? AND slug IS NULL",
+                (p.slug, wallet_address, key),
+            )
+            updated += cursor.rowcount
+        conn.commit()
+    return updated
 
 
 # Aliases for external callers that use the spec-requested names

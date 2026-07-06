@@ -26,6 +26,7 @@ from app.adapters.wallet_adapter import WalletLookupError, fetch_wallet_usd_valu
 from app.database import (
     count_activity_cache,
     count_closed_positions_cache,
+    count_null_slug_positions,
     init_db,
     load_activity_cache_page,
     load_all_closed_for_wallet,
@@ -35,6 +36,7 @@ from app.database import (
     save_active_positions_cache,
     save_last_wallet,
     save_resolved_positions_cache,
+    update_slugs_for_positions,
     upsert_activity_cache,
     upsert_closed_positions_cache,
 )
@@ -272,6 +274,46 @@ class _ClosedPageThread(QThread):
             self.err.emit(f"Unexpected error: {exc}")
 
 
+class _SlugBackfillThread(QThread):
+    """Re-fetch closed-position pages from offset 0 to populate missing slugs.
+
+    Non-destructive: only updates the slug column where it IS NULL.
+    Never deletes rows, never overwrites existing slugs.
+    """
+    done = Signal(int)   # number of slugs actually updated
+
+    def __init__(self, address: str):
+        super().__init__()
+        self._address = address
+
+    def run(self) -> None:
+        total_updated = 0
+        offset = 0
+        while True:
+            try:
+                page = fetch_closed_positions_page(
+                    self._address, offset, sorted_=False
+                )
+            except Exception as exc:
+                _dlog("slug_backfill", "offset=%d fetch failed: %s", offset, exc)
+                break
+            if not page:
+                _dlog("slug_backfill", "offset=%d: empty page — done", offset)
+                break
+            try:
+                updated = update_slugs_for_positions(page, self._address)
+                total_updated += updated
+                _dlog("slug_backfill",
+                      "offset=%d  checked=%d  updated=%d", offset, len(page), updated)
+            except Exception as exc:
+                _dlog("slug_backfill", "offset=%d persist error: %s", offset, exc)
+            if len(page) < 50:
+                break
+            offset += len(page)
+            self.msleep(1000)
+        self.done.emit(total_updated)
+
+
 class WalletPanel(QWidget):
     """
     Read-only wallet panel.
@@ -297,6 +339,7 @@ class WalletPanel(QWidget):
         self._thread: _FetchThread | None = None
         self._backfill: _BackfillThread | None = None
         self._activity_backfill: _ActivityBackfillThread | None = None
+        self._slug_backfill: _SlugBackfillThread | None = None
         self._activity_page_thread: _ActivityPageThread | None = None
         self._closed_page_thread: _ClosedPageThread | None = None
         self._current_value      = 0.0
@@ -474,6 +517,7 @@ class WalletPanel(QWidget):
         save_last_wallet(self._full_address)
         if self._positions_ok:
             self._start_backfill()
+            self._start_slug_backfill()
 
     def _start_backfill(self) -> None:
         if self._backfill and self._backfill.isRunning():
@@ -534,6 +578,31 @@ class WalletPanel(QWidget):
             self.closed_cache_updated.emit(all_closed)
         except Exception as exc:
             _dlog("backfill", "ERROR in _on_backfill_done: %s", exc)
+
+    def _start_slug_backfill(self) -> None:
+        """Start a background slug backfill if the cache has rows with missing slugs."""
+        if self._slug_backfill and self._slug_backfill.isRunning():
+            return
+        null_count = count_null_slug_positions(self._full_address)
+        if null_count == 0:
+            _dlog("slug_backfill", "no NULL slugs — skipping")
+            return
+        _dlog("slug_backfill",
+              "found %d rows with NULL slug — starting backfill", null_count)
+        self._set_status("Backfilling Polymarket links…", _MUTED)
+        self._slug_backfill = _SlugBackfillThread(self._full_address)
+        self._slug_backfill.done.connect(self._on_slug_backfill_done)
+        self._slug_backfill.start()
+
+    def _on_slug_backfill_done(self, updated: int) -> None:
+        _dlog("slug_backfill", "done — %d slugs updated", updated)
+        if updated > 0:
+            self._set_status(f"Market links updated ({updated} positions)", _MUTED)
+            try:
+                all_closed = load_all_closed_for_wallet(self._full_address)
+                self.closed_cache_updated.emit(all_closed)
+            except Exception as exc:
+                _dlog("slug_backfill", "reload error: %s", exc)
 
     def _set_status(self, text: str, color: str) -> None:
         weight = "600" if color == _GREEN else "normal"

@@ -42,6 +42,7 @@ class ResolvedPosition:
     resolved_date: Optional[str] = None
     closed_at: Optional[int] = None   # epoch seconds from API timestamp field
     close_type: str = "UNKNOWN"       # REDEEMED_WIN | SOLD | RESOLVED_LOSS | UNKNOWN
+    slug: Optional[str] = None        # Polymarket eventSlug → polymarket.com/event/{slug}
 
     @property
     def realized_pnl(self) -> float:
