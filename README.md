@@ -20,7 +20,7 @@ TradeLedger lets you monitor your open positions, resolved winnings, closed trad
 
 ## Screenshots
 
-![TradeLedger v0.3.2 Overview](docs/screenshots/tradeledger_v0.3.2_overview.png)
+![TradeLedger v0.4.0 Overview](docs/screenshots/tradeledger_v0.4.0_overview.png)
 
 ---
 
@@ -370,7 +370,16 @@ Tries multiple public Polygon RPCs automatically if one fails. Wallet address is
 - **Fixed remaining in-memory dedup keys** — two remaining occurrences in the overview used `(market, outcome_held, cost_basis)` for dedup; changed to `(market, outcome_held)` to match the DB key and prevent false duplicates when API and activity sources compute cost_basis differently
 - **433 passing tests**
 
-**v0.4 — Planned**
+**v0.4.0 — Polymarket market links** ✓
+- **Right-click to open on Polymarket** — every position row in every table (Active, Resolved, Closed, Loss Watch, P/L daily drill-down, Overview grid) has a right-click context menu: "Open on Polymarket" opens the market page in the system browser
+- **Ctrl+click** as an alternative to right-click in all QTableWidget-based tables
+- **Slug captured from API** — `eventSlug` / `slug` fields captured for active, resolved, and closed positions; stored in the closed-positions SQLite cache with migration-safe `ALTER TABLE`
+- **Background slug backfill** — on each fetch, a background thread re-fetches historical closed-position pages and fills any NULL slug values non-destructively (never overwrites an existing slug)
+- **P/L tab** — dedicated P/L tab with 1D / 1W / 1M / 1Y / YTD / All range buttons, cumulative P/L chart, and daily P/L breakdown table; double-click or "View Details" opens a per-day drill-down dialog showing all closed positions for that calendar day
+- **Closed positions sorted newest-first** throughout the app
+- **491 passing tests**
+
+**v0.5 — Planned**
 - Notes per market
 - Export to CSV
 - No trading execution, no order placement, no private key storage
