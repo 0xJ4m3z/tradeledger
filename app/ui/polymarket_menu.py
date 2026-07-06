@@ -16,12 +16,11 @@ QMenu {
     background-color: #1c2128;
     color: #c9d1d9;
     border: 2px solid #484f58;
-    padding: 3px;
+    padding: 2px;
     font-size: 13px;
 }
 QMenu::item {
-    padding: 5px 20px;
-    text-align: center;
+    padding: 5px 14px;
 }
 QMenu::item:selected {
     background-color: #1f6feb;
@@ -32,7 +31,7 @@ QMenu::item:disabled {
 }
 """
 
-_MENU_MIN_WIDTH = 200
+_MENU_MIN_WIDTH = 0
 
 
 def open_polymarket(slug: Optional[str]) -> None:
@@ -57,7 +56,6 @@ def show_table_context_menu(table, pos, market_col: int = 0) -> None:
         return
     menu = QMenu(table)  # parent required on Windows for stylesheet to apply
     menu.setStyleSheet(MENU_STYLE)
-    menu.setMinimumWidth(_MENU_MIN_WIDTH)
     action = menu.addAction("Open on Polymarket")
     if menu.exec(table.viewport().mapToGlobal(pos)) == action:
         open_polymarket(slug)
