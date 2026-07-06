@@ -72,6 +72,7 @@ def _to_active(row: dict) -> ActivePosition:
         quantity      = size,
         avg_cost      = avg_price,
         current_price = cur_price,
+        slug          = row.get("eventSlug") or row.get("slug") or None,
     )
 
 
@@ -89,6 +90,7 @@ def _to_resolved(row: dict) -> ResolvedPosition:
         redeem_value    = current_value,
         redeemed        = False,
         resolved_date   = row.get("endDate"),
+        slug            = row.get("eventSlug") or row.get("slug") or None,
     )
 
 

@@ -10,6 +10,7 @@ class ActivePosition:
     quantity: float
     avg_cost: float
     current_price: float
+    slug: Optional[str] = None        # Polymarket eventSlug → polymarket.com/event/{slug}
 
     @property
     def current_value(self) -> float:

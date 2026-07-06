@@ -7,11 +7,14 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
+
+from app.ui.polymarket_menu import MENU_STYLE, open_polymarket
 
 from app.database import (
     clear_wallet_snapshots_today,
@@ -161,6 +164,24 @@ def _row_cell(text: str, align=_L, color: str = _TEXT) -> QLabel:
     return lbl
 
 
+def _market_row_cell(text: str, slug: str = None) -> QLabel:
+    """Market cell with optional right-click 'Open on Polymarket' menu."""
+    lbl = _row_cell(text)
+    if slug:
+        lbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        lbl.setToolTip("Right-click to open on Polymarket")
+
+        def _show_menu(pos, _s=slug, _lbl=lbl):
+            menu = QMenu(_lbl)
+            menu.setStyleSheet(MENU_STYLE)
+            action = menu.addAction("Open on Polymarket")
+            if menu.exec(_lbl.mapToGlobal(pos)) == action:
+                open_polymarket(_s)
+
+        lbl.customContextMenuRequested.connect(_show_menu)
+    return lbl
+
+
 def _divider() -> QFrame:
     f = QFrame()
     f.setFrameShape(QFrame.Shape.HLine)
@@ -200,7 +221,6 @@ def _active_section(positions: List[ActivePosition]) -> QWidget:
     for r, p in enumerate(positions, start=1):
         pc = _pnl_color(p.unrealized_pnl)
         cells = [
-            (p.market,                        _L, _TEXT),
             (p.outcome,                       _L, _TEXT),
             (f"{p.quantity:,.0f}",            _R, _TEXT),
             (f"${p.avg_cost:.4f}",            _R, _TEXT),
@@ -209,7 +229,8 @@ def _active_section(positions: List[ActivePosition]) -> QWidget:
             (f"${p.unrealized_pnl:,.2f}",     _R, pc),
             (f"{p.unrealized_pnl_pct:+.1f}%", _R, pc),
         ]
-        for col, (text, align, color) in enumerate(cells):
+        grid.addWidget(_market_row_cell(p.market, getattr(p, "slug", None)), r, 0)
+        for col, (text, align, color) in enumerate(cells, start=1):
             grid.addWidget(_row_cell(text, align, color), r, col)
 
     grid.setColumnStretch(0, 1)
@@ -246,7 +267,6 @@ def _resolved_section(positions: List[ResolvedPosition]) -> QWidget:
         pc = _pnl_color(p.realized_pnl)
         oc = _GREEN if p.is_win else _RED
         cells = [
-            (p.market,                          _L, _TEXT),
             (p.outcome_held,                    _L, oc),
             (p.winning_outcome,                 _L, _TEXT),
             (f"{p.quantity:,.0f}",              _R, _TEXT),
@@ -255,7 +275,8 @@ def _resolved_section(positions: List[ResolvedPosition]) -> QWidget:
             (f"${p.realized_pnl:,.2f}",         _R, pc),
             (f"{p.realized_pnl_pct:+.1f}%",    _R, pc),
         ]
-        for col, (text, align, color) in enumerate(cells):
+        grid.addWidget(_market_row_cell(p.market, getattr(p, "slug", None)), r, 0)
+        for col, (text, align, color) in enumerate(cells, start=1):
             grid.addWidget(_row_cell(text, align, color), r, col)
 
     grid.setColumnStretch(0, 1)
@@ -309,7 +330,6 @@ def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") 
         pc = _pnl_color(p.realized_pnl)
         rc = _GREEN if p.is_win else _RED
         cells = [
-            (p.market,                         _L, _TEXT),
             (p.outcome_held,                   _L, _TEXT),
             ("Win" if p.is_win else "Loss",    _L, rc),
             (f"${p.cost_basis:,.2f}",          _R, _TEXT),
@@ -318,7 +338,8 @@ def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") 
             (f"{p.realized_pnl_pct:+.1f}%",   _R, pc),
             (_fmt_closed_date(p),              _L, _MUTED),
         ]
-        for col, (text, align, color) in enumerate(cells):
+        grid.addWidget(_market_row_cell(p.market, getattr(p, "slug", None)), r, 0)
+        for col, (text, align, color) in enumerate(cells, start=1):
             grid.addWidget(_row_cell(text, align, color), r, col)
 
     if total > _OVERVIEW_ROW_CAP:

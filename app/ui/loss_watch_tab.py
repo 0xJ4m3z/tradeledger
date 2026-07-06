@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from app.database import load_loss_watch_acknowledged, save_loss_watch_acknowledged
 from app.models import ActivePosition
+from app.ui.polymarket_menu import attach_table_links
 
 _GREEN = QColor("#3fb950")
 _RED   = QColor("#f85149")
@@ -104,6 +105,7 @@ class LossWatchTab(QWidget):
         for col in range(1, len(COLUMNS)):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
 
+        attach_table_links(self._table)
         search.textChanged.connect(self._apply_filter)
         layout.addWidget(self._table)
 
@@ -158,6 +160,14 @@ class LossWatchTab(QWidget):
                 item = _cell(text, align)
                 item.setForeground(colour)
                 self._table.setItem(row, col, item)
+
+            # Store slug on market cell for right-click Polymarket link
+            slug = getattr(p, "slug", None)
+            if slug:
+                mkt = self._table.item(row, 0)
+                if mkt:
+                    mkt.setData(Qt.ItemDataRole.UserRole, slug)
+                    mkt.setToolTip("Right-click to open on Polymarket")
 
     def _on_acknowledge(self) -> None:
         losing_markets = [p.market for p in self._active if p.unrealized_pnl < 0]

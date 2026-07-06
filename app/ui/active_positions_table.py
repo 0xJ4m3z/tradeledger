@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.models import ActivePosition
+from app.ui.polymarket_menu import attach_table_links
 
 COLUMNS = [
     "Market", "Outcome", "Quantity", "Avg Cost",
@@ -33,6 +34,14 @@ def _cell(text: str, align=Qt.AlignmentFlag.AlignLeft) -> QTableWidgetItem:
 def _pnl_cell(val: float, fmt: str = "${:,.2f}") -> QTableWidgetItem:
     item = _cell(fmt.format(val), Qt.AlignmentFlag.AlignRight)
     item.setForeground(_GREEN if val >= 0 else _RED)
+    return item
+
+
+def _market_cell(p: ActivePosition) -> QTableWidgetItem:
+    item = _cell(p.market)
+    if p.slug:
+        item.setData(Qt.ItemDataRole.UserRole, p.slug)
+        item.setToolTip("Right-click to open on Polymarket")
     return item
 
 
@@ -61,7 +70,7 @@ class ActivePositionsTable(QWidget):
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
 
         for row, p in enumerate(positions):
-            table.setItem(row, 0, _cell(p.market))
+            table.setItem(row, 0, _market_cell(p))
             table.setItem(row, 1, _cell(p.outcome))
             table.setItem(row, 2, _cell(f"{p.quantity:,.0f}",       Qt.AlignmentFlag.AlignRight))
             table.setItem(row, 3, _cell(f"${p.avg_cost:.4f}",       Qt.AlignmentFlag.AlignRight))
@@ -76,6 +85,7 @@ class ActivePositionsTable(QWidget):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
 
         self._table = table
+        attach_table_links(self._table)
         search.textChanged.connect(self._apply_filter)
 
         layout.addWidget(table)
@@ -84,7 +94,7 @@ class ActivePositionsTable(QWidget):
         self._header.setText(f"Active Positions  ({len(positions)})")
         self._table.setRowCount(len(positions))
         for row, p in enumerate(positions):
-            self._table.setItem(row, 0, _cell(p.market))
+            self._table.setItem(row, 0, _market_cell(p))
             self._table.setItem(row, 1, _cell(p.outcome))
             self._table.setItem(row, 2, _cell(f"{p.quantity:,.0f}",       Qt.AlignmentFlag.AlignRight))
             self._table.setItem(row, 3, _cell(f"${p.avg_cost:.4f}",       Qt.AlignmentFlag.AlignRight))

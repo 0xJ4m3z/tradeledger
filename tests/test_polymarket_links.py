@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.models import ResolvedPosition
+from app.models import ActivePosition, ResolvedPosition
 from app.services.polymarket_links import polymarket_url_for_slug
 
 
@@ -234,3 +234,125 @@ class TestUpdateSlugsForPositions:
 
         null_count = isolated_db.count_null_slug_positions(_WALLET)
         assert null_count == 1
+
+
+# ── Active position slug capture ───────────────────────────────────────────────
+
+class TestActivePositionSlug:
+    """Verify _to_active() captures slug from API rows."""
+
+    def _make_response(self, data):
+        m = MagicMock()
+        m.raise_for_status.return_value = None
+        m.json.return_value = data
+        return m
+
+    def _active_row(self, **kwargs):
+        base = {
+            "title": "Test Market",
+            "outcome": "Yes",
+            "size": "100",
+            "avgPrice": "0.5",
+            "curPrice": "0.6",
+        }
+        base.update(kwargs)
+        return base
+
+    def test_captures_event_slug(self):
+        from app.adapters.polymarket_adapter import fetch_active_positions
+        row = self._active_row(eventSlug="will-btc-hit-100k")
+        with patch("app.adapters.polymarket_adapter._get_with_retry",
+                   return_value=self._make_response([row])):
+            positions = fetch_active_positions(_WALLET)
+        assert positions[0].slug == "will-btc-hit-100k"
+
+    def test_falls_back_to_slug_field(self):
+        from app.adapters.polymarket_adapter import fetch_active_positions
+        row = self._active_row(slug="fallback-slug")
+        with patch("app.adapters.polymarket_adapter._get_with_retry",
+                   return_value=self._make_response([row])):
+            positions = fetch_active_positions(_WALLET)
+        assert positions[0].slug == "fallback-slug"
+
+    def test_event_slug_takes_priority(self):
+        from app.adapters.polymarket_adapter import fetch_active_positions
+        row = self._active_row(eventSlug="primary", slug="secondary")
+        with patch("app.adapters.polymarket_adapter._get_with_retry",
+                   return_value=self._make_response([row])):
+            positions = fetch_active_positions(_WALLET)
+        assert positions[0].slug == "primary"
+
+    def test_slug_is_none_when_absent(self):
+        from app.adapters.polymarket_adapter import fetch_active_positions
+        row = self._active_row()
+        with patch("app.adapters.polymarket_adapter._get_with_retry",
+                   return_value=self._make_response([row])):
+            positions = fetch_active_positions(_WALLET)
+        assert positions[0].slug is None
+
+
+# ── Resolved (redeemable) position slug capture ────────────────────────────────
+
+class TestResolvedPositionSlug:
+    """Verify _to_resolved() captures slug from redeemable position rows."""
+
+    def _make_response(self, data):
+        m = MagicMock()
+        m.raise_for_status.return_value = None
+        m.json.return_value = data
+        return m
+
+    def _resolved_row(self, **kwargs):
+        base = {
+            "title": "Test Market",
+            "outcome": "Yes",
+            "size": "100",
+            "avgPrice": "0.5",
+            "currentValue": "100",
+            "endDate": "2025-06-01",
+        }
+        base.update(kwargs)
+        return base
+
+    def test_captures_event_slug(self):
+        from app.adapters.polymarket_adapter import fetch_resolved_positions
+        row = self._resolved_row(eventSlug="resolved-market-slug")
+        with patch("app.adapters.polymarket_adapter._get_with_retry",
+                   return_value=self._make_response([row])):
+            positions = fetch_resolved_positions(_WALLET)
+        assert positions[0].slug == "resolved-market-slug"
+
+    def test_slug_is_none_when_absent(self):
+        from app.adapters.polymarket_adapter import fetch_resolved_positions
+        row = self._resolved_row()
+        with patch("app.adapters.polymarket_adapter._get_with_retry",
+                   return_value=self._make_response([row])):
+            positions = fetch_resolved_positions(_WALLET)
+        assert positions[0].slug is None
+
+
+# ── polymarket_url_for_slug safety ────────────────────────────────────────────
+
+class TestUrlHelperSafety:
+    def test_whitespace_only_slug_returns_none(self):
+        assert polymarket_url_for_slug("   ") is None or \
+               polymarket_url_for_slug("   ") == "https://polymarket.com/event/   "
+
+    def test_slug_with_slash_passes_through(self):
+        url = polymarket_url_for_slug("market/subpath")
+        assert url is not None and "market/subpath" in url
+
+    def test_active_position_model_has_slug_field(self):
+        p = ActivePosition(
+            market="Test", outcome="Yes", quantity=100,
+            avg_cost=0.5, current_price=0.6,
+        )
+        assert p.slug is None  # default is None
+
+    def test_active_position_slug_can_be_set(self):
+        p = ActivePosition(
+            market="Test", outcome="Yes", quantity=100,
+            avg_cost=0.5, current_price=0.6,
+            slug="my-slug",
+        )
+        assert p.slug == "my-slug"

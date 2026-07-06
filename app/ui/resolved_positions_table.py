@@ -1,15 +1,13 @@
 from datetime import datetime
 from typing import List
 
-from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QApplication,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
-    QMenu,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -20,7 +18,7 @@ from PySide6.QtWidgets import (
 from app.debug import _dlog
 from app.models import ResolvedPosition
 from app.services.daily_pnl import sort_closed_positions_newest_first
-from app.services.polymarket_links import polymarket_url_for_slug
+from app.ui.polymarket_menu import attach_table_links
 
 try:
     from zoneinfo import ZoneInfo as _ZoneInfo
@@ -40,18 +38,6 @@ _MUTED  = QColor("#8b949e")
 _YELLOW = QColor("#e3b341")
 
 _SCROLL_THRESHOLD_PX = 80
-
-_MENU_STYLE = (
-    "QMenu { background-color: #21262d; color: #c9d1d9; border: 1px solid #30363d;"
-    " border-radius: 4px; font-size: 12px; }"
-    "QMenu::item:selected { background-color: #388bfd22; }"
-)
-
-
-def _open_polymarket(slug) -> None:
-    url = polymarket_url_for_slug(slug)
-    if url:
-        QDesktopServices.openUrl(QUrl(url))
 
 _STATUS_TEXT = {
     "REDEEMED_WIN":  "Win",
@@ -180,9 +166,7 @@ class ResolvedPositionsTable(QWidget):
         hdr.setSectionResizeMode(9, QHeaderView.ResizeMode.Fixed)
         hdr.resizeSection(9, 90)
 
-        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._table.customContextMenuRequested.connect(self._show_context_menu)
-        self._table.itemClicked.connect(self._on_item_clicked)
+        attach_table_links(self._table)
         self._table.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
         search.textChanged.connect(self._apply_filter)
@@ -274,27 +258,6 @@ class ResolvedPositionsTable(QWidget):
         _dlog("closed_tab",
               "load_from_cache: incoming=%d  +%d new  all=%d→%d  displayed=%d",
               len(positions), len(fresh), old_all, len(self._all_positions), self._displayed_count)
-
-    def _show_context_menu(self, pos) -> None:
-        item = self._table.itemAt(pos)
-        if item is None:
-            return
-        mkt_item = self._table.item(item.row(), 0)
-        slug = mkt_item.data(Qt.ItemDataRole.UserRole) if mkt_item else None
-        if not slug:
-            return
-        menu = QMenu(self)
-        menu.setStyleSheet(_MENU_STYLE)
-        action = menu.addAction("Open on Polymarket")
-        if menu.exec(self._table.viewport().mapToGlobal(pos)) == action:
-            _open_polymarket(slug)
-
-    def _on_item_clicked(self, item) -> None:
-        if not (QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier):
-            return
-        mkt_item = self._table.item(item.row(), 0)
-        slug = mkt_item.data(Qt.ItemDataRole.UserRole) if mkt_item else None
-        _open_polymarket(slug)
 
     def _on_scroll(self, value: int) -> None:
         sb = self._table.verticalScrollBar()
