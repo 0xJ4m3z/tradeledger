@@ -16,7 +16,6 @@ QMenu {
     background-color: #161b22;
     color: #c9d1d9;
     border: 1px solid #30363d;
-    border-radius: 6px;
     padding: 6px;
 }
 QMenu::item {
@@ -26,7 +25,6 @@ QMenu::item {
 QMenu::item:selected {
     background-color: #1f6feb;
     color: #ffffff;
-    border-radius: 4px;
 }
 QMenu::item:disabled {
     color: #6e7681;
