@@ -123,6 +123,7 @@ def _make_date_edit(default_qdate: QDate) -> QDateEdit:
     edit.setCalendarPopup(True)
     edit.setDisplayFormat("yyyy-MM-dd")
     edit.setDate(default_qdate)
+    edit.setMinimumWidth(100)
     edit.setStyleSheet(_DATE_EDIT_STYLE)
     cal = edit.calendarWidget()
     if cal is not None:
