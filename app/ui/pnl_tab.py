@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (
 
 from app.models import ResolvedPosition
 from app.services.daily_pnl import build_daily_pnl_rows, get_positions_for_date
+from app.services.date_range import DateRangeSelection, filter_closed_by_selection
+from app.ui.date_range_control import DateRangeControl
 from app.ui.pnl_chart import PnlChartWidget
 from app.ui.polymarket_menu import attach_table_links
 
@@ -35,15 +37,6 @@ _BLUE   = "#58a6ff"
 _BORDER = "#30363d"
 _TEXT   = "#c9d1d9"
 _ET     = ZoneInfo("America/New_York")
-
-_RANGE_LABELS = {
-    "1d":  "1D",
-    "1w":  "1W",
-    "1m":  "1M",
-    "1y":  "1Y",
-    "ytd": "YTD",
-    "all": "All",
-}
 
 _BTN_ACTIVE = (
     f"background-color: #1f2937; border: 1px solid {_BLUE}; border-radius: 4px;"
@@ -291,14 +284,16 @@ class PnlTab(QWidget):
     def __init__(self, closed_positions: List[ResolvedPosition] = None):
         super().__init__()
         self._closed: List[ResolvedPosition] = list(closed_positions or [])
-        self._range = "1m"
+        self._selection = DateRangeSelection.preset_range("1m")
         self._daily_rows: list = []   # mirrors table rows for drilldown
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 16, 16, 16)
         outer.setSpacing(10)
 
-        outer.addWidget(self._build_range_bar())
+        self._range_ctrl = DateRangeControl(default="1m")
+        self._range_ctrl.range_changed.connect(self._on_range_changed)
+        outer.addWidget(self._range_ctrl)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.setStyleSheet("QSplitter::handle { background: #21262d; height: 4px; }")
@@ -308,7 +303,7 @@ class PnlTab(QWidget):
         chart_wrap.setStyleSheet(f"background-color: {_BG};")
         chart_layout = QVBoxLayout(chart_wrap)
         chart_layout.setContentsMargins(0, 0, 0, 0)
-        self._chart = PnlChartWidget([], self._closed, self._range, figsize=(10, 3.5))
+        self._chart = PnlChartWidget([], self._closed, self._selection.preset or "1m", figsize=(10, 3.5))
         chart_layout.addWidget(self._chart)
         splitter.addWidget(chart_wrap)
 
@@ -369,33 +364,21 @@ class PnlTab(QWidget):
 
     # ── Internal ───────────────────────────────────────────────────────────────
 
-    def _build_range_bar(self) -> QWidget:
-        bar = QWidget()
-        row = QHBoxLayout(bar)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
-        self._range_btns: dict[str, QPushButton] = {}
-        for key, label in _RANGE_LABELS.items():
-            btn = QPushButton(label)
-            btn.setFixedHeight(26)
-            btn.setCheckable(False)
-            btn.setStyleSheet(_BTN_ACTIVE if key == self._range else _BTN_IDLE)
-            btn.clicked.connect(lambda _checked, k=key: self._on_range_changed(k))
-            self._range_btns[key] = btn
-            row.addWidget(btn)
-        row.addStretch(1)
-        return bar
-
-    def _on_range_changed(self, range_: str) -> None:
-        self._range = range_
-        for key, btn in self._range_btns.items():
-            btn.setStyleSheet(_BTN_ACTIVE if key == range_ else _BTN_IDLE)
+    def _on_range_changed(self, selection: DateRangeSelection) -> None:
+        self._selection = selection
         self._refresh()
 
     def _refresh(self) -> None:
-        """Update the chart and daily table for the current range and data."""
-        self._chart.update([], self._closed, self._range)
-        self._daily_rows = build_daily_pnl_rows(self._closed, self._range)
+        """Update the chart and daily table for the current selection and data."""
+        if self._selection.is_preset():
+            range_str = self._selection.preset
+            self._chart.update([], self._closed, range_str)
+            self._daily_rows = build_daily_pnl_rows(self._closed, range_str)
+        else:
+            # Custom range: pre-filter, pass "all" so internals don't re-filter
+            filtered = filter_closed_by_selection(self._closed, self._selection)
+            self._chart.update([], filtered, "all")
+            self._daily_rows = build_daily_pnl_rows(filtered, "all")
         self._populate_table(self._daily_rows)
 
     def _populate_table(self, rows: list) -> None:

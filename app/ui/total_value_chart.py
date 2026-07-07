@@ -6,8 +6,8 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
-from app.services.chart_ranges import _DEFAULT_RANGE, filter_snapshots_by_range  # noqa: F401
-from app.ui.date_range_selector import DateRangeSelector
+from app.services.date_range import DateRangeSelection, filter_snapshots_by_selection
+from app.ui.date_range_control import DateRangeControl
 
 matplotlib.rcParams.update({
     "axes.facecolor":    "#0d1117",
@@ -25,6 +25,8 @@ matplotlib.rcParams.update({
 _LINE_COLOR = "#58a6ff"
 _FILL_COLOR = "#1f3a5f"
 
+_DEFAULT_SELECTION = DateRangeSelection.preset_range("all")
+
 
 def _usd_fmt(x, _):
     if abs(x) >= 1000:
@@ -34,11 +36,10 @@ def _usd_fmt(x, _):
 
 class TotalValueChartWidget(QWidget):
     """
-    Total Tracked Value over time chart.
+    Total Tracked Value over time chart with 1D/1W/1M/1Y/YTD/All/Custom range control.
 
     Pass show_range_buttons=False to hide the range controls
-    (used in the Overview tab where space is tight and range switching
-    is handled by the full-size Total Tracked Value tab).
+    (used in the Overview tab where space is tight).
 
     Public interface:
       update_snapshots(snapshots)  — refresh with new snapshot list
@@ -52,7 +53,7 @@ class TotalValueChartWidget(QWidget):
     ):
         super().__init__()
         self._all_snapshots      = snapshots
-        self._range_key          = _DEFAULT_RANGE
+        self._selection          = _DEFAULT_SELECTION
         self._figsize            = figsize
         self._show_range_buttons = show_range_buttons
         self._build_ui()
@@ -66,11 +67,10 @@ class TotalValueChartWidget(QWidget):
         layout.setSpacing(4)
 
         if self._show_range_buttons:
-            self._range_selector = DateRangeSelector(default=_DEFAULT_RANGE)
-            self._range_selector.range_changed.connect(self._on_range)
-            layout.addWidget(self._range_selector)
+            self._range_ctrl = DateRangeControl(default="all")
+            self._range_ctrl.range_changed.connect(self._on_range)
+            layout.addWidget(self._range_ctrl)
 
-        # Matplotlib canvas
         fig = Figure(figsize=self._figsize, tight_layout=True)
         self._canvas = FigureCanvas(fig)
         self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -79,8 +79,8 @@ class TotalValueChartWidget(QWidget):
 
     # ── Slots ──────────────────────────────────────────────────────────────
 
-    def _on_range(self, key: str) -> None:
-        self._range_key = key
+    def _on_range(self, selection: DateRangeSelection) -> None:
+        self._selection = selection
         self._redraw()
 
     # ── Public ─────────────────────────────────────────────────────────────
@@ -92,7 +92,7 @@ class TotalValueChartWidget(QWidget):
     # ── Drawing ────────────────────────────────────────────────────────────
 
     def _redraw(self) -> None:
-        filtered = filter_snapshots_by_range(self._all_snapshots, self._range_key)
+        filtered = filter_snapshots_by_selection(self._all_snapshots, self._selection)
         self._ax.clear()
         self._plot(filtered)
         self._canvas.draw()
@@ -107,7 +107,7 @@ class TotalValueChartWidget(QWidget):
         if not snapshots:
             msg = (
                 "No data for this range."
-                if self._range_key != "all"
+                if not self._selection.is_all()
                 else "No history yet.\nEnter a wallet value to start tracking."
             )
             ax.text(0.5, 0.5, msg, ha="center", va="center",

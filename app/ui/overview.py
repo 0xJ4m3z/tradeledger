@@ -33,10 +33,13 @@ from app.services.metrics import compute_dashboard_metrics, compute_total_tracke
 from app.services.daily_pnl import sort_closed_positions_newest_first
 from app.services.pnl_today import (
     classify_closed_positions,
-    count_trades,
     derive_closed_from_activity,
-    filter_closed_by_range,
 )
+from app.services.date_range import (
+    DateRangeSelection,
+    filter_closed_by_selection,
+)
+from app.ui.date_range_control import DateRangeControl
 from app.ui.pnl_chart import PnlChartWidget
 from app.ui.wallet_panel import WalletPanel
 
@@ -70,14 +73,6 @@ _L = Qt.AlignmentFlag.AlignLeft
 _R = Qt.AlignmentFlag.AlignRight
 _V = Qt.AlignmentFlag.AlignVCenter
 
-_RANGE_BTN_ACTIVE = (
-    f"background-color: #1f2937; border: 1px solid {_BLUE}; border-radius: 4px;"
-    f" color: {_BLUE}; padding: 3px 14px; font-size: 12px; font-weight: 600;"
-)
-_RANGE_BTN_IDLE = (
-    f"background-color: #21262d; border: 1px solid {_BORDER}; border-radius: 4px;"
-    f" color: {_MUTED}; padding: 3px 14px; font-size: 12px;"
-)
 
 
 # ── Updatable metric card ──────────────────────────────────────────────────────
@@ -354,18 +349,6 @@ def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") 
     return outer
 
 
-# ── Date-range filtering ───────────────────────────────────────────────────────
-
-_RANGE_LABELS = {
-    "1d":  "1D",
-    "1w":  "1W",
-    "1m":  "1M",
-    "1y":  "1Y",
-    "ytd": "YTD",
-    "all": "All",
-}
-
-
 # ── Overview widget ────────────────────────────────────────────────────────────
 
 class OverviewWidget(QWidget):
@@ -392,7 +375,7 @@ class OverviewWidget(QWidget):
         self._closed_positions: List[ResolvedPosition] = []
         self._activity: list       = []
         self._acknowledged_markets = load_loss_watch_acknowledged()
-        self._range                = "1d"
+        self._selection            = DateRangeSelection.preset_range("1d")
         # Wallet address for tagging snapshots — updated on confirmed fetch
         self._confirmed_wallet     = load_last_wallet()
         # Guard: clear today's stale snapshots (saved before real positions load) on first fetch
@@ -435,7 +418,7 @@ class OverviewWidget(QWidget):
         cards_panel = self._build_cards_panel(metrics, active, resolved)
         top_row.addWidget(cards_panel, 42)
 
-        self._chart = PnlChartWidget([], [], self._range)
+        self._chart = PnlChartWidget([], [], self._selection.preset or "1d")
         top_row.addWidget(self._chart, 58)
 
         main.addWidget(top)
@@ -458,7 +441,7 @@ class OverviewWidget(QWidget):
         main.addSpacing(16)
 
         # ── Closed positions ───────────────────────────────────────────
-        self._cls_section = _closed_section([], _RANGE_LABELS[self._range])
+        self._cls_section = _closed_section([], self._selection.display_label())
         main.addWidget(self._cls_section)
         main.addStretch(1)
 
@@ -470,32 +453,27 @@ class OverviewWidget(QWidget):
     # ── Range filter bar ───────────────────────────────────────────────────────
 
     def _build_range_bar(self) -> QWidget:
-        bar = QWidget()
-        row = QHBoxLayout(bar)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
+        ctrl = DateRangeControl(default="1d")
+        ctrl.range_changed.connect(self._on_range_changed)
+        return ctrl
 
-        self._range_btns: dict[str, QPushButton] = {}
-        for key, label in _RANGE_LABELS.items():
-            btn = QPushButton(label)
-            btn.setFixedHeight(26)
-            btn.setCheckable(False)
-            btn.setStyleSheet(_RANGE_BTN_ACTIVE if key == self._range else _RANGE_BTN_IDLE)
-            btn.clicked.connect(lambda _checked, k=key: self._on_range_changed(k))
-            self._range_btns[key] = btn
-            row.addWidget(btn)
-
-        row.addStretch(1)
-        return bar
-
-    def _on_range_changed(self, range_: str) -> None:
-        self._range = range_
-        for key, btn in self._range_btns.items():
-            btn.setStyleSheet(_RANGE_BTN_ACTIVE if key == range_ else _RANGE_BTN_IDLE)
-        filtered = filter_closed_by_range(self._closed_positions, range_)
-        self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[range_]))
-        self._chart.update(self._activity, self._closed_positions, range_)
+    def _on_range_changed(self, selection: DateRangeSelection) -> None:
+        self._selection = selection
+        self._refresh_closed_section()
+        self._update_pnl_chart()
         self._update_metric_cards()
+
+    def _refresh_closed_section(self) -> None:
+        filtered = filter_closed_by_selection(self._closed_positions, self._selection)
+        label    = self._selection.display_label()
+        self._replace_section("_cls_section", _closed_section(filtered, label))
+
+    def _update_pnl_chart(self) -> None:
+        if self._selection.is_preset():
+            self._chart.update(self._activity, self._closed_positions, self._selection.preset)
+        else:
+            filtered = filter_closed_by_selection(self._closed_positions, self._selection)
+            self._chart.update(self._activity, filtered, "all")
 
     # ── Card panel ─────────────────────────────────────────────────────────────
 
@@ -570,7 +548,7 @@ class OverviewWidget(QWidget):
         self._confirmed_wallet = address
         self._activity = []
         self._closed_positions = []
-        self._chart.update([], [], self._range)
+        self._chart.update([], [], self._selection.preset or "1d")
 
     # ── Wallet value update ────────────────────────────────────────────────────
 
@@ -612,9 +590,8 @@ class OverviewWidget(QWidget):
         self._replace_section("_act_section", _active_section(active))
         self._replace_section("_res_section", _resolved_section(resolved))
 
-        filtered = filter_closed_by_range(self._closed_positions, self._range)
-        self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
-        self._chart.update(self._activity, self._closed_positions, self._range)
+        self._refresh_closed_section()
+        self._update_pnl_chart()
         self._update_metric_cards()
 
         # Save snapshot now that both wallet USD and real positions values are settled.
@@ -676,7 +653,7 @@ class OverviewWidget(QWidget):
         classify_closed_positions(self._closed_positions, self._activity)
         # Emit the full merged list so ActivityTable sees all rows, not just the API page.
         self.activity_changed.emit(self._activity)
-        self._chart.update(self._activity, self._closed_positions, self._range)
+        self._update_pnl_chart()
         self._update_metric_cards()
 
     def _on_more_activity_fetched(self, page: list) -> None:
@@ -688,19 +665,19 @@ class OverviewWidget(QWidget):
         _dlog("activity", "scroll-load %d rows → %d new, total now %d",
               len(page), len(fresh), len(self._activity))
         self.more_activity.emit(page)
-        self._chart.update(self._activity, self._closed_positions, self._range)
+        self._update_pnl_chart()
         self._update_metric_cards()
 
     def _update_metric_cards(self) -> None:
         # Use the complete in-memory lists loaded from SQLite on startup (no DB query).
         # load_all_closed_for_wallet and load_all_activity_for_wallet bring ALL cached
         # rows into memory at startup — no scroll, no limit, no DB round-trip here.
-        filtered = filter_closed_by_range(self._closed_positions, self._range)
+        filtered = filter_closed_by_selection(self._closed_positions, self._selection)
         pnl      = sum(p.realized_pnl for p in filtered)
         trades   = len(filtered)
         _dlog("pnl_check",
               "card: range=%s positions=%d filtered=%d pnl=%.2f",
-              self._range, len(self._closed_positions), trades, pnl)
+              self._selection.display_label(), len(self._closed_positions), trades, pnl)
 
         color   = _GREEN if pnl > 0 else (_RED if pnl < 0 else _MUTED)
         display = f"${pnl:,.2f}" if pnl >= 0 else f"-${abs(pnl):,.2f}"
@@ -722,9 +699,8 @@ class OverviewWidget(QWidget):
         classify_closed_positions(self._closed_positions, self._activity)
         _dlog("backfill", "closed_positions now %d rows after cache update",
               len(self._closed_positions))
-        filtered = filter_closed_by_range(self._closed_positions, self._range)
-        self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
-        self._chart.update(self._activity, self._closed_positions, self._range)
+        self._refresh_closed_section()
+        self._update_pnl_chart()
         self._update_metric_cards()
         self.closed_cache_updated.emit(self._closed_positions)
 
@@ -743,9 +719,8 @@ class OverviewWidget(QWidget):
         classify_closed_positions(self._closed_positions, self._activity)
         _dlog("cache", "seed_from_cache: %d closed, %d activity",
               len(self._closed_positions), len(self._activity))
-        filtered = filter_closed_by_range(self._closed_positions, self._range)
-        self._replace_section("_cls_section", _closed_section(filtered, _RANGE_LABELS[self._range]))
-        self._chart.update(self._activity, self._closed_positions, self._range)
+        self._refresh_closed_section()
+        self._update_pnl_chart()
         self._update_metric_cards()
 
     def request_refresh(self) -> None:

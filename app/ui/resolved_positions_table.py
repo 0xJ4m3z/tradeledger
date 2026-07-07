@@ -18,8 +18,8 @@ from PySide6.QtWidgets import (
 from app.debug import _dlog
 from app.models import ResolvedPosition
 from app.services.daily_pnl import sort_closed_positions_newest_first
-from app.services.pnl_today import filter_closed_by_range
-from app.ui.date_range_selector import DateRangeSelector
+from app.services.date_range import DateRangeSelection, filter_closed_by_selection
+from app.ui.date_range_control import DateRangeControl
 from app.ui.polymarket_menu import attach_table_links
 
 try:
@@ -124,7 +124,7 @@ class ResolvedPositionsTable(QWidget):
         self._loading         = False
         self._infinite_scroll = show_refresh  # only Closed Positions tab uses API scroll-load
         self._show_date_filter = show_date_filter
-        self._range           = "all"
+        self._selection        = DateRangeSelection.preset_range("all")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -149,9 +149,9 @@ class ResolvedPositionsTable(QWidget):
         layout.addLayout(header_row)
 
         if show_date_filter:
-            self._date_selector = DateRangeSelector(default="all")
-            self._date_selector.range_changed.connect(self._on_range_changed)
-            layout.addWidget(self._date_selector)
+            self._date_ctrl = DateRangeControl(default="all")
+            self._date_ctrl.range_changed.connect(self._on_range_changed)
+            layout.addWidget(self._date_ctrl)
 
         search = QLineEdit()
         search.setPlaceholderText("Filter by market, outcome, result...")
@@ -185,8 +185,8 @@ class ResolvedPositionsTable(QWidget):
     def _rebuild_table(self) -> None:
         """Sort _all_positions newest-first, apply date filter, and re-render."""
         self._all_positions = sort_closed_positions_newest_first(self._all_positions)
-        if self._show_date_filter and self._range != "all":
-            to_display = filter_closed_by_range(self._all_positions, self._range)
+        if self._show_date_filter and not self._selection.is_all():
+            to_display = filter_closed_by_selection(self._all_positions, self._selection)
         else:
             to_display = self._all_positions
         n_all   = len(self._all_positions)
@@ -279,8 +279,8 @@ class ResolvedPositionsTable(QWidget):
               "load_from_cache: incoming=%d  +%d new  all=%d→%d  displayed=%d",
               len(positions), len(fresh), old_all, len(self._all_positions), self._displayed_count)
 
-    def _on_range_changed(self, range_key: str) -> None:
-        self._range = range_key
+    def _on_range_changed(self, selection: DateRangeSelection) -> None:
+        self._selection = selection
         self._rebuild_table()
 
     def _on_scroll(self, value: int) -> None:
@@ -305,7 +305,7 @@ class ResolvedPositionsTable(QWidget):
         # In-memory exhausted — request older data from API/DB.
         # Skip when a date filter is active: fetching older pages that are
         # outside the range would confuse the user and waste API calls.
-        if self._has_more and self._infinite_scroll and self._range == "all":
+        if self._has_more and self._infinite_scroll and self._selection.is_all():
             self._loading = True
             self._load_status.setText("Loading…")
             _dlog("closed_tab",
