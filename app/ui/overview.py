@@ -453,7 +453,7 @@ class OverviewWidget(QWidget):
     # ── Range filter bar ───────────────────────────────────────────────────────
 
     def _build_range_bar(self) -> QWidget:
-        ctrl = DateRangeControl(default="1d")
+        ctrl = DateRangeControl(default="1d", align="left")
         ctrl.range_changed.connect(self._on_range_changed)
         return ctrl
 

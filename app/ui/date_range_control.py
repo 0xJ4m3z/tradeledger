@@ -138,9 +138,10 @@ class DateRangeControl(QWidget):
     """
     range_changed = Signal(object)   # emits DateRangeSelection
 
-    def __init__(self, default: str = "all", parent=None):
+    def __init__(self, default: str = "all", align: str = "right", parent=None):
         super().__init__(parent)
         self._selection = DateRangeSelection.preset_range(default.lower())
+        self._align_left = align.lower() == "left"
         self._build_ui()
 
     # ── UI construction ────────────────────────────────────────────────────
@@ -154,7 +155,8 @@ class DateRangeControl(QWidget):
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
         btn_row.setSpacing(4)
-        btn_row.addStretch()
+        if not self._align_left:
+            btn_row.addStretch()
 
         self._preset_btns: dict[str, QPushButton] = {}
         for key, label in RANGE_LABELS.items():
@@ -173,6 +175,9 @@ class DateRangeControl(QWidget):
         self._custom_btn.clicked.connect(self._toggle_custom_panel)
         btn_row.addWidget(self._custom_btn)
 
+        if self._align_left:
+            btn_row.addStretch()
+
         outer.addLayout(btn_row)
 
         # ── Custom date panel (hidden by default) ──────────────────────────
@@ -180,7 +185,8 @@ class DateRangeControl(QWidget):
         panel_row = QHBoxLayout(self._custom_panel)
         panel_row.setContentsMargins(0, 0, 0, 0)
         panel_row.setSpacing(6)
-        panel_row.addStretch()
+        if not self._align_left:
+            panel_row.addStretch()
 
         panel_row.addWidget(QLabel("From:", styleSheet=_LABEL_STYLE))
         self._from_edit = _make_date_edit(QDate.currentDate().addDays(-7))
@@ -199,6 +205,9 @@ class DateRangeControl(QWidget):
         clear_btn.setStyleSheet(_BTN_CLEAR)
         clear_btn.clicked.connect(self._on_clear)
         panel_row.addWidget(clear_btn)
+
+        if self._align_left:
+            panel_row.addStretch()
 
         self._custom_panel.setVisible(False)
         outer.addWidget(self._custom_panel)

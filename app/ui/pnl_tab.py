@@ -291,7 +291,7 @@ class PnlTab(QWidget):
         outer.setContentsMargins(16, 16, 16, 16)
         outer.setSpacing(10)
 
-        self._range_ctrl = DateRangeControl(default="1m")
+        self._range_ctrl = DateRangeControl(default="1m", align="left")
         self._range_ctrl.range_changed.connect(self._on_range_changed)
         outer.addWidget(self._range_ctrl)
 

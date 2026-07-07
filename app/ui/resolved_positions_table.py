@@ -149,7 +149,7 @@ class ResolvedPositionsTable(QWidget):
         layout.addLayout(header_row)
 
         if show_date_filter:
-            self._date_ctrl = DateRangeControl(default="all")
+            self._date_ctrl = DateRangeControl(default="all", align="left")
             self._date_ctrl.range_changed.connect(self._on_range_changed)
             layout.addWidget(self._date_ctrl)
 
