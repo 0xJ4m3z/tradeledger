@@ -1,63 +1,69 @@
+"""Total Tracked Value over time chart.
+
+Matches the visual style of PnlChartWidget: dark background, pchip-smoothed
+line, subtle fill, and a hover crosshair showing date/time + value.
+"""
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from typing import List, Tuple
+from zoneinfo import ZoneInfo
 
 import matplotlib
+matplotlib.use("QtAgg")
+
 import matplotlib.dates as mdates
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-from matplotlib.ticker import FuncFormatter
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
+from app.services.chart_utils import pchip_smooth
 from app.services.date_range import DateRangeSelection, filter_snapshots_by_selection
 from app.ui.date_range_control import DateRangeControl
 
-matplotlib.rcParams.update({
-    "axes.facecolor":    "#0d1117",
-    "figure.facecolor":  "#0d1117",
-    "axes.edgecolor":    "#30363d",
-    "axes.labelcolor":   "#8b949e",
-    "xtick.color":       "#8b949e",
-    "ytick.color":       "#8b949e",
-    "text.color":        "#c9d1d9",
-    "grid.color":        "#21262d",
-    "grid.linestyle":    "--",
-    "grid.linewidth":    0.6,
-})
-
-_LINE_COLOR = "#58a6ff"
-_FILL_COLOR = "#1f3a5f"
-_MUTED      = "#8b949e"
-_TEXT       = "#c9d1d9"
-_CARD       = "#161b22"
-_UTC        = timezone.utc
+_BG    = "#0d1117"
+_CARD  = "#161b22"
+_MUTED = "#8b949e"
+_BLUE  = "#58a6ff"
+_FILL  = "#1f3a5f"
+_TEXT  = "#c9d1d9"
+_UTC   = timezone.utc
+_ET    = ZoneInfo("America/New_York")
 
 _DEFAULT_SELECTION = DateRangeSelection.preset_range("all")
 
 
 def _parse_captured_at(s: str) -> datetime:
-    """Parse a captured_at ISO string to a UTC-aware datetime."""
     dt = datetime.fromisoformat(s)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=_UTC)
     return dt.astimezone(_UTC)
 
 
-def _usd_fmt(x, _):
-    if abs(x) >= 1000:
-        return f"${x/1000:.1f}k"
-    return f"${x:.0f}"
+def _xaxis_label(x_num: float, selection: DateRangeSelection) -> str:
+    dt_et = mdates.num2date(x_num).astimezone(_ET)
+    if selection.is_preset() and selection.preset == "1d":
+        return dt_et.strftime("%H:%M")
+    if selection.is_preset() and selection.preset in ("1w", "1m"):
+        return dt_et.strftime("%b %d")
+    return dt_et.strftime("%b '%y")
 
 
 def _tooltip_label(dt: datetime, value: float) -> str:
-    return f"{dt.strftime('%b %d, %Y %H:%M')}\n${value:,.2f}"
+    local = dt.astimezone(_ET)
+    return f"{local.strftime('%b %d, %Y %H:%M')}\n${value:,.2f}"
+
+
+def _usd_fmt(v, _):
+    if abs(v) >= 1_000:
+        return f"${v/1000:.1f}k"
+    return f"${v:.0f}"
 
 
 class TotalValueChartWidget(QWidget):
-    """
-    Total Tracked Value over time chart with 1D/1W/1M/1Y/YTD/All/Custom range control.
+    """Total Tracked Value chart, styled to match PnlChartWidget.
 
-    Pass show_range_buttons=False to hide the range controls
-    (used in the Overview tab where space is tight).
+    Pass show_range_buttons=False to hide the range control row.
 
     Public interface:
       update_snapshots(snapshots)  — refresh with new snapshot list
@@ -83,30 +89,27 @@ class TotalValueChartWidget(QWidget):
         self._dot          = None
         self._annot        = None
 
-        self._build_ui()
-        self._redraw()
+        self._fig, self._ax = plt.subplots(figsize=figsize)
+        self._fig.patch.set_facecolor(_BG)
+        self._ax.set_facecolor(_BG)
 
-    # ── UI construction ────────────────────────────────────────────────────
+        self._canvas = FigureCanvasQTAgg(self._fig)
+        self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._canvas.mpl_connect("motion_notify_event", self._on_motion)
+        self._canvas.mpl_connect("axes_leave_event",    self._on_leave)
 
-    def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        if self._show_range_buttons:
+        if show_range_buttons:
             self._range_ctrl = DateRangeControl(default="all")
             self._range_ctrl.range_changed.connect(self._on_range)
             layout.addWidget(self._range_ctrl)
 
-        fig = Figure(figsize=self._figsize, tight_layout=True)
-        self._canvas = FigureCanvas(fig)
-        self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._ax = fig.add_subplot(111)
-
-        self._canvas.mpl_connect("motion_notify_event", self._on_motion)
-        self._canvas.mpl_connect("axes_leave_event",    self._on_leave)
-
         layout.addWidget(self._canvas)
+
+        self._redraw()
 
     # ── Slots ──────────────────────────────────────────────────────────────
 
@@ -124,61 +127,60 @@ class TotalValueChartWidget(QWidget):
 
     def _redraw(self) -> None:
         filtered = filter_snapshots_by_selection(self._all_snapshots, self._selection)
-        self._ax.clear()
+        ax = self._ax
+        ax.clear()
+        ax.set_facecolor(_BG)
+
         self._vline = self._dot = self._annot = None
         self._x_nums = self._y_data = self._x_dts = []
-        self._plot(filtered)
-        self._canvas.draw()
 
-    def _plot(self, snapshots: List[dict]) -> None:
-        ax = self._ax
-        ax.set_title("Total Tracked Value Over Time", color="#c9d1d9",
-                     fontsize=11, fontweight="600", pad=8)
-        ax.yaxis.set_major_formatter(FuncFormatter(_usd_fmt))
-        ax.grid(True, axis="y")
-
-        if not snapshots:
+        if not filtered:
             msg = (
                 "No data for this range."
                 if not self._selection.is_all()
                 else "No history yet.\nEnter a wallet value to start tracking."
             )
             ax.text(0.5, 0.5, msg, ha="center", va="center",
-                    color="#8b949e", fontsize=10, transform=ax.transAxes)
+                    color=_MUTED, fontsize=10, transform=ax.transAxes)
             ax.set_xticks([])
             ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            self._canvas.draw_idle()
             return
 
-        # Parse captured_at to datetimes, convert to mdates numbers for plotting
-        dts    = [_parse_captured_at(s["captured_at"]) for s in snapshots]
-        values = [s["total_tracked_value"] for s in snapshots]
+        dts    = [_parse_captured_at(s["captured_at"]) for s in filtered]
+        values = [s["total_tracked_value"] for s in filtered]
         x_nums = list(mdates.date2num(dts))
 
         self._x_nums = x_nums
         self._y_data = list(values)
         self._x_dts  = list(dts)
 
-        if len(x_nums) == 1:
-            ax.plot(x_nums, values, "o", color=_LINE_COLOR, markersize=7)
-            v = values[0]
-            pad = max(v * 0.04, 1.0)
-            ax.set_ylim(v - pad * 0.6, v + pad * 1.2)
-        else:
-            ax.plot(x_nums, values, color=_LINE_COLOR, linewidth=2)
-            ax.fill_between(x_nums, values, alpha=0.15, color=_FILL_COLOR)
-            mn, mx = min(values), max(values)
-            spread = max(mx - mn, max(mx * 0.005, 1.0))
-            ax.set_ylim(mn - spread * 0.3, mx + spread * 0.5)
+        sel = self._selection
+        x_draw, y_draw = pchip_smooth(x_nums, values, n=300)
 
-        tick_step = max(1, len(x_nums) // 6)
-        ax.set_xticks(x_nums[::tick_step])
-        ax.set_xticklabels(
-            [dt.strftime("%Y-%m-%d") for dt in self._x_dts[::tick_step]],
-            rotation=30, ha="right", fontsize=8,
+        ax.plot(x_draw, y_draw, color=_BLUE, linewidth=1.8, zorder=3)
+        ax.fill_between(x_draw, y_draw, alpha=0.12, color=_FILL, zorder=2)
+
+        ax.xaxis.set_major_formatter(
+            plt.FuncFormatter(lambda x, _: _xaxis_label(x, sel))
         )
-        ax.yaxis.set_tick_params(labelsize=8)
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=3, maxticks=7))
+        ax.tick_params(axis="x", labelsize=8, colors=_MUTED)
 
-        # Hover elements (invisible until mouse moves)
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(_usd_fmt))
+        ax.tick_params(axis="y", labelsize=8, colors=_MUTED)
+
+        mn, mx = min(values), max(values)
+        spread = max(mx - mn, max(mx * 0.005, 1.0))
+        ax.set_ylim(mn - spread * 0.3, mx + spread * 0.5)
+
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.grid(axis="y", color=_MUTED, alpha=0.1, linewidth=0.5, zorder=0)
+
+        # Hover elements
         self._vline, = ax.plot(
             [], [], color=_MUTED, linewidth=0.8, linestyle="--", zorder=5, visible=False
         )
@@ -191,6 +193,9 @@ class TotalValueChartWidget(QWidget):
                       alpha=0.9, linewidth=0.8),
             fontsize=8, color=_TEXT, zorder=7, visible=False,
         )
+
+        self._fig.subplots_adjust(left=0.10, right=0.98, top=0.97, bottom=0.18)
+        self._canvas.draw_idle()
 
     # ── Hover ──────────────────────────────────────────────────────────────
 
