@@ -172,10 +172,10 @@ class TotalValueChartWidget(QWidget):
 
         tick_step = max(1, len(x_nums) // 6)
         ax.set_xticks(x_nums[::tick_step])
-        ax.xaxis.set_major_formatter(
-            mdates.DateFormatter("%Y-%m-%d")
+        ax.set_xticklabels(
+            [dt.strftime("%Y-%m-%d") for dt in self._x_dts[::tick_step]],
+            rotation=30, ha="right", fontsize=8,
         )
-        ax.tick_params(axis="x", labelsize=8, rotation=30)
         ax.yaxis.set_tick_params(labelsize=8)
 
         # Hover elements (invisible until mouse moves)
