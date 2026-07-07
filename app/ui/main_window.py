@@ -164,7 +164,7 @@ class MainWindow(QMainWindow):
         self._active_tab       = ActivePositionsTable(active)
         self._resolved_tab     = ResolvedPositionsTable(resolved, label="Resolved Positions")
         self._closed_tab       = ResolvedPositionsTable(
-            cached_closed, label="Closed Positions", show_refresh=True
+            cached_closed, label="Closed Positions", show_refresh=True, show_date_filter=True
         )
         self._activity_tab     = ActivityTable(cached_activity)
         self._pnl_tab          = PnlTab(cached_closed)

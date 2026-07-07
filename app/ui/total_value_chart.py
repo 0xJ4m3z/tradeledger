@@ -4,9 +4,10 @@ import matplotlib
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
-from PySide6.QtWidgets import QHBoxLayout, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
-from app.services.chart_ranges import _DEFAULT_RANGE, _RANGES, filter_snapshots_by_range  # noqa: F401
+from app.services.chart_ranges import _DEFAULT_RANGE, filter_snapshots_by_range  # noqa: F401
+from app.ui.date_range_selector import DateRangeSelector
 
 matplotlib.rcParams.update({
     "axes.facecolor":    "#0d1117",
@@ -24,18 +25,6 @@ matplotlib.rcParams.update({
 _LINE_COLOR = "#58a6ff"
 _FILL_COLOR = "#1f3a5f"
 
-_BTN_STYLE = (
-    "QPushButton {"
-    "  background-color: #21262d; border: 1px solid #30363d;"
-    "  border-radius: 3px; color: #8b949e;"
-    "  padding: 2px 8px; font-size: 11px; min-width: 28px;"
-    "}"
-    "QPushButton:checked {"
-    "  background-color: #1f3a5f; border: 1px solid #58a6ff; color: #58a6ff;"
-    "}"
-    "QPushButton:hover { color: #c9d1d9; }"
-)
-
 
 def _usd_fmt(x, _):
     if abs(x) >= 1000:
@@ -47,7 +36,7 @@ class TotalValueChartWidget(QWidget):
     """
     Total Tracked Value over time chart.
 
-    Pass show_range_buttons=False to hide the 1D/1W/1M/All controls
+    Pass show_range_buttons=False to hide the range controls
     (used in the Overview tab where space is tight and range switching
     is handled by the full-size Total Tracked Value tab).
 
@@ -76,20 +65,10 @@ class TotalValueChartWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        self._range_btns: dict[str, QPushButton] = {}
-
         if self._show_range_buttons:
-            btn_row = QHBoxLayout()
-            btn_row.addStretch()
-            for key in _RANGES:
-                btn = QPushButton(key)
-                btn.setCheckable(True)
-                btn.setChecked(key == _DEFAULT_RANGE)
-                btn.setStyleSheet(_BTN_STYLE)
-                btn.clicked.connect(lambda _checked, k=key: self._on_range(k))
-                self._range_btns[key] = btn
-                btn_row.addWidget(btn)
-            layout.addLayout(btn_row)
+            self._range_selector = DateRangeSelector(default=_DEFAULT_RANGE)
+            self._range_selector.range_changed.connect(self._on_range)
+            layout.addWidget(self._range_selector)
 
         # Matplotlib canvas
         fig = Figure(figsize=self._figsize, tight_layout=True)
@@ -102,8 +81,6 @@ class TotalValueChartWidget(QWidget):
 
     def _on_range(self, key: str) -> None:
         self._range_key = key
-        for k, btn in self._range_btns.items():
-            btn.setChecked(k == key)
         self._redraw()
 
     # ── Public ─────────────────────────────────────────────────────────────
@@ -130,7 +107,7 @@ class TotalValueChartWidget(QWidget):
         if not snapshots:
             msg = (
                 "No data for this range."
-                if self._range_key != "All"
+                if self._range_key != "all"
                 else "No history yet.\nEnter a wallet value to start tracking."
             )
             ax.text(0.5, 0.5, msg, ha="center", va="center",
