@@ -4,17 +4,17 @@ A local, read-only desktop application for tracking Polymarket positions, wallet
 
 ## Overview
 
-TradeLedger lets you monitor your open positions, resolved winnings, closed trade history, and activity feed — all locally, using public read-only APIs. No account login, no API key, no wallet connection required.
+TradeLedger lets you monitor your open positions, resolved winnings, closed trade history, and activity feed - all locally, using public read-only APIs. No account login, no API key, no wallet connection required.
 
-- **Overview** — wallet lookup, time-range filter (1D / 1W / 1M / 1Y / YTD / All), metric cards (Total Tracked Value, Wallet USD Value, Positions Value, Loss Watch, Realized P/L, Trades), cumulative realized P/L line chart with hover, live positions grid
-- **Loss Watch** — list of open positions with negative unrealized P/L; acknowledge known losers to track new ones
-- **Active Positions** — all open positions currently exposed to market movement
-- **Resolved Positions** — won/resolved markets not yet redeemed; still counted in Positions Value
-- **Closed Positions** — fully settled trades (redeemed or sold), with infinite scroll to load history
-- **Activity** — full activity feed (trades, redeems, rewards, etc.), searchable, with infinite scroll
-- **Total Tracked Value** — full-size chart with 1D / 1W / 1M / All range buttons
+- **Overview** - wallet lookup, time-range filter (1D / 1W / 1M / 1Y / YTD / All), metric cards (Total Tracked Value, Wallet USD Value, Positions Value, Loss Watch, Realized P/L, Trades), cumulative realized P/L line chart with hover, live positions grid
+- **Loss Watch** - list of open positions with negative unrealized P/L; acknowledge known losers to track new ones
+- **Active Positions** - all open positions currently exposed to market movement
+- **Resolved Positions** - won/resolved markets not yet redeemed; still counted in Positions Value
+- **Closed Positions** - fully settled trades (redeemed or sold), with infinite scroll to load history
+- **Activity** - full activity feed (trades, redeems, rewards, etc.), searchable, with infinite scroll
+- **Total Tracked Value** - full-size chart with 1D / 1W / 1M / All range buttons
 
-**Read-only by design.** TradeLedger never asks for private keys, seed phrases, wallet signatures, or wallet connection permissions. Wallet lookup uses your public address only — no order placement, no transactions, no trading of any kind.
+**Read-only by design.** TradeLedger never asks for private keys, seed phrases, wallet signatures, or wallet connection permissions. Wallet lookup uses your public address only - no order placement, no transactions, no trading of any kind.
 
 ---
 
@@ -89,7 +89,7 @@ No API key is required. Wallet lookup uses public Polygon RPCs; position and act
 python run.py
 ```
 
-The app launches in **sample data mode** — positions are loaded from `sample_data/`. Each launch saves a snapshot to `tradeledger.db` (gitignored).
+The app launches in **sample data mode** - positions are loaded from `sample_data/`. Each launch saves a snapshot to `tradeledger.db` (gitignored).
 
 To load live data: enter your Polygon wallet address in the Overview panel and click **Fetch Wallet Value**. This fetches your stablecoin balance, open positions, resolved positions, closed positions, and activity feed in one pass. The button becomes **Refresh** after the first successful fetch. Your wallet address is masked in the UI (`0x1234...abcde`) after a successful fetch.
 
@@ -105,7 +105,7 @@ To load live data: enter your Polygon wallet address in the Overview panel and c
 pytest tests/ -v
 ```
 
-All tests use mocked network calls — no live API access required.
+All tests use mocked network calls - no live API access required.
 
 ---
 
@@ -198,7 +198,7 @@ Activity events (BUY/SELL/REDEEM) are used only in the legacy activity-based fun
 
 ### Timezone
 
-All calendar-day boundaries use **America/New_York (ET)** — Eastern Time, handles EST (UTC-5) and EDT (UTC-4) automatically via the system timezone database.
+All calendar-day boundaries use **America/New_York (ET)** - Eastern Time, handles EST (UTC-5) and EDT (UTC-4) automatically via the system timezone database.
 
 ### Range definitions
 
@@ -217,7 +217,7 @@ Closed positions are loaded newest-first (most recent 100 on initial fetch, then
 
 When partial data is detected, the Realized P/L and Trades cards are prefixed with **`~`** to indicate the number may be understated. Scrolling down in the Closed Positions tab loads more history and will eventually clear the `~` prefix once data extends beyond the range cutoff.
 
-`All` is never marked partial — it means "all currently loaded data" by definition.
+`All` is never marked partial - it means "all currently loaded data" by definition.
 
 ---
 
@@ -231,7 +231,7 @@ The Overview chart shows **cumulative realized P/L over time** for the selected 
 - **Color.** Green line and fill when the final value ≥ $0; red when negative.
 - **Hover crosshair.** Move the mouse over the chart to see a vertical crosshair, a dot on the line, and a tooltip showing the date and cumulative P/L at that point (`+$X.XX` / `-$X.XX`).
 - **X-axis format** adapts to the range: times for 1D, month-day for 1W/1M, month-year for 1Y/YTD/All.
-- **Single data point.** If only one date has closed positions, the chart shows the anchor + that one point (a straight line from $0 to the final value). This is honest — no interpolation.
+- **Single data point.** If only one date has closed positions, the chart shows the anchor + that one point (a straight line from $0 to the final value). This is honest - no interpolation.
 - **No data.** If no closed positions exist for the selected range, the chart shows "No closed positions in this range" as a text label.
 
 Chart data is built by `app/services/pnl_series.py` (`build_pnl_series`), a pure function with no Qt or matplotlib dependencies. It is fully covered by `tests/test_pnl_series.py`.
@@ -240,7 +240,7 @@ Chart data is built by `app/services/pnl_series.py` (`build_pnl_series`), a pure
 
 ## Local caching
 
-TradeLedger caches position and activity data locally in the SQLite database (`tradeledger.db`, gitignored) so the app populates instantly on startup — no waiting for a live fetch before you can see your positions.
+TradeLedger caches position and activity data locally in the SQLite database (`tradeledger.db`, gitignored) so the app populates instantly on startup - no waiting for a live fetch before you can see your positions.
 
 ### What is cached (per wallet address)
 
@@ -251,13 +251,13 @@ TradeLedger caches position and activity data locally in the SQLite database (`t
 | Closed positions | wallet_address + position_key | Insert-or-ignore (dedup); accumulates over time |
 | Activity events | wallet_address + event_key | Insert-or-ignore (dedup); accumulates over time |
 
-**Active and resolved positions** are always stale after the app closes — they snapshot the last known state and are replaced entirely on the next live fetch.
+**Active and resolved positions** are always stale after the app closes - they snapshot the last known state and are replaced entirely on the next live fetch.
 
 **Closed positions and activity** are additive: deduplication ensures the same event is never stored twice. The initial API fetch, background backfill pages, and scroll-loaded pages all go through the same `upsert_*_cache` path, so loading more history just adds to the cache without creating duplicates.
 
 ### Dedup keys
 
-- Closed position: `f"{market}|{outcome_held}"` — cost_basis is intentionally excluded; the API and activity-derived sources compute it slightly differently due to float rounding, so including it caused false duplicates
+- Closed position: `f"{market}|{outcome_held}"` - cost_basis is intentionally excluded; the API and activity-derived sources compute it slightly differently due to float rounding, so including it caused false duplicates
 - Activity event: `f"{timestamp}|{type}|{side}|{size:.6f}"`
 
 ### Startup behavior
@@ -265,32 +265,32 @@ TradeLedger caches position and activity data locally in the SQLite database (`t
 1. The last-used wallet address is read from the DB.
 2. All four caches are loaded immediately in `MainWindow.__init__`.
 3. The status bar shows **"Loaded from cache • X active • Y resolved • Z closed • Refreshing…"**
-4. The Overview P/L chart and metric cards are pre-populated from cached data (`seed_from_cache`) — the 1D chart already shows intraday steps from cached REDEEM events.
+4. The Overview P/L chart and metric cards are pre-populated from cached data (`seed_from_cache`) - the 1D chart already shows intraday steps from cached REDEEM events.
 5. `WalletPanel` auto-triggers a live fetch in the background (deferred with `QTimer.singleShot`).
-6. When the live fetch completes, **new activity rows are merged into the existing list** — the cached history is never discarded. The same-wallet re-confirmation does not clear cached data.
+6. When the live fetch completes, **new activity rows are merged into the existing list** - the cached history is never discarded. The same-wallet re-confirmation does not clear cached data.
 7. All tabs update with fresh data; the status bar clears the "Refreshing…" suffix.
 
 **First run / new wallet:** If no cache exists for the wallet, sample data is shown briefly until the live fetch completes.
 
 ### Cache invalidation
 
-There is no explicit TTL. Active and resolved caches are replaced on every successful live fetch. Closed and activity caches only grow (dedup-protected). Switching wallets reads a separate, isolated cache for the new address — wallets never share cached rows.
+There is no explicit TTL. Active and resolved caches are replaced on every successful live fetch. Closed and activity caches only grow (dedup-protected). Switching wallets reads a separate, isolated cache for the new address - wallets never share cached rows.
 
 ---
 
 ## Wallet and position lookup
 
-TradeLedger fetches data using public, read-only APIs — no authentication required:
+TradeLedger fetches data using public, read-only APIs - no authentication required:
 
-- **Wallet USD value** — sum of USDC.e + pUSD balances via Polygon JSON-RPC `balanceOf()` calls
-- **Active positions** — all open positions via `data-api.polymarket.com/positions`
-- **Resolved positions** — won markets pending redemption via the same endpoint
-- **Closed positions** — fully settled trades via `data-api.polymarket.com/closed-positions`; initial 100 on fetch, then infinite scroll in the Closed Positions tab; a background thread backfills older pages and caches them locally
-- **Activity feed** — recent activity events via `data-api.polymarket.com/activity`; initial 100 on fetch, then infinite scroll loads more as you scroll down
+- **Wallet USD value** - sum of USDC.e + pUSD balances via Polygon JSON-RPC `balanceOf()` calls
+- **Active positions** - all open positions via `data-api.polymarket.com/positions`
+- **Resolved positions** - won markets pending redemption via the same endpoint
+- **Closed positions** - fully settled trades via `data-api.polymarket.com/closed-positions`; initial 100 on fetch, then infinite scroll in the Closed Positions tab; a background thread backfills older pages and caches them locally
+- **Activity feed** - recent activity events via `data-api.polymarket.com/activity`; initial 100 on fetch, then infinite scroll loads more as you scroll down
 
 Tries multiple public Polygon RPCs automatically if one fails. Wallet address is masked in the UI after a successful fetch. The last-used address is saved locally (gitignored SQLite DB) so it prefills on the next launch.
 
-**Refresh behavior:** auto-refresh and manual refresh only prepend new records — existing scroll-loaded data is preserved. Switching range buttons or waiting for backfill to complete does not reset loaded history.
+**Refresh behavior:** auto-refresh and manual refresh only prepend new records - existing scroll-loaded data is preserved. Switching range buttons or waiting for backfill to complete does not reset loaded history.
 
 ---
 
@@ -300,20 +300,20 @@ Tries multiple public Polygon RPCs automatically if one fails. Wallet address is
 - **Public address only.** TradeLedger never asks for private keys, seed phrases, wallet signatures, or wallet connection permissions.
 - **No secrets committed.** `.env`, local database files (`*.db`), and virtual environments are gitignored.
 - **Address masking.** After a successful fetch, the wallet address is displayed in shortened form (`0x1234...abcde`) in the UI.
-- **Local storage only.** The wallet address is stored only in the gitignored local `tradeledger.db` file — never sent to any TradeLedger server (there is none).
+- **Local storage only.** The wallet address is stored only in the gitignored local `tradeledger.db` file - never sent to any TradeLedger server (there is none).
 
 ---
 
 ## Roadmap
 
-**v0.1 — Sample dashboard** ✓
+**v0.1 - Sample dashboard** ✓
 - Sample data mode (no live API or wallet required)
 - Overview tab: metric cards, active and resolved position lists
 - Individual tabs for Active Positions and Resolved Positions with search filter
 - Local SQLite snapshot storage
 - pytest test suite
 
-**v0.2 — Live wallet + position + activity tracking** ✓
+**v0.2 - Live wallet + position + activity tracking** ✓
 - Read-only Polygon wallet value (USDC.e + pUSD, no API key required)
 - Live Polymarket position lookup: active, resolved, closed (most recent 100)
 - Activity tab: full activity feed (trades, redeems, rewards, etc.), searchable
@@ -323,63 +323,63 @@ Tries multiple public Polygon RPCs automatically if one fails. Wallet address is
 - Wallet address masked in UI after fetch for privacy
 - 130 passing tests
 
-**v0.3 — Daily monitoring** ✓
-- **Remembered wallet address** — prefills masked on next launch; immediate auto-fetch on startup
-- **Auto-refresh** — optional 5-minute auto-refresh checkbox; shows last-updated timestamp
-- **Loss Watch tab and card** — open positions with negative unrealized P/L; "Acknowledge All" button
-- **Realized P/L card** — net profit/loss from closed positions using `redeem_value − cost_basis`; correctly counts losses where winning outcome pays $0
-- **Trades card** — count of closed positions in the selected range
-- **1D / 1W / 1M / All range filter** — controls overview closed positions grid, Realized P/L, and Trades cards simultaneously
-- **Active / Resolved / Closed terminology** — positions are exactly one of: active (open), resolved (won, not yet redeemed), or closed (settled); never shown in two categories at once
-- **Resolved Positions tab** — shows won markets pending redemption; counted in Positions Value
-- **Closed positions infinite scroll** — Closed Positions tab loads more pages on scroll-to-bottom, identical to Activity tab
-- **Activity infinite scroll** — Activity tab loads additional pages as you scroll down
-- **Background backfill** — closed position history is fetched in the background and cached locally (SQLite); cache survives restarts
-- **Merge-on-refresh** — refresh prepends new records without wiping scroll-loaded data; range filters continue working on the full loaded history
-- **REDEEM event display** — Activity tab shows Win/Loss for REDEEM events (Polymarket API returns empty outcome/side for redeems)
-- **Wallet-address-tagged snapshots** — chart never shows data from a different wallet; stale same-day snapshots are cleared on first fetch
+**v0.3 - Daily monitoring** ✓
+- **Remembered wallet address** - prefills masked on next launch; immediate auto-fetch on startup
+- **Auto-refresh** - optional 5-minute auto-refresh checkbox; shows last-updated timestamp
+- **Loss Watch tab and card** - open positions with negative unrealized P/L; "Acknowledge All" button
+- **Realized P/L card** - net profit/loss from closed positions using `redeem_value − cost_basis`; correctly counts losses where winning outcome pays $0
+- **Trades card** - count of closed positions in the selected range
+- **1D / 1W / 1M / All range filter** - controls overview closed positions grid, Realized P/L, and Trades cards simultaneously
+- **Active / Resolved / Closed terminology** - positions are exactly one of: active (open), resolved (won, not yet redeemed), or closed (settled); never shown in two categories at once
+- **Resolved Positions tab** - shows won markets pending redemption; counted in Positions Value
+- **Closed positions infinite scroll** - Closed Positions tab loads more pages on scroll-to-bottom, identical to Activity tab
+- **Activity infinite scroll** - Activity tab loads additional pages as you scroll down
+- **Background backfill** - closed position history is fetched in the background and cached locally (SQLite); cache survives restarts
+- **Merge-on-refresh** - refresh prepends new records without wiping scroll-loaded data; range filters continue working on the full loaded history
+- **REDEEM event display** - Activity tab shows Win/Loss for REDEEM events (Polymarket API returns empty outcome/side for redeems)
+- **Wallet-address-tagged snapshots** - chart never shows data from a different wallet; stale same-day snapshots are cleared on first fetch
 - 196 passing tests
 
-**v0.3.1 — P/L accuracy audit + cache fixes + chart** ✓
-- **ET timezone** — all calendar-day calculations use America/New_York (was: Chicago); 1D = today ET midnight to now
-- **1Y and YTD ranges** — added to range bar alongside 1D / 1W / 1M / All
-- **Partial data detection** — Realized P/L and Trades cards show `~` prefix when loaded data may not cover the full range
-- **Closed positions as P/L source** — explicitly documented; `filter_closed_by_range` extracted to service layer
-- **Correct cost basis calculation** — Polymarket's `totalBought` field is shares, not USDC; `cost_basis` is now correctly computed as `totalBought × avgPrice`; `redeem_value = cost_basis + realizedPnl`; previously these were wrong, causing significantly inflated P/L figures
-- **Fixed closed-position dedup key** — key is now `market|outcome_held` only; previously included `cost_basis`, which caused float-precision differences between API and activity-derived sources to produce two DB rows for the same trade (duplicate entries in the Closed Positions tab and double-counted P/L)
-- **Fixed SQLite schema migration** — closed positions cache now uses a composite `UNIQUE(wallet_address, position_key)` constraint; a startup migration rebuilds legacy DBs and reassigns rows with missing wallet addresses
-- **Fixed closed-position persistence** — scroll-loaded and backfill-loaded pages now correctly persist across app restarts; the old single-column unique constraint silently dropped all inserts on existing DBs
-- **Fixed `derive_closed_from_activity`** — REDEEM events in the activity feed often have an empty outcome field; the correct outcome is now inferred from the corresponding BUY events; stale zero-cost rows in the DB are replaced when fresh activity data is available
-- **Event-based 1D chart** — cumulative realized P/L; starts at $0 at midnight ET; intraday steps at each closed position's actual close timestamp; interactive hover crosshair; green/red fill
-- **Same-date aggregation** — multiple closed positions on the same calendar day sum to one net data point for 1W+ chart ranges
-- **Wallet-isolated local caching** — active, resolved, closed, and activity data cached per wallet in SQLite; app pre-populates from cache on startup before the live fetch completes
-- **Full cache persistence for scroll-loads** — scroll-loaded activity and closed position pages are upserted to SQLite; previously only the initial fetch and backfill were persisted
-- **Activity merge on refresh** — live refresh merges new records into the existing in-memory list instead of replacing it; cached history is never discarded by a refresh
-- **Same-wallet refresh guard** — `_on_wallet_address_changed` only clears data when the wallet address genuinely changes; same-wallet re-confirmation on startup no longer clears chart data
-- **Insert-or-ignore dedup** — closed positions and activity events accumulate without duplicates across scroll-loads, backfill pages, and refreshes
-- **Debug logging** — set `TRADELEDGER_DEBUG=1` to enable verbose data-flow logs via Python's `logging` module
-- **433 passing tests** — including `test_cache_hydration.py` covering scroll-page persistence, in-memory merge logic, startup hydration, and P/L accuracy scenarios
+**v0.3.1 - P/L accuracy audit + cache fixes + chart** ✓
+- **ET timezone** - all calendar-day calculations use America/New_York (was: Chicago); 1D = today ET midnight to now
+- **1Y and YTD ranges** - added to range bar alongside 1D / 1W / 1M / All
+- **Partial data detection** - Realized P/L and Trades cards show `~` prefix when loaded data may not cover the full range
+- **Closed positions as P/L source** - explicitly documented; `filter_closed_by_range` extracted to service layer
+- **Correct cost basis calculation** - Polymarket's `totalBought` field is shares, not USDC; `cost_basis` is now correctly computed as `totalBought × avgPrice`; `redeem_value = cost_basis + realizedPnl`; previously these were wrong, causing significantly inflated P/L figures
+- **Fixed closed-position dedup key** - key is now `market|outcome_held` only; previously included `cost_basis`, which caused float-precision differences between API and activity-derived sources to produce two DB rows for the same trade (duplicate entries in the Closed Positions tab and double-counted P/L)
+- **Fixed SQLite schema migration** - closed positions cache now uses a composite `UNIQUE(wallet_address, position_key)` constraint; a startup migration rebuilds legacy DBs and reassigns rows with missing wallet addresses
+- **Fixed closed-position persistence** - scroll-loaded and backfill-loaded pages now correctly persist across app restarts; the old single-column unique constraint silently dropped all inserts on existing DBs
+- **Fixed `derive_closed_from_activity`** - REDEEM events in the activity feed often have an empty outcome field; the correct outcome is now inferred from the corresponding BUY events; stale zero-cost rows in the DB are replaced when fresh activity data is available
+- **Event-based 1D chart** - cumulative realized P/L; starts at $0 at midnight ET; intraday steps at each closed position's actual close timestamp; interactive hover crosshair; green/red fill
+- **Same-date aggregation** - multiple closed positions on the same calendar day sum to one net data point for 1W+ chart ranges
+- **Wallet-isolated local caching** - active, resolved, closed, and activity data cached per wallet in SQLite; app pre-populates from cache on startup before the live fetch completes
+- **Full cache persistence for scroll-loads** - scroll-loaded activity and closed position pages are upserted to SQLite; previously only the initial fetch and backfill were persisted
+- **Activity merge on refresh** - live refresh merges new records into the existing in-memory list instead of replacing it; cached history is never discarded by a refresh
+- **Same-wallet refresh guard** - `_on_wallet_address_changed` only clears data when the wallet address genuinely changes; same-wallet re-confirmation on startup no longer clears chart data
+- **Insert-or-ignore dedup** - closed positions and activity events accumulate without duplicates across scroll-loads, backfill pages, and refreshes
+- **Debug logging** - set `TRADELEDGER_DEBUG=1` to enable verbose data-flow logs via Python's `logging` module
+- **433 passing tests** - including `test_cache_hydration.py` covering scroll-page persistence, in-memory merge logic, startup hydration, and P/L accuracy scenarios
 
-**v0.3.2 — Performance + UI polish** ✓
-- **Non-blocking chart rendering** — P/L chart computation runs in a background thread (`_ChartWorker`); switching to 1Y or All no longer freezes the UI
-- **Overview row cap** — closed positions grid in the Overview panel renders at most 100 rows; shows "N more — see Closed Positions tab" when over the cap; eliminates the multi-second hang when switching to large ranges
-- **Auto-refresh on by default** — "Auto-refresh every 5 min" checkbox is enabled at startup; user can untick if desired
-- **Removed wallet amount from status line** — wallet USD value is already shown in the dedicated card; removed the redundant "Wallet: $X" prefix from the status line below the address field
-- **Realized P/L sign formatting** — positive P/L displays as `$97.46` (no `+` prefix); negative still displays as `-$97.46`; color (green/red) conveys direction
-- **Loss Watch card** — removed "unacknowledged losing positions" subtitle; count and Acknowledge All button remain
-- **Fixed remaining in-memory dedup keys** — two remaining occurrences in the overview used `(market, outcome_held, cost_basis)` for dedup; changed to `(market, outcome_held)` to match the DB key and prevent false duplicates when API and activity sources compute cost_basis differently
+**v0.3.2 - Performance + UI polish** ✓
+- **Non-blocking chart rendering** - P/L chart computation runs in a background thread (`_ChartWorker`); switching to 1Y or All no longer freezes the UI
+- **Overview row cap** - closed positions grid in the Overview panel renders at most 100 rows; shows "N more - see Closed Positions tab" when over the cap; eliminates the multi-second hang when switching to large ranges
+- **Auto-refresh on by default** - "Auto-refresh every 5 min" checkbox is enabled at startup; user can untick if desired
+- **Removed wallet amount from status line** - wallet USD value is already shown in the dedicated card; removed the redundant "Wallet: $X" prefix from the status line below the address field
+- **Realized P/L sign formatting** - positive P/L displays as `$97.46` (no `+` prefix); negative still displays as `-$97.46`; color (green/red) conveys direction
+- **Loss Watch card** - removed "unacknowledged losing positions" subtitle; count and Acknowledge All button remain
+- **Fixed remaining in-memory dedup keys** - two remaining occurrences in the overview used `(market, outcome_held, cost_basis)` for dedup; changed to `(market, outcome_held)` to match the DB key and prevent false duplicates when API and activity sources compute cost_basis differently
 - **433 passing tests**
 
-**v0.4.0 — Polymarket market links** ✓
-- **Right-click to open on Polymarket** — every position row in every table (Active, Resolved, Closed, Loss Watch, P/L daily drill-down, Overview grid) has a right-click context menu: "Open on Polymarket" opens the market page in the system browser
+**v0.4.0 - Polymarket market links** ✓
+- **Right-click to open on Polymarket** - every position row in every table (Active, Resolved, Closed, Loss Watch, P/L daily drill-down, Overview grid) has a right-click context menu: "Open on Polymarket" opens the market page in the system browser
 - **Ctrl+click** as an alternative to right-click in all QTableWidget-based tables
-- **Slug captured from API** — `eventSlug` / `slug` fields captured for active, resolved, and closed positions; stored in the closed-positions SQLite cache with migration-safe `ALTER TABLE`
-- **Background slug backfill** — on each fetch, a background thread re-fetches historical closed-position pages and fills any NULL slug values non-destructively (never overwrites an existing slug)
-- **P/L tab** — dedicated P/L tab with 1D / 1W / 1M / 1Y / YTD / All range buttons, cumulative P/L chart, and daily P/L breakdown table; double-click or "View Details" opens a per-day drill-down dialog showing all closed positions for that calendar day
+- **Slug captured from API** - `eventSlug` / `slug` fields captured for active, resolved, and closed positions; stored in the closed-positions SQLite cache with migration-safe `ALTER TABLE`
+- **Background slug backfill** - on each fetch, a background thread re-fetches historical closed-position pages and fills any NULL slug values non-destructively (never overwrites an existing slug)
+- **P/L tab** - dedicated P/L tab with 1D / 1W / 1M / 1Y / YTD / All range buttons, cumulative P/L chart, and daily P/L breakdown table; double-click or "View Details" opens a per-day drill-down dialog showing all closed positions for that calendar day
 - **Closed positions sorted newest-first** throughout the app
 - **491 passing tests**
 
-**v0.5 — Planned**
+**v0.5 - Planned**
 - Notes per market
 - Export to CSV
 - No trading execution, no order placement, no private key storage
