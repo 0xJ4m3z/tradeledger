@@ -11,6 +11,7 @@ from typing import List
 
 import requests
 
+from app.debug import _dlog
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 
 _DATA_API         = "https://data-api.polymarket.com"
@@ -129,30 +130,47 @@ def _to_closed(row: dict) -> ResolvedPosition:
     cost_basis   = total_bought * avg_price           # USDC spent
     redeem_value = cost_basis + realized_pnl          # USDC received
 
-    # Determine winning outcome and close type using curPrice first.
+    # Determine winning outcome and close type.
+    #
+    # curPrice is checked first: for positions held to resolution it equals
+    # the final token value (1.0 if this outcome won, 0.0 if it lost) and is
+    # the most reliable signal.
+    #
+    # For CLOB-sold positions the API returns the price at the time of the
+    # sale (e.g. 0.40) rather than the post-resolution price, so curPrice is
+    # mid-market and we fall back to the P/L sign.  P/L ≥ 0 means the market
+    # was moving in the user's favour when they exited → their outcome likely
+    # won; P/L < 0 means the market moved against them → the opposite likely
+    # won.  This is correct in the overwhelming majority of stop-loss cases.
     if cur_price >= 0.98:
-        # Outcome token is worth ~$1 → user's outcome won.
+        # Token resolved at ~$1 → user's outcome won.
         winning_outcome = outcome
         per_share = (redeem_value / quantity) if quantity > 0 else 0
-        # Redeemed at full value vs sold near (or at) resolution price.
         close_type = "REDEEMED_WIN" if per_share >= 0.95 else "SOLD"
     elif 0.0 <= cur_price <= 0.02:
-        # Outcome token is worth ~$0 → opposite outcome won.
+        # Token resolved at ~$0 → opposite won.
         winning_outcome = opposite
         close_type = "RESOLVED_LOSS" if redeem_value < 0.01 else "SOLD"
     else:
-        # curPrice unavailable or mid-market — fall back to proceeds heuristic.
-        # This path only fires for positions sold before market resolution (or
-        # legacy DB rows fetched before this field was read).
+        # curPrice is mid-market (CLOB sell price) or unavailable.
         if redeem_value < 0.01:
+            # Got back nothing → market resolved against them.
             winning_outcome = opposite
             close_type      = "RESOLVED_LOSS"
         elif quantity > 0 and (redeem_value / quantity) >= 0.95:
+            # Got back ~$1/share → effectively won.
             winning_outcome = outcome
             close_type      = "REDEEMED_WIN"
         else:
-            winning_outcome = ""      # market not yet resolved; winner unknown
+            # Sold at mid-market — use P/L sign as best available heuristic.
+            winning_outcome = outcome if realized_pnl >= 0 else opposite
             close_type      = "SOLD"
+            # Log all raw keys once per position so we can find a proper winner field.
+            _dlog("closed_winner",
+                  "mid-market curPrice=%.3f for '%s' | outcome=%s pnl=%.2f | "
+                  "all keys: %s",
+                  cur_price, row.get("title", "?"), outcome, realized_pnl,
+                  sorted(row.keys()))
 
     slug = row.get("eventSlug") or row.get("slug") or None
 

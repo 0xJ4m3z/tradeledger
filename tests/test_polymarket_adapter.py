@@ -250,9 +250,8 @@ class TestFetchClosedPositions:
         assert p.cost_basis      == pytest.approx(60.0)
         assert p.redeem_value    == pytest.approx(40.0)
 
-    def test_stop_loss_sold_negative_pnl_and_outcome_lost(self):
-        # Stop-loss fired; market then also resolved against user.
-        # curPrice = 0.0 → outcome resolved to $0 → opposite won.
+    def test_stop_loss_sold_negative_pnl_and_outcome_lost_cur_price_zero(self):
+        # Stop-loss fired; market resolved against user AND curPrice=0.0 confirms it.
         sold_row = {
             "title": "Will BTC go up?",
             "outcome": "Up",
@@ -270,6 +269,45 @@ class TestFetchClosedPositions:
         assert p.is_win          is False
         assert p.close_type      == "SOLD"   # got back $30 (not $0) → SOLD not RESOLVED_LOSS
         assert p.realized_pnl    == pytest.approx(-40.0)
+
+    def test_stop_loss_sold_negative_pnl_mid_curprice_uses_pnl_heuristic(self):
+        # API returns sell price for curPrice (not resolution price).
+        # P/L < 0 → assume opposite won (best available signal).
+        sold_row = {
+            "title": "Dogecoin Up or Down - 3:30-3:45PM ET",
+            "outcome": "Up",
+            "oppositeOutcome": "Down",
+            "avgPrice": 0.60,
+            "totalBought": 100.0,
+            "realizedPnl": -20.0,     # stopped out at $0.40/share
+            "curPrice": 0.40,          # sell price, NOT resolution price
+            "endDate": "2026-08-04",
+        }
+        with patch("requests.get", return_value=_mock_response([sold_row])):
+            p = fetch_closed_positions(_FAKE_WALLET)[0]
+        assert p.winning_outcome == "Down"   # P/L < 0 → opposite assumed winner
+        assert p.outcome_held    == "Up"
+        assert p.is_win          is False
+        assert p.close_type      == "SOLD"
+
+    def test_stop_loss_sold_positive_pnl_mid_curprice_uses_pnl_heuristic(self):
+        # Sold for a profit with mid-market curPrice → P/L ≥ 0 → user's outcome assumed winner.
+        sold_row = {
+            "title": "Ethereum Up or Down - 3:30-3:35PM ET",
+            "outcome": "Up",
+            "oppositeOutcome": "Down",
+            "avgPrice": 0.50,
+            "totalBought": 100.0,
+            "realizedPnl": 10.0,       # sold at $0.60/share
+            "curPrice": 0.60,           # sell price, NOT resolution price
+            "endDate": "2026-08-04",
+        }
+        with patch("requests.get", return_value=_mock_response([sold_row])):
+            p = fetch_closed_positions(_FAKE_WALLET)[0]
+        assert p.winning_outcome == "Up"     # P/L ≥ 0 → user's outcome assumed winner
+        assert p.outcome_held    == "Up"
+        assert p.is_win          is True
+        assert p.close_type      == "SOLD"
 
     def test_stop_loss_sold_at_profit_outcome_won(self):
         # Exited early at a profit; market resolved in user's favour.
