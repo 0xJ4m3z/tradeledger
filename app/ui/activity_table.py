@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from app.debug import _dlog
 from app.models import UserActivity
+from app.ui.polymarket_menu import attach_table_links
 
 COLUMNS = ["Time (UTC)", "Type", "Market", "Outcome", "Side", "Tokens", "USDC", "Price"]
 
@@ -77,9 +78,14 @@ def _populate_row(table: QTableWidget, row: int, a: UserActivity) -> None:
         side_item.setForeground(side_color)
         outcome_item = _cell(a.outcome or "—")
 
+    mkt_item = _cell(a.title or "—")
+    if a.slug:
+        mkt_item.setData(Qt.ItemDataRole.UserRole, a.slug)
+        mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
+
     table.setItem(row, 0, _cell(a.datetime_utc))
     table.setItem(row, 1, type_item)
-    table.setItem(row, 2, _cell(a.title or "—"))
+    table.setItem(row, 2, mkt_item)
     table.setItem(row, 3, outcome_item)
     table.setItem(row, 4, side_item)
     table.setItem(row, 5, _cell(f"{a.size:,.2f}"       if a.size      else "—", Qt.AlignmentFlag.AlignRight))
@@ -141,6 +147,7 @@ class ActivityTable(QWidget):
         for col in [0, 1, 3, 4, 5, 6, 7]:
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
 
+        attach_table_links(self._table, market_col=2)
         self._table.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
         search.textChanged.connect(self._apply_filter)

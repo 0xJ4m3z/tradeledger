@@ -1,9 +1,11 @@
+import csv
 from datetime import datetime
 from typing import List
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -138,6 +140,14 @@ class ResolvedPositionsTable(QWidget):
         self._load_status = QLabel("")
         self._load_status.setStyleSheet("color: #8b949e; font-size: 12px;")
         header_row.addWidget(self._load_status)
+        if show_date_filter:
+            export_btn = QPushButton("Export")
+            export_btn.setStyleSheet(
+                "background-color: #21262d; border: 1px solid #30363d; border-radius: 4px;"
+                " color: #c9d1d9; padding: 4px 14px; font-size: 12px;"
+            )
+            export_btn.clicked.connect(self._export_csv)
+            header_row.addWidget(export_btn)
         if show_refresh:
             refresh_btn = QPushButton("Refresh")
             refresh_btn.setStyleSheet(
@@ -278,6 +288,41 @@ class ResolvedPositionsTable(QWidget):
         _dlog("closed_tab",
               "load_from_cache: incoming=%d  +%d new  all=%d→%d  displayed=%d",
               len(positions), len(fresh), old_all, len(self._all_positions), self._displayed_count)
+
+    def _export_csv(self) -> None:
+        """Export the currently filtered positions to a CSV file."""
+        if self._show_date_filter and not self._selection.is_all():
+            to_export = filter_closed_by_selection(self._all_positions, self._selection)
+        else:
+            to_export = list(self._all_positions)
+
+        label = self._selection.display_label().replace(" – ", "_").replace(" ", "_")
+        today = datetime.now().strftime("%Y-%m-%d")
+        default_name = f"closed_positions_{label}_{today}.csv"
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Closed Positions", default_name, "CSV Files (*.csv)"
+        )
+        if not path:
+            return
+
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(COLUMNS)
+            for p in to_export:
+                status_map = {"REDEEMED_WIN": "Win", "SOLD": "Sold", "RESOLVED_LOSS": "Loss"}
+                writer.writerow([
+                    p.market,
+                    p.outcome_held,
+                    p.winning_outcome,
+                    f"{p.quantity:.0f}",
+                    f"{p.cost_basis:.2f}",
+                    f"{p.redeem_value:.2f}",
+                    f"{p.realized_pnl:.2f}",
+                    f"{p.realized_pnl_pct:.1f}%",
+                    status_map.get(getattr(p, "close_type", ""), "—"),
+                    _fmt_closed_date(p),
+                ])
 
     def _on_range_changed(self, selection: DateRangeSelection) -> None:
         self._selection = selection

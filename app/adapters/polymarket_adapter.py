@@ -172,6 +172,7 @@ def _to_activity(row: dict) -> UserActivity:
         size      = float(row.get("size") or 0),
         usdc_size = float(row.get("usdcSize") or 0),
         price     = float(row.get("price") or 0),
+        slug      = row.get("eventSlug") or row.get("slug") or None,
     )
 
 

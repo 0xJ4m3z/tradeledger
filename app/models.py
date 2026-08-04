@@ -70,6 +70,7 @@ class UserActivity:
     size: float       # tokens
     usdc_size: float  # dollars
     price: float
+    slug: Optional[str] = None  # Polymarket eventSlug → polymarket.com/event/{slug}
 
     @property
     def datetime_utc(self) -> str:
