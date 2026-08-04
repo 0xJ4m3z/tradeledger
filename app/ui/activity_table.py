@@ -53,7 +53,8 @@ def _cell(text: str, align=Qt.AlignmentFlag.AlignLeft) -> QTableWidgetItem:
     return item
 
 
-def _populate_row(table: QTableWidget, row: int, a: UserActivity) -> None:
+def _populate_row(table: QTableWidget, row: int, a: UserActivity,
+                   slug: str | None = None) -> None:
     is_redeem = a.type == "REDEEM"
     side_color = _GREEN if a.side == "BUY" else (_RED if a.side == "SELL" else _MUTED)
     type_color = _TYPE_COLORS.get(a.type, _MUTED)
@@ -79,8 +80,9 @@ def _populate_row(table: QTableWidget, row: int, a: UserActivity) -> None:
         outcome_item = _cell(a.outcome or "—")
 
     mkt_item = _cell(a.title or "—")
-    if a.slug:
-        mkt_item.setData(Qt.ItemDataRole.UserRole, a.slug)
+    effective_slug = slug or a.slug
+    if effective_slug:
+        mkt_item.setData(Qt.ItemDataRole.UserRole, effective_slug)
         mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
 
     table.setItem(row, 0, _cell(a.datetime_utc))
@@ -103,6 +105,7 @@ class ActivityTable(QWidget):
         self._displayed_count = min(_INITIAL_DISPLAY, len(activity))
         self._has_more  = True
         self._loading   = False
+        self._slug_map: dict = {}   # title → slug, populated from closed positions
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -140,7 +143,7 @@ class ActivityTable(QWidget):
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
 
         for row, a in enumerate(display_slice):
-            _populate_row(self._table, row, a)
+            _populate_row(self._table, row, a, self._slug_map.get(a.title))
 
         hdr = self._table.horizontalHeader()
         hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -167,7 +170,7 @@ class ActivityTable(QWidget):
             display_slice = self._all_activity[:self._displayed_count]
             self._table.setRowCount(len(display_slice))
             for row, a in enumerate(display_slice):
-                _populate_row(self._table, row, a)
+                _populate_row(self._table, row, a, self._slug_map.get(a.title))
             _dlog("activity_table",
                   "update_activity(REPLACE): incoming=%d  all=%d  displayed=%d",
                   len(activity), len(self._all_activity), self._displayed_count)
@@ -263,6 +266,22 @@ class ActivityTable(QWidget):
                   "_on_scroll: in-memory exhausted at %d rows — requesting API offset=%d",
                   self._displayed_count, len(self._all_activity))
             self.load_more_requested.emit(len(self._all_activity))
+
+    def update_slug_map(self, slug_map: dict) -> None:
+        """Set the title→slug lookup used for Polymarket right-click links.
+
+        Called by MainWindow when closed positions (which carry slugs) are
+        loaded or refreshed. Updates existing visible rows immediately, and
+        is used for all future row renders.
+        """
+        self._slug_map = slug_map
+        for row_idx in range(self._table.rowCount()):
+            mkt_item = self._table.item(row_idx, 2)
+            if mkt_item and not mkt_item.data(Qt.ItemDataRole.UserRole):
+                slug = slug_map.get(mkt_item.text())
+                if slug:
+                    mkt_item.setData(Qt.ItemDataRole.UserRole, slug)
+                    mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
 
     def _apply_filter(self, text: str) -> None:
         text = text.strip().lower()

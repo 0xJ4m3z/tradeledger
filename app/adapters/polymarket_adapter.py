@@ -117,8 +117,17 @@ def _to_closed(row: dict) -> ResolvedPosition:
     outcome      = row.get("outcome") or ""
     opposite     = row.get("oppositeOutcome") or ""
 
-    is_win          = realized_pnl > 0
-    winning_outcome = outcome if is_win else opposite
+    # Determine the actual winning outcome:
+    #   P/L > 0               → user won (or sold for a profit) → their outcome won
+    #   P/L ≤ 0, proceeds ≈ 0 → market resolved against them → opposite won
+    #   P/L ≤ 0, some proceeds returned → sold early (stop-loss / take-profit exit)
+    #                           → market not yet resolved at exit, winner unknown
+    if realized_pnl > 0:
+        winning_outcome = outcome
+    elif redeem_value < 0.01:
+        winning_outcome = opposite   # got back ~$0 → resolved loss
+    else:
+        winning_outcome = ""         # sold before resolution — outcome unknown
 
     quantity   = total_bought                       # shares bought
     cost_basis = total_bought * avg_price           # USDC spent

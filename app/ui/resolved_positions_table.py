@@ -89,8 +89,12 @@ def _populate_row(table: QTableWidget, row: int, p: ResolvedPosition) -> None:
         mkt_item.setData(Qt.ItemDataRole.UserRole, p.slug)
         mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
     table.setItem(row, 0, mkt_item)
+    win_item = _cell(p.winning_outcome if p.winning_outcome else "—")
+    if not p.winning_outcome:
+        win_item.setForeground(_MUTED)
+
     table.setItem(row, 1, outcome_item)
-    table.setItem(row, 2, _cell(p.winning_outcome))
+    table.setItem(row, 2, win_item)
     table.setItem(row, 3, _cell(f"{p.quantity:,.0f}",       Qt.AlignmentFlag.AlignRight))
     table.setItem(row, 4, _cell(f"${p.cost_basis:,.2f}",    Qt.AlignmentFlag.AlignRight))
     table.setItem(row, 5, _cell(f"${p.redeem_value:,.2f}",  Qt.AlignmentFlag.AlignRight))

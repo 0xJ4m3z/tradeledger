@@ -169,6 +169,12 @@ class MainWindow(QMainWindow):
         self._activity_tab     = ActivityTable(cached_activity)
         self._pnl_tab          = PnlTab(cached_closed)
 
+        # Seed slug map for activity Polymarket links from the closed positions cache
+        if cached_closed:
+            self._activity_tab.update_slug_map(
+                {p.market: p.slug for p in cached_closed if p.slug}
+            )
+
         # ── Signal wiring ───────────────────────────────────────────────────────
         overview.positions_changed.connect(self._on_positions_changed)
         overview.activity_changed.connect(self._activity_tab.update_activity)
@@ -246,6 +252,10 @@ class MainWindow(QMainWindow):
               before, after, len(closed))
         self._pnl_tab.update_positions(closed)
         self._loss_watch_tab.update_positions(active)
+        # Keep activity slug map fresh so Polymarket links appear as soon as slugs arrive
+        self._activity_tab.update_slug_map(
+            {p.market: p.slug for p in self._closed_tab._all_positions if p.slug}
+        )
         self._status_bar.showMessage(
             f"Live Polymarket data  •  {len(active)} active"
             f"  •  {len(resolved)} resolved  •  {len(self._closed_tab._all_positions)} closed"
