@@ -106,6 +106,7 @@ def _populate_row(table: QTableWidget, row: int, p: ResolvedPosition) -> None:
     table.setItem(row, 6, _pnl_cell(p.realized_pnl))
     table.setItem(row, 7, _pnl_cell(p.realized_pnl_pct, "{:+.1f}%"))
 
+    ct = getattr(p, "close_type", "UNKNOWN")
     status_item = _cell(_STATUS_TEXT.get(ct, "—"))
     status_item.setForeground(_STATUS_COLOR.get(ct, _MUTED))
     table.setItem(row, 8, status_item)
