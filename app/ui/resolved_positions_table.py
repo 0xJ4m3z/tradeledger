@@ -315,7 +315,7 @@ class ResolvedPositionsTable(QWidget):
                     p.market,
                     p.outcome_held,
                     p.winning_outcome,
-                    f"{p.quantity:.0f}",
+                    f"{p.quantity:.2f}" if p.quantity < 1 else f"{p.quantity:.0f}",
                     f"{p.cost_basis:.2f}",
                     f"{p.redeem_value:.2f}",
                     f"{p.realized_pnl:.2f}",
