@@ -81,18 +81,32 @@ def _pnl_cell(val: float, fmt: str = "${:,.2f}") -> QTableWidgetItem:
 
 
 def _populate_row(table: QTableWidget, row: int, p: ResolvedPosition) -> None:
+    ct = getattr(p, "close_type", "UNKNOWN")
+
+    # For SOLD positions the user exited before market resolution — we have no way
+    # to know which outcome actually won, so display "—" rather than a wrong guess.
+    if ct == "SOLD":
+        outcome_color  = _MUTED          # neither green nor red (outcome irrelevant)
+        winning_text   = "—"
+        winning_color  = _MUTED
+    else:
+        outcome_color  = _GREEN if p.is_win else _RED
+        winning_text   = p.winning_outcome or "—"
+        winning_color  = _MUTED if not p.winning_outcome else None
+
     outcome_item = _cell(p.outcome_held)
-    outcome_item.setForeground(_GREEN if p.is_win else _RED)
+    outcome_item.setForeground(outcome_color)
 
     mkt_item = _cell(p.market)
     if p.slug:
         mkt_item.setData(Qt.ItemDataRole.UserRole, p.slug)
         mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
-    table.setItem(row, 0, mkt_item)
-    win_item = _cell(p.winning_outcome if p.winning_outcome else "—")
-    if not p.winning_outcome:
-        win_item.setForeground(_MUTED)
 
+    win_item = _cell(winning_text)
+    if winning_color:
+        win_item.setForeground(winning_color)
+
+    table.setItem(row, 0, mkt_item)
     table.setItem(row, 1, outcome_item)
     table.setItem(row, 2, win_item)
     table.setItem(row, 3, _cell(f"{p.quantity:,.0f}",       Qt.AlignmentFlag.AlignRight))
@@ -101,7 +115,6 @@ def _populate_row(table: QTableWidget, row: int, p: ResolvedPosition) -> None:
     table.setItem(row, 6, _pnl_cell(p.realized_pnl))
     table.setItem(row, 7, _pnl_cell(p.realized_pnl_pct, "{:+.1f}%"))
 
-    ct = getattr(p, "close_type", "UNKNOWN")
     status_item = _cell(_STATUS_TEXT.get(ct, "—"))
     status_item.setForeground(_STATUS_COLOR.get(ct, _MUTED))
     table.setItem(row, 8, status_item)
