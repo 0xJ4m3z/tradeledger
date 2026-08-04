@@ -270,42 +270,104 @@ class TestFetchClosedPositions:
         assert p.close_type      == "SOLD"   # got back $30 (not $0) → SOLD not RESOLVED_LOSS
         assert p.realized_pnl    == pytest.approx(-40.0)
 
-    def test_stop_loss_sold_negative_pnl_mid_curprice_uses_pnl_heuristic(self):
-        # API returns sell price for curPrice (not resolution price).
-        # P/L < 0 → assume opposite won (best available signal).
+    def test_gamma_api_returns_actual_winner_for_sold_position(self):
+        # SOLD position with mid-market curPrice and a slug.
+        # Gamma API returns the actual market resolution — "Up" won even though P/L < 0.
+        # (This is the stop-loss-too-early case the user cares about most.)
+        import app.adapters.polymarket_adapter as _mod
+        _mod._slug_winner_cache.clear()
+
+        sold_row = {
+            "title": "Dogecoin Up or Down - 3:30-3:45PM ET",
+            "outcome": "Up",
+            "oppositeOutcome": "Down",
+            "eventSlug": "doge-up-down-1234",
+            "avgPrice": 0.60,
+            "totalBought": 100.0,
+            "realizedPnl": -20.0,     # stop-loss sold at a loss
+            "curPrice": 0.40,          # sell price, not resolution price
+            "endDate": "2026-08-04",
+        }
+        gamma_event = [{
+            "slug": "doge-up-down-1234",
+            "markets": [{
+                "outcomes":      '["Up","Down"]',
+                "outcomePrices": '["1","0"]',   # "Up" resolved to $1 → Up won
+            }],
+        }]
+        # side_effect: first call → closed positions; second → Gamma event
+        with patch("requests.get") as mock_get:
+            mock_get.side_effect = [
+                _mock_response([sold_row]),   # data-api closed-positions
+                _mock_response(gamma_event),  # gamma-api/events?slug=...
+            ]
+            p = fetch_closed_positions(_FAKE_WALLET)[0]
+
+        # Gamma API correctly identifies "Up" as the winner, despite negative P/L
+        assert p.winning_outcome == "Up"
+        assert p.outcome_held    == "Up"
+        assert p.is_win          is True    # user was right, just stopped out early
+        assert p.close_type      == "SOLD"
+        assert p.realized_pnl    == pytest.approx(-20.0)  # they still lost money on the trade
+
+    def test_gamma_api_unavailable_falls_back_to_pnl_sign(self):
+        # Gamma API errors → fall back to P/L sign heuristic.
+        import app.adapters.polymarket_adapter as _mod
+        _mod._slug_winner_cache.clear()
+
+        sold_row = {
+            "title": "Ethereum Up or Down - 3:30-3:35PM ET",
+            "outcome": "Up",
+            "oppositeOutcome": "Down",
+            "eventSlug": "eth-up-down-5678",
+            "avgPrice": 0.50,
+            "totalBought": 100.0,
+            "realizedPnl": -10.0,
+            "curPrice": 0.40,
+        }
+        with patch("requests.get") as mock_get:
+            data_response = _mock_response([sold_row])
+            gamma_error = MagicMock()
+            gamma_error.raise_for_status.side_effect = requests.RequestException("timeout")
+            mock_get.side_effect = [data_response, gamma_error]
+            p = fetch_closed_positions(_FAKE_WALLET)[0]
+
+        assert p.winning_outcome == "Down"   # P/L < 0 → opposite (last-resort heuristic)
+        assert p.close_type      == "SOLD"
+
+    def test_mid_curprice_no_slug_falls_back_to_pnl_heuristic_negative_pnl(self):
+        # No slug → Gamma lookup skipped → P/L < 0 → opposite assumed winner.
         sold_row = {
             "title": "Dogecoin Up or Down - 3:30-3:45PM ET",
             "outcome": "Up",
             "oppositeOutcome": "Down",
             "avgPrice": 0.60,
             "totalBought": 100.0,
-            "realizedPnl": -20.0,     # stopped out at $0.40/share
-            "curPrice": 0.40,          # sell price, NOT resolution price
+            "realizedPnl": -20.0,
+            "curPrice": 0.40,
             "endDate": "2026-08-04",
         }
         with patch("requests.get", return_value=_mock_response([sold_row])):
             p = fetch_closed_positions(_FAKE_WALLET)[0]
-        assert p.winning_outcome == "Down"   # P/L < 0 → opposite assumed winner
-        assert p.outcome_held    == "Up"
+        assert p.winning_outcome == "Down"
         assert p.is_win          is False
         assert p.close_type      == "SOLD"
 
-    def test_stop_loss_sold_positive_pnl_mid_curprice_uses_pnl_heuristic(self):
-        # Sold for a profit with mid-market curPrice → P/L ≥ 0 → user's outcome assumed winner.
+    def test_mid_curprice_no_slug_falls_back_to_pnl_heuristic_positive_pnl(self):
+        # No slug, P/L ≥ 0 → user's outcome assumed winner.
         sold_row = {
             "title": "Ethereum Up or Down - 3:30-3:35PM ET",
             "outcome": "Up",
             "oppositeOutcome": "Down",
             "avgPrice": 0.50,
             "totalBought": 100.0,
-            "realizedPnl": 10.0,       # sold at $0.60/share
-            "curPrice": 0.60,           # sell price, NOT resolution price
+            "realizedPnl": 10.0,
+            "curPrice": 0.60,
             "endDate": "2026-08-04",
         }
         with patch("requests.get", return_value=_mock_response([sold_row])):
             p = fetch_closed_positions(_FAKE_WALLET)[0]
-        assert p.winning_outcome == "Up"     # P/L ≥ 0 → user's outcome assumed winner
-        assert p.outcome_held    == "Up"
+        assert p.winning_outcome == "Up"
         assert p.is_win          is True
         assert p.close_type      == "SOLD"
 

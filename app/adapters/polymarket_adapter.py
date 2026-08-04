@@ -1,5 +1,6 @@
 """
-Read-only Polymarket position lookup via data-api.polymarket.com.
+Read-only Polymarket position lookup via data-api.polymarket.com
+and gamma-api.polymarket.com.
 
 Fetches active, resolved, and closed positions for a wallet address.
 No authentication required — public API only.
@@ -7,7 +8,8 @@ No authentication required — public API only.
 Safety: read-only. No private keys, signatures, or transactions ever.
 """
 
-from typing import List
+import json
+from typing import Dict, List, Optional
 
 import requests
 
@@ -15,10 +17,16 @@ from app.debug import _dlog
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 
 _DATA_API         = "https://data-api.polymarket.com"
+_GAMMA_API        = "https://gamma-api.polymarket.com"
 _TIMEOUT          = 30
 _RETRY_TIMEOUT    = 45   # longer timeout for the one retry attempt
 _PAGE_SIZE        = 50   # /positions endpoint
 _CLOSED_PAGE_SIZE = 50   # /closed-positions endpoint (API max: 50)
+
+# In-process cache: slug → winning outcome name (or None on failure).
+# Populated by _fetch_winner_from_gamma(); survives the session so repeated
+# refreshes don't re-hit the Gamma API for the same market.
+_slug_winner_cache: Dict[str, Optional[str]] = {}
 
 
 class PolymarketLookupError(Exception):
@@ -35,6 +43,78 @@ def _get_with_retry(url: str, params: dict) -> requests.Response:
         return r
     except requests.RequestException as exc:
         raise PolymarketLookupError(f"Network error: {exc}") from exc
+
+
+def _fetch_winner_from_gamma(slug: str) -> Optional[str]:
+    """Return the resolved winning outcome for a Polymarket event by slug.
+
+    Queries the Gamma API events endpoint (gamma-api.polymarket.com/events)
+    with the event slug and inspects the market resolution to determine which
+    outcome token resolved at $1/share.
+
+    Results are cached in _slug_winner_cache for the session — repeated
+    refreshes never re-hit the API for the same market.
+
+    Returns the winning outcome string (e.g. "Up", "Down", "Yes", "No"),
+    or None if the market is unresolved, the slug is missing, or the API
+    call fails for any reason.
+
+    Read-only — no auth, no side effects.
+    """
+    if slug in _slug_winner_cache:
+        return _slug_winner_cache[slug]
+
+    winner: Optional[str] = None
+    try:
+        r = requests.get(
+            f"{_GAMMA_API}/events",
+            params={"slug": slug},
+            timeout=8,
+        )
+        r.raise_for_status()
+        data = r.json()
+        events = data if isinstance(data, list) else ([data] if data else [])
+
+        for event in events:
+            # Some event objects carry a direct winner field.
+            w = event.get("winner") or event.get("winnerOutcome")
+            if w:
+                winner = str(w)
+                break
+
+            # Inspect child markets for resolution data.
+            for market in event.get("markets", []):
+                w = market.get("winner") or market.get("winnerOutcome")
+                if w:
+                    winner = str(w)
+                    break
+
+                # Derive winner from outcomes + outcomePrices arrays.
+                raw_outcomes = market.get("outcomes", "[]")
+                raw_prices   = market.get("outcomePrices", "[]")
+                try:
+                    mkt_outcomes = (json.loads(raw_outcomes)
+                                   if isinstance(raw_outcomes, str) else raw_outcomes)
+                    mkt_prices   = (json.loads(raw_prices)
+                                   if isinstance(raw_prices, str) else raw_prices)
+                    for o, p in zip(mkt_outcomes, mkt_prices):
+                        if float(p) >= 0.99:
+                            winner = str(o)
+                            break
+                except (ValueError, TypeError, json.JSONDecodeError):
+                    pass
+
+                if winner:
+                    break
+            if winner:
+                break
+
+    except Exception as exc:
+        _dlog("gamma_winner", "slug=%s error=%s", slug, exc)
+
+    _slug_winner_cache[slug] = winner
+    _dlog("gamma_winner", "slug=%s → winner=%s", slug, winner)
+    return winner
 
 
 def _paginate(path: str, params: dict, page_size: int, max_pages: int = 0) -> List[dict]:
@@ -125,6 +205,7 @@ def _to_closed(row: dict) -> ResolvedPosition:
     outcome      = row.get("outcome") or ""
     opposite     = row.get("oppositeOutcome") or ""
     cur_price    = float(row.get("curPrice") if row.get("curPrice") is not None else -1)
+    slug         = row.get("eventSlug") or row.get("slug") or None
 
     quantity     = total_bought                       # shares bought
     cost_basis   = total_bought * avg_price           # USDC spent
@@ -132,16 +213,14 @@ def _to_closed(row: dict) -> ResolvedPosition:
 
     # Determine winning outcome and close type.
     #
-    # curPrice is checked first: for positions held to resolution it equals
-    # the final token value (1.0 if this outcome won, 0.0 if it lost) and is
-    # the most reliable signal.
-    #
-    # For CLOB-sold positions the API returns the price at the time of the
-    # sale (e.g. 0.40) rather than the post-resolution price, so curPrice is
-    # mid-market and we fall back to the P/L sign.  P/L ≥ 0 means the market
-    # was moving in the user's favour when they exited → their outcome likely
-    # won; P/L < 0 means the market moved against them → the opposite likely
-    # won.  This is correct in the overwhelming majority of stop-loss cases.
+    # Priority order:
+    #   1. curPrice ≈ 1.0 or ≈ 0.0 → definitive (position held to resolution,
+    #      or sold very close to resolution price).
+    #   2. Gamma API lookup by slug → actual market resolution for SOLD positions
+    #      where curPrice is the sell price, not the resolution price.
+    #   3. Proceeds heuristic (got back ≈$0 → loss; ≈$1/share → win).
+    #   4. P/L sign → last resort; can be wrong for stop-loss exits where the
+    #      user's direction ultimately won.
     if cur_price >= 0.98:
         # Token resolved at ~$1 → user's outcome won.
         winning_outcome = outcome
@@ -152,27 +231,33 @@ def _to_closed(row: dict) -> ResolvedPosition:
         winning_outcome = opposite
         close_type = "RESOLVED_LOSS" if redeem_value < 0.01 else "SOLD"
     else:
-        # curPrice is mid-market (CLOB sell price) or unavailable.
+        # curPrice is mid-market (CLOB sell price, not resolution price) or
+        # unavailable.  This is the common case for stop-loss SOLD positions.
         if redeem_value < 0.01:
-            # Got back nothing → market resolved against them.
+            # Got back nothing → resolved against them without any CLOB exit.
             winning_outcome = opposite
             close_type      = "RESOLVED_LOSS"
         elif quantity > 0 and (redeem_value / quantity) >= 0.95:
-            # Got back ~$1/share → effectively won.
+            # Got back ~$1/share → effectively redeemed at full value.
             winning_outcome = outcome
             close_type      = "REDEEMED_WIN"
         else:
-            # Sold at mid-market — use P/L sign as best available heuristic.
-            winning_outcome = outcome if realized_pnl >= 0 else opposite
-            close_type      = "SOLD"
-            # Log all raw keys once per position so we can find a proper winner field.
-            _dlog("closed_winner",
-                  "mid-market curPrice=%.3f for '%s' | outcome=%s pnl=%.2f | "
-                  "all keys: %s",
-                  cur_price, row.get("title", "?"), outcome, realized_pnl,
-                  sorted(row.keys()))
-
-    slug = row.get("eventSlug") or row.get("slug") or None
+            # Sold at mid-market via stop-loss / take-profit exit.
+            # Use the Gamma API to get the actual market resolution.
+            slug = row.get("eventSlug") or row.get("slug") or None
+            gamma_winner = _fetch_winner_from_gamma(slug) if slug else None
+            if gamma_winner:
+                winning_outcome = gamma_winner
+            else:
+                # Gamma API unavailable or market not yet resolved —
+                # fall back to P/L sign as last resort (wrong for stop-loss
+                # positions where user's direction still won, but avoids "—").
+                winning_outcome = outcome if realized_pnl >= 0 else opposite
+                _dlog("closed_winner",
+                      "gamma miss for '%s' (slug=%s) | fallback P/L sign | "
+                      "all keys: %s",
+                      row.get("title", "?"), slug, sorted(row.keys()))
+            close_type = "SOLD"
 
     return ResolvedPosition(
         market          = row.get("title") or "Unknown",
