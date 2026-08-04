@@ -81,7 +81,8 @@ def _pnl_cell(val: float, fmt: str = "${:,.2f}") -> QTableWidgetItem:
 
 
 def _populate_row(table: QTableWidget, row: int, p: ResolvedPosition) -> None:
-    outcome_color = _GREEN if p.is_win else _RED
+    # Color reflects P/L — negative P/L is red regardless of direction.
+    outcome_color = _GREEN if p.realized_pnl >= 0 else _RED
     winning_text  = p.winning_outcome or "—"
     winning_color = _MUTED if not p.winning_outcome else None
 
