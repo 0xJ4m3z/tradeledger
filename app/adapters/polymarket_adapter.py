@@ -99,39 +99,60 @@ def _to_closed(row: dict) -> ResolvedPosition:
 
     Handles all close types: market resolution (win/loss), CLOB sell
     (including stop-loss triggers), and manual redemption.
-    realizedPnl is the only reliable win indicator across all types —
-    curPrice is the mid-market at close time, not the final resolution
-    price, so it cannot be used for sold positions.
 
     Field semantics from the Polymarket API:
       totalBought  — total SHARES/tokens purchased (NOT USDC spent)
       avgPrice     — average price per share in USDC
       realizedPnl  — net profit/loss in USDC
+      curPrice     — current price of the outcome token AFTER market resolution
+                     (≈ 1.0 if this outcome won; ≈ 0.0 if it lost)
     Derived:
       cost_basis   = totalBought × avgPrice   (USDC actually spent buying)
       redeem_value = cost_basis + realizedPnl (USDC received on close)
+
+    Winner determination:
+      curPrice is the post-resolution price of the outcome the user held.
+      For a fully resolved binary market it is always ~0 or ~1, regardless
+      of whether the user exited via redemption, CLOB sell, or stop-loss —
+      so it is the authoritative signal for the actual winning outcome.
+      We only fall back to a proceeds-based heuristic for legacy records
+      where curPrice is unavailable or still mid-market.
     """
     avg_price    = float(row.get("avgPrice") or 0)
     total_bought = float(row.get("totalBought") or 0)
     realized_pnl = float(row.get("realizedPnl") or 0)
     outcome      = row.get("outcome") or ""
     opposite     = row.get("oppositeOutcome") or ""
+    cur_price    = float(row.get("curPrice") if row.get("curPrice") is not None else -1)
 
     quantity     = total_bought                       # shares bought
     cost_basis   = total_bought * avg_price           # USDC spent
     redeem_value = cost_basis + realized_pnl          # USDC received
 
-    # Determine the actual winning outcome:
-    #   P/L > 0               → user won (or sold for a profit) → their outcome won
-    #   P/L ≤ 0, proceeds ≈ 0 → market resolved against them → opposite won
-    #   P/L ≤ 0, some proceeds returned → sold early (stop-loss / take-profit exit)
-    #                           → market not yet resolved at exit, winner unknown
-    if realized_pnl > 0:
+    # Determine winning outcome and close type using curPrice first.
+    if cur_price >= 0.98:
+        # Outcome token is worth ~$1 → user's outcome won.
         winning_outcome = outcome
-    elif redeem_value < 0.01:
-        winning_outcome = opposite   # got back ~$0 → resolved loss
+        per_share = (redeem_value / quantity) if quantity > 0 else 0
+        # Redeemed at full value vs sold near (or at) resolution price.
+        close_type = "REDEEMED_WIN" if per_share >= 0.95 else "SOLD"
+    elif 0.0 <= cur_price <= 0.02:
+        # Outcome token is worth ~$0 → opposite outcome won.
+        winning_outcome = opposite
+        close_type = "RESOLVED_LOSS" if redeem_value < 0.01 else "SOLD"
     else:
-        winning_outcome = ""         # sold before resolution — outcome unknown
+        # curPrice unavailable or mid-market — fall back to proceeds heuristic.
+        # This path only fires for positions sold before market resolution (or
+        # legacy DB rows fetched before this field was read).
+        if redeem_value < 0.01:
+            winning_outcome = opposite
+            close_type      = "RESOLVED_LOSS"
+        elif quantity > 0 and (redeem_value / quantity) >= 0.95:
+            winning_outcome = outcome
+            close_type      = "REDEEMED_WIN"
+        else:
+            winning_outcome = ""      # market not yet resolved; winner unknown
+            close_type      = "SOLD"
 
     slug = row.get("eventSlug") or row.get("slug") or None
 
@@ -145,6 +166,7 @@ def _to_closed(row: dict) -> ResolvedPosition:
         redeemed        = True,
         resolved_date   = row.get("endDate"),
         closed_at       = int(row.get("timestamp") or 0) or None,
+        close_type      = close_type,
         slug            = slug,
     )
 

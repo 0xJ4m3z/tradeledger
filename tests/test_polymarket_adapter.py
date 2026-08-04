@@ -207,50 +207,89 @@ class TestFetchClosedPositions:
         assert p.is_win          is True
         assert p.winning_outcome == "YES"
 
+    def test_winning_position_close_type_is_redeemed_win(self):
+        # _CLOSED_ROW: 50 shares × $0.50 = $25 cost, +$50 pnl → $75 received → $1.50/share
+        with patch("requests.get", return_value=_mock_response([_CLOSED_ROW])):
+            p = fetch_closed_positions(_FAKE_WALLET)[0]
+        assert p.close_type == "REDEEMED_WIN"
+
     def test_losing_position_sets_winning_outcome_to_opposite(self):
         with patch("requests.get", return_value=_mock_response([_CLOSED_LOSS_ROW])):
             p = fetch_closed_positions(_FAKE_WALLET)[0]
         assert p.is_win          is False
         assert p.winning_outcome == "NO"
 
-    def test_stop_loss_sell_at_loss_treated_as_loss(self):
-        # Bought 100 shares at $0.70/share → $70 USDC cost.  Stop-loss fired;
-        # sold at mid-market for $30 USDC proceeds → -$40 P/L.
-        # totalBought = 100 shares (NOT USDC), avgPrice = $0.70/share.
+    def test_losing_position_close_type_is_resolved_loss(self):
+        # _CLOSED_LOSS_ROW: got back $0 → RESOLVED_LOSS
+        with patch("requests.get", return_value=_mock_response([_CLOSED_LOSS_ROW])):
+            p = fetch_closed_positions(_FAKE_WALLET)[0]
+        assert p.close_type == "RESOLVED_LOSS"
+
+    def test_stop_loss_sold_negative_pnl_but_outcome_won(self):
+        # BNB scenario: held "Up", stop-loss fired at a loss.
+        # Market then resolved "Up" (user's direction was correct).
+        # curPrice = 1.0 → the "Up" token is now worth $1 → "Up" won.
+        # This was the original bug: P/L < 0 incorrectly implied the opposite outcome won.
         sold_row = {
-            "title": "Volatile market",
-            "outcome": "YES",
-            "oppositeOutcome": "NO",
-            "avgPrice": 0.70,
-            "totalBought": 100.0,   # 100 shares
-            "realizedPnl": -40.0,   # $70 cost − $30 proceeds = −$40
-            "curPrice": 0.30,       # mid-market at sell time (NOT resolution price)
-            "endDate": None,
+            "title": "Will BNB go up?",
+            "outcome": "Up",
+            "oppositeOutcome": "Down",
+            "avgPrice": 0.60,
+            "totalBought": 100.0,     # 100 shares
+            "realizedPnl": -20.0,     # sold at $0.40/share → $40 proceeds − $60 cost = −$20
+            "curPrice": 1.0,           # "Up" token resolved to $1 → Up won
+            "endDate": "2026-01-01",
         }
         with patch("requests.get", return_value=_mock_response([sold_row])):
             p = fetch_closed_positions(_FAKE_WALLET)[0]
-        # curPrice=0.30 would wrongly look like a loss via threshold,
-        # but realizedPnl=-40 correctly identifies it as a loss
-        assert p.is_win is False
-        assert p.realized_pnl == pytest.approx(-40.0)
-        assert p.cost_basis   == pytest.approx(70.0)   # 100 shares × $0.70
-        assert p.redeem_value == pytest.approx(30.0)   # $70 cost + (−$40 pnl)
+        assert p.winning_outcome == "Up"    # market resolved in user's favour
+        assert p.outcome_held    == "Up"
+        assert p.is_win          is True    # correct direction despite stop-loss
+        assert p.close_type      == "SOLD"  # exited via stop-loss, not redemption
+        assert p.realized_pnl    == pytest.approx(-20.0)
+        assert p.cost_basis      == pytest.approx(60.0)
+        assert p.redeem_value    == pytest.approx(40.0)
 
-    def test_stop_loss_sell_at_profit_treated_as_win(self):
+    def test_stop_loss_sold_negative_pnl_and_outcome_lost(self):
+        # Stop-loss fired; market then also resolved against user.
+        # curPrice = 0.0 → outcome resolved to $0 → opposite won.
+        sold_row = {
+            "title": "Will BTC go up?",
+            "outcome": "Up",
+            "oppositeOutcome": "Down",
+            "avgPrice": 0.70,
+            "totalBought": 100.0,
+            "realizedPnl": -40.0,     # sold at $0.30/share
+            "curPrice": 0.0,           # "Up" resolved to $0 → Down won
+            "endDate": "2026-01-01",
+        }
+        with patch("requests.get", return_value=_mock_response([sold_row])):
+            p = fetch_closed_positions(_FAKE_WALLET)[0]
+        assert p.winning_outcome == "Down"
+        assert p.outcome_held    == "Up"
+        assert p.is_win          is False
+        assert p.close_type      == "SOLD"   # got back $30 (not $0) → SOLD not RESOLVED_LOSS
+        assert p.realized_pnl    == pytest.approx(-40.0)
+
+    def test_stop_loss_sold_at_profit_outcome_won(self):
+        # Exited early at a profit; market resolved in user's favour.
+        # curPrice = 1.0 → user's outcome won, but they sold before full resolution value.
         sold_row = {
             "title": "Another market",
             "outcome": "NO",
             "oppositeOutcome": "YES",
             "avgPrice": 0.30,
-            "totalBought": 30.0,
-            "realizedPnl": 20.0,   # sold for $50, paid $30 → +$20
-            "curPrice": 0.50,
+            "totalBought": 100.0,
+            "realizedPnl": 20.0,      # sold at $0.50/share → $50 proceeds − $30 cost = $20
+            "curPrice": 1.0,           # "NO" ultimately resolved to $1 → No won
             "endDate": None,
         }
         with patch("requests.get", return_value=_mock_response([sold_row])):
             p = fetch_closed_positions(_FAKE_WALLET)[0]
-        assert p.is_win is True
-        assert p.realized_pnl == pytest.approx(20.0)
+        assert p.winning_outcome == "NO"
+        assert p.is_win          is True
+        assert p.close_type      == "SOLD"   # $50 proceeds on 100 shares = $0.50/share, not $1
+        assert p.realized_pnl    == pytest.approx(20.0)
 
     def test_cost_basis_is_shares_times_avg_price(self):
         # _CLOSED_ROW: totalBought=50 shares, avgPrice=0.5 → cost_basis=25 USDC

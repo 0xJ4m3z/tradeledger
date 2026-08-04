@@ -81,18 +81,9 @@ def _pnl_cell(val: float, fmt: str = "${:,.2f}") -> QTableWidgetItem:
 
 
 def _populate_row(table: QTableWidget, row: int, p: ResolvedPosition) -> None:
-    ct = getattr(p, "close_type", "UNKNOWN")
-
-    # For SOLD positions the user exited before market resolution — we have no way
-    # to know which outcome actually won, so display "—" rather than a wrong guess.
-    if ct == "SOLD":
-        outcome_color  = _MUTED          # neither green nor red (outcome irrelevant)
-        winning_text   = "—"
-        winning_color  = _MUTED
-    else:
-        outcome_color  = _GREEN if p.is_win else _RED
-        winning_text   = p.winning_outcome or "—"
-        winning_color  = _MUTED if not p.winning_outcome else None
+    outcome_color = _GREEN if p.is_win else _RED
+    winning_text  = p.winning_outcome or "—"
+    winning_color = _MUTED if not p.winning_outcome else None
 
     outcome_item = _cell(p.outcome_held)
     outcome_item.setForeground(outcome_color)
