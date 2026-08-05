@@ -74,4 +74,4 @@ class UserActivity:
 
     @property
     def datetime_utc(self) -> str:
-        return datetime.fromtimestamp(self.timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+        return datetime.fromtimestamp(self.timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")

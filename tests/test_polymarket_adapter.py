@@ -528,7 +528,7 @@ class TestFetchActivity:
         with patch("requests.get", return_value=_mock_response([_ACTIVITY_ROW])):
             a = fetch_activity(_FAKE_WALLET)[0]
         # Just check it returns a string in expected format — exact value depends on TZ
-        assert len(a.datetime_utc) == 16   # "YYYY-MM-DD HH:MM"
+        assert len(a.datetime_utc) == 19   # "YYYY-MM-DD HH:MM:SS"
         assert "-" in a.datetime_utc
         assert ":" in a.datetime_utc
 
