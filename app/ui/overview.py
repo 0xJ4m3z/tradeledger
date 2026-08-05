@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.services import notes as _notes
+from app.services.window_timing import window_closed as _window_closed
 from app.ui.polymarket_menu import MENU_STYLE, NOTE_INDICATOR, _run_note_dialog, open_polymarket
 
 from app.database import (
@@ -340,10 +341,12 @@ def _fmt_sold_time(p: ResolvedPosition) -> str:
 def _sold_section(positions: List[ResolvedPosition], range_label: str = "") -> QWidget:
     """Closed positions that were CLOB-sold (stop-loss / manual exit).
 
-    Derived from the full filtered closed list by selecting close_type == "SOLD".
-    Winning Outcome shows 'Pending…' when the market has not yet resolved.
+    Shows only positions whose market window is still open (not yet resolved).
+    Once the window end time passes, the position graduates to the Closed section.
     """
-    sold = [p for p in positions if getattr(p, "close_type", None) == "SOLD"]
+    sold = [p for p in positions
+            if getattr(p, "close_type", None) == "SOLD"
+            and not _window_closed(p.market, p.resolved_date, p.closed_at)]
 
     outer = QWidget()
     vbox = QVBoxLayout(outer)
@@ -427,9 +430,12 @@ _OVERVIEW_ROW_CAP = 100   # max rows rendered in the overview panel grid
 
 
 def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") -> QWidget:
-    # Exclude SOLD positions — they have their own section above.
-    # The Closed section only shows positions that resolved definitively.
-    positions = [p for p in positions if getattr(p, "close_type", None) != "SOLD"]
+    # Show definitively resolved positions (REDEEMED_WIN / RESOLVED_LOSS) plus
+    # any SOLD positions whose market window has now closed — those graduate here
+    # from the Sold section once the window end time passes.
+    positions = [p for p in positions
+                 if getattr(p, "close_type", None) != "SOLD"
+                 or _window_closed(p.market, p.resolved_date, p.closed_at)]
 
     outer = QWidget()
     vbox = QVBoxLayout(outer)
