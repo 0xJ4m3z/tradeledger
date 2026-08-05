@@ -215,6 +215,16 @@ class MainWindow(QMainWindow):
         _sm, _lw, _fa = self._settings_tab.initial_chart_style()
         overview.apply_chart_style(_sm, _lw, _fa)
 
+        # ── User stream (authenticated WebSocket) ───────────────────────────────
+        # Give Overview a reference to SettingsTab so it can update the status label.
+        overview.set_settings_tab(self._settings_tab)
+        # Wire file-picker changes in Settings → start/stop user stream
+        self._settings_tab.credentials_file_changed.connect(overview.on_credentials_file_changed)
+        # Start stream immediately if a credentials file was saved from a previous session
+        _creds_path = self._settings_tab.initial_credentials_file()
+        if _creds_path:
+            overview.on_credentials_file_changed(_creds_path)
+
         # ── Tabs ────────────────────────────────────────────────────────────────
         tabs = QTabWidget()
         tabs.addTab(overview,                  "Overview")

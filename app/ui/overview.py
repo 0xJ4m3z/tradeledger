@@ -1,3 +1,4 @@
+import time
 from datetime import datetime
 from typing import List
 
@@ -32,6 +33,8 @@ from app.debug import _dlog
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 from app.services.loss_watch import compute_loss_watch_count
 from app.services.market_stream import MarketStreamThread
+from app.services.user_stream import UserStreamThread
+from app.services import credentials as _creds
 from app.services.metrics import compute_dashboard_metrics, compute_total_tracked_value
 from app.services.daily_pnl import sort_closed_positions_newest_first
 from app.services.pnl_today import (
@@ -526,6 +529,12 @@ class OverviewWidget(QWidget):
         self._price_update_pending: bool        = False
         self._trade_debounce: QTimer | None     = None
 
+        # User stream (authenticated WebSocket) — started when credentials are loaded
+        self._user_stream: UserStreamThread | None = None
+        self._user_stream_connected: bool          = False
+        # Settings tab reference for status feedback (set via set_settings_tab())
+        self._settings_tab = None
+
         # WalletPanel is owned by MainWindow / displayed in SettingsTab;
         # we hold a reference here for data-flow purposes only (no layout add).
         self._wallet_panel = wallet_panel
@@ -612,12 +621,20 @@ class OverviewWidget(QWidget):
         ctrl.range_changed.connect(self._on_range_changed)
         hbox.addWidget(ctrl, 1)
 
-        # Live stream indicator — shows ● LIVE when WebSocket is connected
+        # Market stream indicator
         self._stream_dot = QLabel("○  No stream")
         self._stream_dot.setStyleSheet(
             f"color: {_MUTED}; font-size: 11px; padding: 0 6px;"
         )
         hbox.addWidget(self._stream_dot, 0, Qt.AlignmentFlag.AlignRight)
+
+        # User stream indicator (hidden until credentials are loaded)
+        self._user_dot = QLabel("")
+        self._user_dot.setStyleSheet(
+            f"color: {_MUTED}; font-size: 11px; padding: 0 6px;"
+        )
+        self._user_dot.setVisible(False)
+        hbox.addWidget(self._user_dot, 0, Qt.AlignmentFlag.AlignRight)
 
         self._refresh_btn = QPushButton("Refresh")
         self._refresh_btn.setFixedHeight(30)
@@ -731,6 +748,150 @@ class OverviewWidget(QWidget):
         """Trigger an immediate refresh when one of our markets resolves."""
         self.request_refresh()
 
+    # ── User stream (authenticated WebSocket) ──────────────────────────────────
+
+    def set_settings_tab(self, tab) -> None:
+        """Store a reference to SettingsTab for status feedback."""
+        self._settings_tab = tab
+
+    def on_credentials_file_changed(self, path: str) -> None:
+        """Called when the user picks or clears a credentials file in Settings.
+
+        Reads the file, starts/restarts the user stream if credentials are valid,
+        or stops it if the file is removed.
+        """
+        creds = _creds.load_from_file(path) if path else None
+        if creds:
+            api_key, secret, passphrase = creds
+            self._start_user_stream(api_key, secret, passphrase)
+        else:
+            self._stop_user_stream()
+            self._user_dot.setVisible(False)
+
+    def _start_user_stream(self, api_key: str, secret: str, passphrase: str) -> None:
+        """Start (or restart) the authenticated user stream."""
+        self._stop_user_stream()
+        self._user_stream_connected = False
+        self._user_dot.setText("○  User stream…")
+        self._user_dot.setStyleSheet(f"color: {_MUTED}; font-size: 11px; padding: 0 6px;")
+        self._user_dot.setVisible(True)
+
+        self._user_stream = UserStreamThread(api_key, secret, passphrase)
+        self._user_stream.trade_event.connect(self._on_user_trade)
+        self._user_stream.stream_connected.connect(self._on_user_stream_connected)
+        self._user_stream.stream_disconnected.connect(self._on_user_stream_disconnected)
+        self._user_stream.stream_error.connect(self._on_user_stream_error)
+        self._user_stream.start()
+
+        if self._settings_tab is not None:
+            self._settings_tab.update_stream_status(False)
+
+    def _stop_user_stream(self) -> None:
+        if self._user_stream is not None:
+            self._user_stream.stop()
+            self._user_stream.wait(1500)
+            self._user_stream = None
+        self._user_stream_connected = False
+
+    def _on_user_stream_connected(self) -> None:
+        self._user_stream_connected = True
+        self._user_dot.setText("● User stream")
+        self._user_dot.setStyleSheet(f"color: {_GREEN}; font-size: 11px; padding: 0 6px;")
+        self._user_dot.setVisible(True)
+        if self._settings_tab is not None:
+            self._settings_tab.update_stream_status(True)
+
+    def _on_user_stream_disconnected(self) -> None:
+        self._user_stream_connected = False
+        self._user_dot.setText("○  User…")
+        self._user_dot.setStyleSheet(f"color: {_MUTED}; font-size: 11px; padding: 0 6px;")
+        if self._settings_tab is not None:
+            self._settings_tab.update_stream_status(False)
+
+    def _on_user_stream_error(self, error: str) -> None:
+        self._user_dot.setText("✗  User auth error")
+        self._user_dot.setStyleSheet(f"color: #f85149; font-size: 11px; padding: 0 6px;")
+        if self._settings_tab is not None:
+            self._settings_tab.update_stream_status(False, error)
+
+    def _on_user_trade(self, event: dict) -> None:
+        """Handle a Trade Event from the authenticated user stream.
+
+        Converts the event to a UserActivity row and injects it into the
+        in-memory activity list.  For SELL events, the sold-stubs mechanism
+        immediately updates the Sold section — no API round-trip needed.
+        For BUY events, trigger a debounced refresh to pick up the new position.
+
+        Only processes MATCHED events (the first confirmation) to avoid
+        creating duplicate activity rows for MINED / CONFIRMED status updates
+        of the same trade.
+        """
+        status = (event.get("status") or "").upper()
+        # Skip repeated status updates for the same trade — act on first arrival only.
+        # MATCHED is the first status from the CLOB; if absent (some server versions
+        # omit it), also accept empty/unknown status to avoid missing events.
+        if status and status not in ("MATCHED", ""):
+            return
+
+        side  = (event.get("side") or "").upper()
+        title = event.get("title") or ""
+        outcome = event.get("outcome") or ""
+
+        # Parse timestamp — match_time may be epoch-seconds string or ISO datetime
+        ts_raw = event.get("match_time") or event.get("timestamp") or ""
+        try:
+            ts = int(float(ts_raw))
+        except (ValueError, TypeError):
+            try:
+                from datetime import timezone
+                dt = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+                ts = int(dt.astimezone(timezone.utc).timestamp())
+            except Exception:
+                ts = int(time.time())
+
+        size  = float(event.get("size")  or 0)
+        price = float(event.get("price") or 0)
+
+        activity_row = UserActivity(
+            timestamp = ts,
+            type      = "TRADE",
+            title     = title,
+            outcome   = outcome,
+            side      = side,
+            size      = size,
+            usdc_size = round(size * price, 6),
+            price     = price,
+            slug      = None,
+        )
+
+        # Dedup: skip if an identical event is already in the list
+        key = (ts, "TRADE", side, size)
+        if any((a.timestamp, a.type, a.side, a.size) == key for a in self._activity):
+            return
+
+        # Prepend (newest first)
+        self._activity.insert(0, activity_row)
+        _dlog("user_stream", "trade event: %s %s %s qty=%.2f price=%.4f",
+              side, outcome, title[:40], size, price)
+
+        # For SELL: immediately rebuild sold stubs so the position appears in
+        # the Sold section without waiting for the next API poll.
+        if side == "SELL":
+            self._refresh_closed_section()
+
+        # For BUY (or unknown side): trigger a debounced refresh to pick up the
+        # new active position from the API (we don't have cost-basis data here).
+        if side != "SELL":
+            if self._trade_debounce and self._trade_debounce.isActive():
+                return
+            self._trade_debounce = QTimer(self)
+            self._trade_debounce.setSingleShot(True)
+            self._trade_debounce.timeout.connect(self.request_refresh)
+            self._trade_debounce.start(5_000)
+
+        # Emit updated activity so the Activity tab shows it too
+        self.activity_changed.emit(self._activity)
+
     def _on_range_changed(self, selection: DateRangeSelection) -> None:
         self._selection = selection
         self._refresh_closed_section()
@@ -842,9 +1003,10 @@ class OverviewWidget(QWidget):
         self._activity = []
         self._closed_positions = []
         self._chart.update([], [], self._selection.preset or "1d")
-        # Stop stream for old wallet — will restart once new wallet's positions load
+        # Stop market stream for old wallet — restarts once new wallet's positions load
         self._stop_stream()
         self._stream_token_ids = set()
+        # User stream is per-credentials, not per-wallet — keep it running
 
     # ── Wallet value update ────────────────────────────────────────────────────
 
@@ -1042,8 +1204,9 @@ class OverviewWidget(QWidget):
         self._loss_watch_card.update_count(count)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        """Stop the market stream cleanly before the widget is destroyed."""
+        """Stop both streams cleanly before the widget is destroyed."""
         self._stop_stream()
+        self._stop_user_stream()
         super().closeEvent(event)
 
     def apply_chart_style(self, smooth: bool, linewidth: float, fill_alpha: float) -> None:

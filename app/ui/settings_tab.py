@@ -1,4 +1,4 @@
-"""Settings tab — wallet configuration, chart options, export folder."""
+"""Settings tab — wallet configuration, chart options, export folder, user stream."""
 from __future__ import annotations
 
 import os
@@ -12,12 +12,12 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSizePolicy,
-    QSlider,
     QVBoxLayout,
     QWidget,
 )
 
 from app.database import load_setting, save_setting
+from app.services import credentials as _creds
 
 # ── Palette (matches the rest of the app) ─────────────────────────────────────
 _BG     = "#0d1117"
@@ -26,6 +26,7 @@ _BORDER = "#30363d"
 _MUTED  = "#8b949e"
 _TEXT   = "#c9d1d9"
 _BLUE   = "#58a6ff"
+_GREEN  = "#3fb950"
 
 _SECTION_HDR = (
     f"color: {_TEXT}; font-size: 14px; font-weight: 600;"
@@ -90,6 +91,11 @@ class SettingsTab(QWidget):
     # Emitted when any chart option changes: (smooth, linewidth, fill_alpha)
     chart_settings_changed = Signal(bool, float, float)
 
+    # Emitted when the credentials file path changes (or is cleared).
+    # Recipients call credentials.load_from_file() on the path themselves
+    # so credentials are never held inside this widget.
+    credentials_file_changed = Signal(str)   # file path, or "" if cleared
+
     def __init__(self, wallet_panel: QWidget, parent=None):
         super().__init__(parent)
 
@@ -119,6 +125,12 @@ class SettingsTab(QWidget):
         wc_layout.setSpacing(0)
         wc_layout.addWidget(wallet_panel)
         outer.addWidget(wallet_card)
+
+        outer.addWidget(_divider())
+
+        # ── Live Trade Stream ──────────────────────────────────────────────────
+        outer.addWidget(_section_label("Live Trade Stream"))
+        outer.addWidget(self._build_stream_card())
 
         outer.addWidget(_divider())
 
@@ -222,6 +234,131 @@ class SettingsTab(QWidget):
 
         outer.addWidget(chart_card)
         outer.addStretch(1)
+
+    # ── Live Trade Stream (credentials file) ──────────────────────────────────
+
+    def _build_stream_card(self) -> QFrame:
+        card = QFrame()
+        card.setStyleSheet(_CARD_FRAME)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(10)
+
+        # Description
+        desc = QLabel(
+            "Point to the credentials file pm-bot already uses.  "
+            "TradeLedger reads only the API key, secret, and passphrase — "
+            "your private key and wallet address are never touched."
+        )
+        desc.setStyleSheet(f"color: {_MUTED}; font-size: 12px;")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        # Expected fields note
+        fields_lbl = QLabel(
+            "Required fields (any of):  "
+            "<span style='color:#58a6ff;'>CLOB_API_KEY</span>  ·  "
+            "<span style='color:#58a6ff;'>CLOB_API_SECRET</span>  ·  "
+            "<span style='color:#58a6ff;'>CLOB_API_PASSPHRASE</span>"
+        )
+        fields_lbl.setStyleSheet(f"color: {_MUTED}; font-size: 11px;")
+        fields_lbl.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(fields_lbl)
+
+        layout.addWidget(_field_label("Credentials file"))
+
+        # File path row
+        file_row = QHBoxLayout()
+        file_row.setSpacing(8)
+
+        self._creds_edit = QLineEdit()
+        self._creds_edit.setPlaceholderText("Select your .env or credentials.json file…")
+        self._creds_edit.setReadOnly(True)
+        self._creds_edit.setStyleSheet(
+            f"background-color: {_BG}; border: 1px solid {_BORDER}; border-radius: 4px;"
+            f" color: {_TEXT}; padding: 6px 10px; font-size: 13px;"
+        )
+
+        browse_creds = QPushButton("Browse…")
+        browse_creds.setStyleSheet(
+            f"background-color: #21262d; border: 1px solid {_BORDER}; border-radius: 4px;"
+            f" color: {_TEXT}; padding: 6px 14px; font-size: 13px; min-width: 80px;"
+        )
+        browse_creds.clicked.connect(self._on_browse_creds)
+
+        clear_creds = QPushButton("Clear")
+        clear_creds.setStyleSheet(
+            f"background-color: #21262d; border: 1px solid {_BORDER}; border-radius: 4px;"
+            f" color: {_MUTED}; padding: 6px 10px; font-size: 13px; min-width: 50px;"
+        )
+        clear_creds.clicked.connect(self._on_clear_creds)
+
+        file_row.addWidget(self._creds_edit, 1)
+        file_row.addWidget(browse_creds)
+        file_row.addWidget(clear_creds)
+        layout.addLayout(file_row)
+
+        # Validation status label
+        self._creds_status = QLabel("")
+        self._creds_status.setStyleSheet(f"color: {_MUTED}; font-size: 12px;")
+        layout.addWidget(self._creds_status)
+
+        # Load persisted path and show status
+        saved_path = load_setting("user_creds_file", "")
+        if saved_path:
+            self._creds_edit.setText(saved_path)
+            self._refresh_creds_status(saved_path)
+
+        return card
+
+    def _on_browse_creds(self) -> None:
+        current = self._creds_edit.text()
+        start   = os.path.dirname(current) if current else os.path.expanduser("~")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Credentials File", start,
+            "Env / JSON files (*.env *.json *.txt);;All files (*)"
+        )
+        if path:
+            self._creds_edit.setText(path)
+            save_setting("user_creds_file", path)
+            self._refresh_creds_status(path)
+            self.credentials_file_changed.emit(path)
+
+    def _on_clear_creds(self) -> None:
+        self._creds_edit.clear()
+        save_setting("user_creds_file", "")
+        self._creds_status.setText("")
+        self._creds_status.setStyleSheet(f"color: {_MUTED}; font-size: 12px;")
+        self.credentials_file_changed.emit("")
+
+    def _refresh_creds_status(self, path: str) -> None:
+        ok, msg = _creds.validate_file(path)
+        color   = _GREEN if ok else "#f85149"
+        self._creds_status.setText(msg)
+        self._creds_status.setStyleSheet(f"color: {color}; font-size: 12px;")
+
+    def update_stream_status(self, connected: bool, error: str = "") -> None:
+        """Called by Overview to reflect live user-stream status in Settings."""
+        if error:
+            self._creds_status.setText(f"✗  {error}")
+            self._creds_status.setStyleSheet("color: #f85149; font-size: 12px;")
+        elif connected:
+            self._creds_status.setText("✓  Connected — receiving live trade events")
+            self._creds_status.setStyleSheet(f"color: {_GREEN}; font-size: 12px;")
+        else:
+            path = self._creds_edit.text()
+            if path:
+                # Not connected yet but file is valid — probably reconnecting
+                ok, msg = _creds.validate_file(path)
+                if ok:
+                    self._creds_status.setText("○  Connecting…")
+                    self._creds_status.setStyleSheet(f"color: {_MUTED}; font-size: 12px;")
+
+    # ── Public — seed from persisted settings on startup ──────────────────────
+
+    def initial_credentials_file(self) -> str:
+        """Return the credentials file path saved in DB (may be empty)."""
+        return load_setting("user_creds_file", "")
 
     # ── Export folder ──────────────────────────────────────────────────────────
 
