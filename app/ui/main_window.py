@@ -169,11 +169,15 @@ class MainWindow(QMainWindow):
         self._activity_tab     = ActivityTable(cached_activity)
         self._pnl_tab          = PnlTab(cached_closed)
 
-        # Seed slug map for activity Polymarket links from the closed positions cache
+        # Seed slug maps for all tabs that show Polymarket links.
+        # Many DB-cached positions have slug=None (cached before slug support was added);
+        # this seeds from whatever slugs ARE available at startup so links work immediately.
         if cached_closed:
-            self._activity_tab.update_slug_map(
-                {p.market: p.slug for p in cached_closed if p.slug}
-            )
+            _startup_slug_map = {p.market: p.slug for p in cached_closed if p.slug}
+            if _startup_slug_map:
+                self._activity_tab.update_slug_map(_startup_slug_map)
+                self._closed_tab.update_slug_map(_startup_slug_map)
+                self._resolved_tab.update_slug_map(_startup_slug_map)
 
         # ── Signal wiring ───────────────────────────────────────────────────────
         overview.positions_changed.connect(self._on_positions_changed)
@@ -252,10 +256,11 @@ class MainWindow(QMainWindow):
               before, after, len(closed))
         self._pnl_tab.update_positions(closed)
         self._loss_watch_tab.update_positions(active)
-        # Keep activity slug map fresh so Polymarket links appear as soon as slugs arrive
-        self._activity_tab.update_slug_map(
-            {p.market: p.slug for p in self._closed_tab._all_positions if p.slug}
-        )
+        # Push fresh slug map to all tabs so right-click links appear everywhere.
+        _slug_map = {p.market: p.slug for p in self._closed_tab._all_positions if p.slug}
+        self._activity_tab.update_slug_map(_slug_map)
+        self._closed_tab.update_slug_map(_slug_map)
+        self._resolved_tab.update_slug_map(_slug_map)
         self._status_bar.showMessage(
             f"Live Polymarket data  •  {len(active)} active"
             f"  •  {len(resolved)} resolved  •  {len(self._closed_tab._all_positions)} closed"
@@ -270,6 +275,12 @@ class MainWindow(QMainWindow):
             self._closed_tab.load_from_cache(all_closed)
             after  = len(self._closed_tab._all_positions)
             _dlog("backfill", "closed_tab: %d → %d rows after cache injection", before, after)
+            # Backfill slugs for any rows that gained them via this cache update.
+            _slug_map = {p.market: p.slug for p in self._closed_tab._all_positions if p.slug}
+            if _slug_map:
+                self._closed_tab.update_slug_map(_slug_map)
+                self._resolved_tab.update_slug_map(_slug_map)
+                self._activity_tab.update_slug_map(_slug_map)
         self._status_bar.showMessage(
             f"Live Polymarket data  •  {len(all_closed)} closed positions cached"
         )

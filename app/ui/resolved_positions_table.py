@@ -299,6 +299,30 @@ class ResolvedPositionsTable(QWidget):
               "load_from_cache: incoming=%d  +%d new  all=%d→%d  displayed=%d",
               len(positions), len(fresh), old_all, len(self._all_positions), self._displayed_count)
 
+    def update_slug_map(self, slug_map: dict) -> None:
+        """Backfill Polymarket slugs onto in-memory positions and visible table rows.
+
+        Many positions cached before slug support was added have slug=None, which
+        means right-click menus never appear for them.  Calling this after a fresh
+        fetch patches those gaps without a full rebuild.
+
+        slug_map: {market_title → slug}, built from freshly-fetched positions.
+        """
+        for p in self._all_positions:
+            if not p.slug:
+                slug = slug_map.get(p.market)
+                if slug:
+                    p.slug = slug
+
+        # Patch visible rows in the table as well (avoids a full rebuild).
+        for row_idx in range(self._table.rowCount()):
+            mkt_item = self._table.item(row_idx, 0)
+            if mkt_item and not mkt_item.data(Qt.ItemDataRole.UserRole):
+                slug = slug_map.get(mkt_item.text())
+                if slug:
+                    mkt_item.setData(Qt.ItemDataRole.UserRole, slug)
+                    mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
+
     def _export_csv(self) -> None:
         """Export the currently filtered positions to a CSV file."""
         if self._show_date_filter and not self._selection.is_all():
