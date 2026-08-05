@@ -272,6 +272,19 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_activity_wallet_ts "
             "ON activity_cache(wallet_address, timestamp DESC)"
         )
+        # Trade notes — keyed by (wallet_address, market).  Persists across sessions;
+        # never committed (gitignored via *.db).
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trade_notes (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                wallet_address TEXT NOT NULL,
+                market         TEXT NOT NULL,
+                note           TEXT NOT NULL DEFAULT '',
+                created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (wallet_address, market)
+            )
+        """)
         # Migrate activity cache to v2 dedup key (adds title+outcome to the key).
         # Old key (ts|type|side|size) caused false dedup collisions when different
         # markets shared the same timestamp, type, side, and size, capping the cache
@@ -1151,3 +1164,47 @@ def count_closed_for_range(wallet_address: str, range_key: str) -> int:
                 {"w": wallet_address, "epoch": since_epoch, "date": since_date},
             ).fetchone()
     return row["n"] if row else 0
+
+
+# ── Trade notes ───────────────────────────────────────────────────────────────
+
+def load_all_trade_notes(wallet_address: str) -> dict:
+    """Return {market: note} for all saved notes for this wallet."""
+    if not wallet_address:
+        return {}
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT market, note FROM trade_notes WHERE wallet_address = ?",
+            (wallet_address,),
+        ).fetchall()
+    return {r["market"]: r["note"] for r in rows if r["note"]}
+
+
+def save_trade_note(wallet_address: str, market: str, note: str) -> None:
+    """Upsert a note for (wallet, market).  Blank note is a no-op; use delete instead."""
+    if not wallet_address or not market or not note.strip():
+        return
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO trade_notes (wallet_address, market, note, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(wallet_address, market)
+            DO UPDATE SET note = excluded.note, updated_at = excluded.updated_at
+            """,
+            (wallet_address, market, note.strip(), now, now),
+        )
+        conn.commit()
+
+
+def delete_trade_note(wallet_address: str, market: str) -> None:
+    """Delete the note for (wallet, market) if one exists."""
+    if not wallet_address or not market:
+        return
+    with get_connection() as conn:
+        conn.execute(
+            "DELETE FROM trade_notes WHERE wallet_address = ? AND market = ?",
+            (wallet_address, market),
+        )
+        conn.commit()

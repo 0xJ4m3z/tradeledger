@@ -14,7 +14,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.ui.polymarket_menu import MENU_STYLE, open_polymarket
+from app.services import notes as _notes
+from app.ui.polymarket_menu import MENU_STYLE, NOTE_INDICATOR, open_polymarket
 
 from app.database import (
     clear_wallet_snapshots_today,
@@ -160,20 +161,61 @@ def _row_cell(text: str, align=_L, color: str = _TEXT) -> QLabel:
 
 
 def _market_row_cell(text: str, slug: str = None) -> QLabel:
-    """Market cell with optional right-click 'Open on Polymarket' menu."""
-    lbl = _row_cell(text)
-    if slug:
-        lbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+    """Market cell with optional right-click menu (Open on Polymarket + Add Note)."""
+    note = _notes.get(text)
+    display = text + NOTE_INDICATOR if note else text
+    lbl = _row_cell(display)
+    lbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+    if slug and note:
+        lbl.setToolTip(f"📝 {note}\n\nRight-click to open on Polymarket")
+    elif slug:
         lbl.setToolTip("Right-click to open on Polymarket")
+    elif note:
+        lbl.setToolTip(f"📝 {note}")
 
-        def _show_menu(pos, _s=slug, _lbl=lbl):
-            menu = QMenu(_lbl)
-            menu.setStyleSheet(MENU_STYLE)
-            action = menu.addAction("Open on Polymarket")
-            if menu.exec(_lbl.mapToGlobal(pos)) == action:
-                open_polymarket(_s)
+    def _show_menu(pos, _market=text, _slug=slug, _lbl=lbl):
+        from PySide6.QtWidgets import QInputDialog
+        current_note = _notes.get(_market)
+        menu = QMenu(_lbl)
+        menu.setStyleSheet(MENU_STYLE)
+        open_action  = None
+        clear_action = None
+        if _slug:
+            open_action = menu.addAction("Open on Polymarket")
+            menu.addSeparator()
+        note_label  = "Edit Note…" if current_note else "Add Note…"
+        note_action = menu.addAction(note_label)
+        if current_note:
+            clear_action = menu.addAction("Clear Note")
+        chosen = menu.exec(_lbl.mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen == open_action:
+            open_polymarket(_slug)
+        elif chosen == note_action:
+            new_note, ok = QInputDialog.getMultiLineText(
+                _lbl, "Trade Note", _market, current_note or ""
+            )
+            if not ok:
+                return
+            if new_note.strip():
+                _notes.set(_market, new_note.strip())
+                _lbl.setText(_market + NOTE_INDICATOR)
+                _lbl.setToolTip(
+                    f"📝 {new_note.strip()}"
+                    + ("\n\nRight-click to open on Polymarket" if _slug else "")
+                )
+            else:
+                _notes.delete(_market)
+                _lbl.setText(_market)
+                _lbl.setToolTip("Right-click to open on Polymarket" if _slug else "")
+        elif clear_action and chosen == clear_action:
+            _notes.delete(_market)
+            _lbl.setText(_market)
+            _lbl.setToolTip("Right-click to open on Polymarket" if _slug else "")
 
-        lbl.customContextMenuRequested.connect(_show_menu)
+    lbl.customContextMenuRequested.connect(_show_menu)
     return lbl
 
 
@@ -543,8 +585,9 @@ class OverviewWidget(QWidget):
                   address[:10], len(self._activity))
             return
 
-        # Truly different wallet: switch caches and clear stale data
+        # Truly different wallet: reload notes for the new wallet, switch caches.
         _dlog("wallet", "wallet changed to %s — clearing cached data", address[:10])
+        _notes.load_for_wallet(address)
         self._confirmed_wallet = address
         self._activity = []
         self._closed_positions = []

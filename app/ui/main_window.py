@@ -2,6 +2,7 @@ from PySide6.QtWidgets import QMainWindow, QStatusBar, QTabWidget, QVBoxLayout, 
 
 from app.adapters.sample_adapter import load_all
 from app.debug import _dlog
+from app.services import notes as _notes
 from app.database import (
     load_active_positions_cache,
     load_all_activity_for_wallet,
@@ -125,6 +126,7 @@ class MainWindow(QMainWindow):
         # The WalletPanel auto-triggers a live refresh in the background; cached data
         # provides instant display while the fetch completes.
         _init_wallet    = load_last_wallet()
+        _notes.load_for_wallet(_init_wallet or "")
         cached_active   = load_active_positions_cache(_init_wallet)    if _init_wallet else []
         cached_resolved = load_resolved_positions_cache(_init_wallet)  if _init_wallet else []
         cached_activity = load_all_activity_for_wallet(_init_wallet)   if _init_wallet else []

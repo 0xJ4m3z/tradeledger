@@ -16,7 +16,8 @@ from PySide6.QtWidgets import (
 
 from app.debug import _dlog
 from app.models import UserActivity
-from app.ui.polymarket_menu import attach_table_links
+from app.services import notes as _notes
+from app.ui.polymarket_menu import NOTE_INDICATOR, _ROLE_SLUG, _ROLE_TITLE, attach_table_links
 
 COLUMNS = ["Time (UTC)", "Type", "Market", "Outcome", "Side", "Tokens", "USDC", "Price"]
 
@@ -79,11 +80,19 @@ def _populate_row(table: QTableWidget, row: int, a: UserActivity,
         side_item.setForeground(side_color)
         outcome_item = _cell(a.outcome or "—")
 
-    mkt_item = _cell(a.title or "—")
+    title = a.title or "—"
+    note  = _notes.get(title)
+    mkt_item = _cell(title + NOTE_INDICATOR if note else title)
+    mkt_item.setData(_ROLE_TITLE, title)   # clean title for slug lookups
     effective_slug = slug or a.slug
     if effective_slug:
-        mkt_item.setData(Qt.ItemDataRole.UserRole, effective_slug)
-        mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
+        mkt_item.setData(_ROLE_SLUG, effective_slug)
+        if note:
+            mkt_item.setToolTip(f"📝 {note}\n\nCtrl+click or right-click to open on Polymarket")
+        else:
+            mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
+    elif note:
+        mkt_item.setToolTip(f"📝 {note}")
 
     table.setItem(row, 0, _cell(a.datetime_utc))
     table.setItem(row, 1, type_item)
@@ -277,11 +286,19 @@ class ActivityTable(QWidget):
         self._slug_map = slug_map
         for row_idx in range(self._table.rowCount()):
             mkt_item = self._table.item(row_idx, 2)
-            if mkt_item and not mkt_item.data(Qt.ItemDataRole.UserRole):
-                slug = slug_map.get(mkt_item.text())
+            if mkt_item and not mkt_item.data(_ROLE_SLUG):
+                title = (mkt_item.data(_ROLE_TITLE)
+                         or mkt_item.text().replace(NOTE_INDICATOR, "").strip())
+                slug = slug_map.get(title)
                 if slug:
-                    mkt_item.setData(Qt.ItemDataRole.UserRole, slug)
-                    mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
+                    mkt_item.setData(_ROLE_SLUG, slug)
+                    note = _notes.get(title)
+                    if note:
+                        mkt_item.setToolTip(
+                            f"📝 {note}\n\nCtrl+click or right-click to open on Polymarket"
+                        )
+                    else:
+                        mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
 
     def _apply_filter(self, text: str) -> None:
         text = text.strip().lower()

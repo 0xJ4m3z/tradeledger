@@ -13,7 +13,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.models import ActivePosition
-from app.ui.polymarket_menu import attach_table_links
+from app.services import notes as _notes
+from app.ui.polymarket_menu import NOTE_INDICATOR, _ROLE_SLUG, _ROLE_TITLE, attach_table_links
 
 COLUMNS = [
     "Market", "Outcome", "Quantity", "Avg Cost",
@@ -38,10 +39,18 @@ def _pnl_cell(val: float, fmt: str = "${:,.2f}") -> QTableWidgetItem:
 
 
 def _market_cell(p: ActivePosition) -> QTableWidgetItem:
-    item = _cell(p.market)
+    note = _notes.get(p.market)
+    display_market = p.market + NOTE_INDICATOR if note else p.market
+    item = _cell(display_market)
+    item.setData(_ROLE_TITLE, p.market)   # clean title — always set for slug lookups
     if p.slug:
-        item.setData(Qt.ItemDataRole.UserRole, p.slug)
-        item.setToolTip("Right-click to open on Polymarket")
+        item.setData(_ROLE_SLUG, p.slug)
+        if note:
+            item.setToolTip(f"📝 {note}\n\nCtrl+click or right-click to open on Polymarket")
+        else:
+            item.setToolTip("Ctrl+click or right-click to open on Polymarket")
+    elif note:
+        item.setToolTip(f"📝 {note}")
     return item
 
 

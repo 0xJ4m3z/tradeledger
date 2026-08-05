@@ -19,10 +19,11 @@ from PySide6.QtWidgets import (
 
 from app.debug import _dlog
 from app.models import ResolvedPosition
+from app.services import notes as _notes
 from app.services.daily_pnl import sort_closed_positions_newest_first
 from app.services.date_range import DateRangeSelection, filter_closed_by_selection
 from app.ui.date_range_control import DateRangeControl
-from app.ui.polymarket_menu import attach_table_links
+from app.ui.polymarket_menu import NOTE_INDICATOR, _ROLE_SLUG, _ROLE_TITLE, attach_table_links
 
 try:
     from zoneinfo import ZoneInfo as _ZoneInfo
@@ -89,10 +90,18 @@ def _populate_row(table: QTableWidget, row: int, p: ResolvedPosition) -> None:
     outcome_item = _cell(p.outcome_held)
     outcome_item.setForeground(outcome_color)
 
-    mkt_item = _cell(p.market)
+    note = _notes.get(p.market)
+    display_market = p.market + NOTE_INDICATOR if note else p.market
+    mkt_item = _cell(display_market)
+    mkt_item.setData(_ROLE_TITLE, p.market)   # clean title — always set for slug lookups
     if p.slug:
-        mkt_item.setData(Qt.ItemDataRole.UserRole, p.slug)
-        mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
+        mkt_item.setData(_ROLE_SLUG, p.slug)
+        if note:
+            mkt_item.setToolTip(f"📝 {note}\n\nCtrl+click or right-click to open on Polymarket")
+        else:
+            mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
+    elif note:
+        mkt_item.setToolTip(f"📝 {note}")
 
     win_item = _cell(winning_text)
     if winning_color:
@@ -317,11 +326,20 @@ class ResolvedPositionsTable(QWidget):
         # Patch visible rows in the table as well (avoids a full rebuild).
         for row_idx in range(self._table.rowCount()):
             mkt_item = self._table.item(row_idx, 0)
-            if mkt_item and not mkt_item.data(Qt.ItemDataRole.UserRole):
-                slug = slug_map.get(mkt_item.text())
+            if mkt_item and not mkt_item.data(_ROLE_SLUG):
+                # Use the clean title role; fall back to stripping the note emoji from text.
+                title = (mkt_item.data(_ROLE_TITLE)
+                         or mkt_item.text().replace(NOTE_INDICATOR, "").strip())
+                slug = slug_map.get(title)
                 if slug:
-                    mkt_item.setData(Qt.ItemDataRole.UserRole, slug)
-                    mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
+                    mkt_item.setData(_ROLE_SLUG, slug)
+                    note = _notes.get(title)
+                    if note:
+                        mkt_item.setToolTip(
+                            f"📝 {note}\n\nCtrl+click or right-click to open on Polymarket"
+                        )
+                    else:
+                        mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
 
     def _export_csv(self) -> None:
         """Export the currently filtered positions to a CSV file."""
