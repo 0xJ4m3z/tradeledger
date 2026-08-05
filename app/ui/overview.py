@@ -319,6 +319,92 @@ def _resolved_section(positions: List[ResolvedPosition]) -> QWidget:
     return outer
 
 
+# ── Sold positions section ─────────────────────────────────────────────────────
+
+_SOLD_HDRS  = ["Market", "Outcome Held", "Winning Outcome", "Sell Price", "Realized P/L", "P/L %", "Sold (ET)"]
+_SOLD_ALIGN = [_L, _L, _L, _R, _R, _R, _L]
+
+
+def _fmt_sold_time(p: ResolvedPosition) -> str:
+    """Return the sell timestamp as MM-DD HH:MM:SS in ET, falling back to date only."""
+    if p.closed_at:
+        try:
+            return datetime.fromtimestamp(p.closed_at, tz=_ET_ZONE).strftime("%m-%d %H:%M:%S")
+        except (OSError, OverflowError, ValueError):
+            pass
+    if p.resolved_date:
+        return p.resolved_date[:10]
+    return "—"
+
+
+def _sold_section(positions: List[ResolvedPosition], range_label: str = "") -> QWidget:
+    """Closed positions that were CLOB-sold (stop-loss / manual exit).
+
+    Derived from the full filtered closed list by selecting close_type == "SOLD".
+    Winning Outcome shows 'Pending…' when the market has not yet resolved.
+    """
+    sold = [p for p in positions if getattr(p, "close_type", None) == "SOLD"]
+
+    outer = QWidget()
+    vbox = QVBoxLayout(outer)
+    vbox.setContentsMargins(0, 0, 0, 0)
+    vbox.setSpacing(8)
+
+    count = len(sold)
+    hdr_text = "Sold Positions"
+    if range_label:
+        hdr_text += f"  —  {range_label}"
+    hdr_text += f"  ({count})"
+    lbl = QLabel(hdr_text)
+    lbl.setStyleSheet(_SECTION_HDR_S)
+    vbox.addWidget(lbl)
+
+    frame = QFrame()
+    frame.setStyleSheet(f"QFrame {{ background-color: {_BG}; border: 1px solid {_BORDER}; }}")
+    grid = QGridLayout(frame)
+    grid.setContentsMargins(0, 0, 0, 0)
+    grid.setSpacing(0)
+
+    for col, (h, a) in enumerate(zip(_SOLD_HDRS, _SOLD_ALIGN)):
+        grid.addWidget(_col_hdr(h, a), 0, col)
+
+    visible = sold[:_OVERVIEW_ROW_CAP]
+    for r, p in enumerate(visible, start=1):
+        pc = _pnl_color(p.realized_pnl)
+        oc = _GREEN if p.realized_pnl >= 0 else _RED
+
+        # Sell price per share = USDC received ÷ shares sold
+        qty = p.quantity if p.quantity > 0 else 1
+        sell_price = p.redeem_value / qty
+
+        wo     = p.winning_outcome or ""
+        wo_col = _TEXT if wo else _MUTED
+        wo_lbl = wo if wo else "Pending…"
+
+        cells = [
+            (p.outcome_held,                  _L, oc),
+            (wo_lbl,                          _L, wo_col),
+            (f"${sell_price:.4f}",            _R, _TEXT),
+            (f"${p.realized_pnl:,.2f}",       _R, pc),
+            (f"{p.realized_pnl_pct:+.1f}%",  _R, pc),
+            (_fmt_sold_time(p),               _L, _MUTED),
+        ]
+        grid.addWidget(_market_row_cell(p.market, getattr(p, "slug", None)), r, 0)
+        for col, (text, align, color) in enumerate(cells, start=1):
+            grid.addWidget(_row_cell(text, align, color), r, col)
+
+    if count > _OVERVIEW_ROW_CAP:
+        overflow_lbl = QLabel(
+            f"  … {count - _OVERVIEW_ROW_CAP:,} more — see Closed Positions tab"
+        )
+        overflow_lbl.setStyleSheet(f"color: {_MUTED}; font-size: 11px; padding: 4px 6px;")
+        grid.addWidget(overflow_lbl, len(visible) + 1, 0, 1, len(_SOLD_HDRS))
+
+    grid.setColumnStretch(0, 1)
+    vbox.addWidget(frame)
+    return outer
+
+
 # ── Closed positions section ───────────────────────────────────────────────────
 
 _CLS_HDRS  = ["Market", "Outcome", "Result", "Cost Basis", "Proceeds", "Realized P/L", "P/L %", "Closed"]
@@ -480,6 +566,13 @@ class OverviewWidget(QWidget):
         main.addWidget(_divider())
         main.addSpacing(16)
 
+        # ── Sold positions (CLOB exits) ────────────────────────────────
+        self._sold_section = _sold_section([], self._selection.display_label())
+        main.addWidget(self._sold_section)
+        main.addSpacing(20)
+        main.addWidget(_divider())
+        main.addSpacing(16)
+
         # ── Closed positions ───────────────────────────────────────────
         self._cls_section = _closed_section([], self._selection.display_label())
         main.addWidget(self._cls_section)
@@ -506,7 +599,8 @@ class OverviewWidget(QWidget):
     def _refresh_closed_section(self) -> None:
         filtered = filter_closed_by_selection(self._closed_positions, self._selection)
         label    = self._selection.display_label()
-        self._replace_section("_cls_section", _closed_section(filtered, label))
+        self._replace_section("_sold_section", _sold_section(filtered, label))
+        self._replace_section("_cls_section",  _closed_section(filtered, label))
 
     def _update_pnl_chart(self) -> None:
         if self._selection.is_preset():
