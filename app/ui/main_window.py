@@ -8,14 +8,12 @@ from app.database import (
     load_all_activity_for_wallet,
     load_all_closed_for_wallet,
     load_last_wallet,
-    load_resolved_positions_cache,
     load_wallet_snapshots,
     save_snapshot,
     upsert_activity_derived_closed_positions,
 )
 from app.services.pnl_today import derive_closed_from_activity
 from app.services.metrics import compute_dashboard_metrics
-from app.ui.active_positions_table import ActivePositionsTable
 from app.ui.activity_table import ActivityTable
 from app.ui.loss_watch_tab import LossWatchTab
 from app.ui.overview import OverviewWidget
@@ -128,7 +126,6 @@ class MainWindow(QMainWindow):
         _init_wallet    = load_last_wallet()
         _notes.load_for_wallet(_init_wallet or "")
         cached_active   = load_active_positions_cache(_init_wallet)    if _init_wallet else []
-        cached_resolved = load_resolved_positions_cache(_init_wallet)  if _init_wallet else []
         cached_activity = load_all_activity_for_wallet(_init_wallet)   if _init_wallet else []
 
         # Derive closed positions from REDEEM events in the activity feed and persist
@@ -146,25 +143,22 @@ class MainWindow(QMainWindow):
         cached_closed   = load_all_closed_for_wallet(_init_wallet)     if _init_wallet else []
 
         _dlog("startup",
-              "wallet=%s | active=%d | resolved=%d | closed=%d | activity=%d",
+              "wallet=%s | active=%d | closed=%d | activity=%d",
               (_init_wallet[:10] + "...") if _init_wallet else "(none)",
-              len(cached_active), len(cached_resolved),
-              len(cached_closed), len(cached_activity))
+              len(cached_active), len(cached_closed), len(cached_activity))
         # Fall back to sample data only when no cache exists (first run / new wallet)
-        if not cached_active and not cached_resolved:
+        if not cached_active:
             active, resolved = load_all()
             save_snapshot("sample", active, resolved)
             _from_cache = False
         else:
-            active, resolved = cached_active, cached_resolved
+            active, resolved = cached_active, []
             _from_cache = True
 
         metrics = compute_dashboard_metrics(active, resolved)
 
         overview               = OverviewWidget(active, resolved, metrics)
         self._loss_watch_tab   = LossWatchTab()
-        self._active_tab       = ActivePositionsTable(active)
-        self._resolved_tab     = ResolvedPositionsTable(resolved, label="Resolved Positions")
         self._closed_tab       = ResolvedPositionsTable(
             cached_closed, label="Closed Positions", show_refresh=True, show_date_filter=True
         )
@@ -179,7 +173,6 @@ class MainWindow(QMainWindow):
             if _startup_slug_map:
                 self._activity_tab.update_slug_map(_startup_slug_map)
                 self._closed_tab.update_slug_map(_startup_slug_map)
-                self._resolved_tab.update_slug_map(_startup_slug_map)
 
         # ── Signal wiring ───────────────────────────────────────────────────────
         overview.positions_changed.connect(self._on_positions_changed)
@@ -216,8 +209,6 @@ class MainWindow(QMainWindow):
         tabs.addTab(overview,                  "Overview")
         tabs.addTab(self._pnl_tab,             "P/L")
         tabs.addTab(self._loss_watch_tab,      "Loss Watch")
-        tabs.addTab(self._active_tab,          "Active Positions")
-        tabs.addTab(self._resolved_tab,        "Resolved Positions")
         tabs.addTab(self._closed_tab,          "Closed Positions")
         tabs.addTab(self._activity_tab,        "Activity")
         tabs.addTab(tv_tab,                    "Total Tracked Value")
@@ -246,8 +237,6 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self._status_bar)
 
     def _on_positions_changed(self, active: list, resolved: list, closed: list) -> None:
-        self._active_tab.update_positions(active)
-        self._resolved_tab.update_positions(resolved)
         before = len(self._closed_tab._all_positions)
         if not self._closed_tab._all_positions:
             self._closed_tab.update_positions(closed)   # first load
@@ -262,7 +251,6 @@ class MainWindow(QMainWindow):
         _slug_map = {p.market: p.slug for p in self._closed_tab._all_positions if p.slug}
         self._activity_tab.update_slug_map(_slug_map)
         self._closed_tab.update_slug_map(_slug_map)
-        self._resolved_tab.update_slug_map(_slug_map)
         self._status_bar.showMessage(
             f"Live Polymarket data  •  {len(active)} active"
             f"  •  {len(resolved)} resolved  •  {len(self._closed_tab._all_positions)} closed"
@@ -281,7 +269,6 @@ class MainWindow(QMainWindow):
             _slug_map = {p.market: p.slug for p in self._closed_tab._all_positions if p.slug}
             if _slug_map:
                 self._closed_tab.update_slug_map(_slug_map)
-                self._resolved_tab.update_slug_map(_slug_map)
                 self._activity_tab.update_slug_map(_slug_map)
         self._status_bar.showMessage(
             f"Live Polymarket data  •  {len(all_closed)} closed positions cached"
