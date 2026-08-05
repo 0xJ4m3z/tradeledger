@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -31,6 +31,7 @@ from app.database import (
 from app.debug import _dlog
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 from app.services.loss_watch import compute_loss_watch_count
+from app.services.market_stream import MarketStreamThread
 from app.services.metrics import compute_dashboard_metrics, compute_total_tracked_value
 from app.services.daily_pnl import sort_closed_positions_newest_first
 from app.services.pnl_today import (
@@ -519,6 +520,12 @@ class OverviewWidget(QWidget):
         # Guard: clear today's stale snapshots (saved before real positions load) on first fetch
         self._first_positions_fetch = True
 
+        # Market stream (WebSocket) — started once we have CLOB token IDs from live fetch
+        self._stream: MarketStreamThread | None = None
+        self._stream_token_ids: set             = set()
+        self._price_update_pending: bool        = False
+        self._trade_debounce: QTimer | None     = None
+
         # WalletPanel is owned by MainWindow / displayed in SettingsTab;
         # we hold a reference here for data-flow purposes only (no layout add).
         self._wallet_panel = wallet_panel
@@ -605,6 +612,13 @@ class OverviewWidget(QWidget):
         ctrl.range_changed.connect(self._on_range_changed)
         hbox.addWidget(ctrl, 1)
 
+        # Live stream indicator — shows ● LIVE when WebSocket is connected
+        self._stream_dot = QLabel("○  No stream")
+        self._stream_dot.setStyleSheet(
+            f"color: {_MUTED}; font-size: 11px; padding: 0 6px;"
+        )
+        hbox.addWidget(self._stream_dot, 0, Qt.AlignmentFlag.AlignRight)
+
         self._refresh_btn = QPushButton("Refresh")
         self._refresh_btn.setFixedHeight(30)
         self._refresh_btn.setFixedWidth(90)
@@ -629,6 +643,93 @@ class OverviewWidget(QWidget):
     def _on_refresh_done(self) -> None:
         self._refresh_btn.setText("Refresh")
         self._refresh_btn.setEnabled(True)
+
+    # ── Market stream (WebSocket) ───────────────────────────────────────────────
+
+    def _update_stream(self, token_ids: list) -> None:
+        """Start or restart the market stream with the given CLOB token IDs.
+
+        If the token set hasn't changed and the stream is running, does nothing.
+        Called whenever active positions are refreshed so new buys are subscribed.
+        """
+        new_ids = set(filter(None, token_ids))
+        if new_ids == self._stream_token_ids and self._stream and self._stream.isRunning():
+            return
+        self._stream_token_ids = new_ids
+        self._stop_stream()
+        if not new_ids:
+            self._stream_dot.setText("○  No stream")
+            self._stream_dot.setStyleSheet(f"color: {_MUTED}; font-size: 11px; padding: 0 6px;")
+            return
+        self._stream = MarketStreamThread(list(new_ids))
+        self._stream.price_updated.connect(self._on_stream_price)
+        self._stream.trade_occurred.connect(self._on_stream_trade)
+        self._stream.market_resolved.connect(self._on_stream_resolved)
+        self._stream.stream_connected.connect(self._on_stream_connected)
+        self._stream.stream_disconnected.connect(self._on_stream_disconnected)
+        self._stream.start()
+
+    def _stop_stream(self) -> None:
+        if self._stream is not None:
+            self._stream.stop()
+            self._stream.wait(1500)
+            self._stream = None
+
+    def _on_stream_connected(self) -> None:
+        n = len(self._stream_token_ids)
+        self._stream_dot.setText(f"● Live  ({n} token{'s' if n != 1 else ''})")
+        self._stream_dot.setStyleSheet(
+            f"color: {_GREEN}; font-size: 11px; padding: 0 6px;"
+        )
+
+    def _on_stream_disconnected(self) -> None:
+        self._stream_dot.setText("○  Reconnecting…")
+        self._stream_dot.setStyleSheet(
+            f"color: {_MUTED}; font-size: 11px; padding: 0 6px;"
+        )
+
+    def _on_stream_price(self, asset_id: str, price: float) -> None:
+        """Update the matching active position's current price and redraw the section.
+
+        Debounced: multiple price events within 100 ms are coalesced into one redraw
+        so rapid price ticks don't hammer the UI.
+        """
+        for p in self._active_positions:
+            if getattr(p, "asset_id", None) == asset_id:
+                p.current_price = price
+        if not self._price_update_pending:
+            self._price_update_pending = True
+            QTimer.singleShot(100, self._flush_price_update)
+
+    def _flush_price_update(self) -> None:
+        """Apply accumulated price changes to the Active section and metric cards."""
+        self._price_update_pending = False
+        self._replace_section("_act_section", _active_section(self._active_positions))
+        self._active_value = sum(p.current_value for p in self._active_positions)
+        total = compute_total_tracked_value(self._active_value, self._wallet_usd_value)
+        self._total_card.update_value(f"${total:,.2f}", _TEXT)
+        self._active_card.update_value(f"${self._active_value:,.2f}", _TEXT)
+        # Keep Loss Watch in sync with the updated unrealized P/L
+        lw = compute_loss_watch_count(self._active_positions, self._acknowledged_markets)
+        self._loss_watch_card.update_count(lw)
+
+    def _on_stream_trade(self, asset_id: str, side: str) -> None:
+        """Schedule a quick full refresh when any trade hits one of our tokens.
+
+        Debounced to 5 s so a burst of trades (e.g. a merge position) only
+        triggers one refresh.  Catches our own buys/sells much earlier than
+        the 5-minute polling interval.
+        """
+        if self._trade_debounce and self._trade_debounce.isActive():
+            return   # already scheduled
+        self._trade_debounce = QTimer(self)
+        self._trade_debounce.setSingleShot(True)
+        self._trade_debounce.timeout.connect(self.request_refresh)
+        self._trade_debounce.start(5_000)
+
+    def _on_stream_resolved(self, asset_id: str, winning_outcome: str) -> None:
+        """Trigger an immediate refresh when one of our markets resolves."""
+        self.request_refresh()
 
     def _on_range_changed(self, selection: DateRangeSelection) -> None:
         self._selection = selection
@@ -741,6 +842,9 @@ class OverviewWidget(QWidget):
         self._activity = []
         self._closed_positions = []
         self._chart.update([], [], self._selection.preset or "1d")
+        # Stop stream for old wallet — will restart once new wallet's positions load
+        self._stop_stream()
+        self._stream_token_ids = set()
 
     # ── Wallet value update ────────────────────────────────────────────────────
 
@@ -807,6 +911,12 @@ class OverviewWidget(QWidget):
         # `closed` list which is only the most-recent 100 rows.  Emitting the
         # 100-row slice would replace a larger cached dataset in the Closed tab.
         self.positions_changed.emit(active, resolved, self._closed_positions)
+
+        # Start/update market stream with CLOB token IDs from the live fetch.
+        # asset_id is only populated from live API data, not from the DB cache,
+        # so this is the right place (not seed_from_cache).
+        token_ids = [getattr(p, "asset_id", None) for p in active]
+        self._update_stream(token_ids)
 
     # ── Activity update ────────────────────────────────────────────────────────
 
@@ -930,6 +1040,11 @@ class OverviewWidget(QWidget):
         self._acknowledged_markets = load_loss_watch_acknowledged()
         count = compute_loss_watch_count(self._active_positions, self._acknowledged_markets)
         self._loss_watch_card.update_count(count)
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        """Stop the market stream cleanly before the widget is destroyed."""
+        self._stop_stream()
+        super().closeEvent(event)
 
     def apply_chart_style(self, smooth: bool, linewidth: float, fill_alpha: float) -> None:
         """Forward chart style options from Settings tab to the embedded chart."""

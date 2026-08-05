@@ -154,6 +154,7 @@ def _to_active(row: dict) -> ActivePosition:
         avg_cost      = avg_price,
         current_price = cur_price,
         slug          = row.get("eventSlug") or row.get("slug") or None,
+        asset_id      = row.get("assetId") or row.get("asset_id") or None,
     )
 
 

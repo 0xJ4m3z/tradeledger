@@ -11,6 +11,7 @@ class ActivePosition:
     avg_cost: float
     current_price: float
     slug: Optional[str] = None        # Polymarket eventSlug → polymarket.com/event/{slug}
+    asset_id: Optional[str] = None    # CLOB token ID → used for WebSocket market stream
 
     @property
     def current_value(self) -> float:
