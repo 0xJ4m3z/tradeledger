@@ -19,7 +19,9 @@ from app.ui.loss_watch_tab import LossWatchTab
 from app.ui.overview import OverviewWidget
 from app.ui.pnl_tab import PnlTab
 from app.ui.resolved_positions_table import ResolvedPositionsTable
+from app.ui.settings_tab import SettingsTab
 from app.ui.total_value_chart import TotalValueChartWidget
+from app.ui.wallet_panel import WalletPanel
 
 _STYLE = """
 QMainWindow, QWidget {
@@ -157,7 +159,9 @@ class MainWindow(QMainWindow):
 
         metrics = compute_dashboard_metrics(active, resolved)
 
-        overview               = OverviewWidget(active, resolved, metrics)
+        # WalletPanel lives in the Settings tab; OverviewWidget holds only a reference.
+        wallet_panel           = WalletPanel()
+        overview               = OverviewWidget(active, resolved, metrics, wallet_panel)
         self._loss_watch_tab   = LossWatchTab()
         self._closed_tab       = ResolvedPositionsTable(
             cached_closed, label="Closed Positions", show_refresh=True, show_date_filter=True
@@ -204,6 +208,13 @@ class MainWindow(QMainWindow):
         tv_layout.setContentsMargins(20, 20, 20, 20)
         tv_layout.addWidget(self._tv_tab_chart)
 
+        # ── Settings tab ────────────────────────────────────────────────────────
+        self._settings_tab = SettingsTab(wallet_panel)
+        self._settings_tab.chart_settings_changed.connect(overview.apply_chart_style)
+        # Apply persisted chart style on startup
+        _sm, _lw, _fa = self._settings_tab.initial_chart_style()
+        overview.apply_chart_style(_sm, _lw, _fa)
+
         # ── Tabs ────────────────────────────────────────────────────────────────
         tabs = QTabWidget()
         tabs.addTab(overview,                  "Overview")
@@ -212,6 +223,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._closed_tab,          "Closed Positions")
         tabs.addTab(self._activity_tab,        "Activity")
         tabs.addTab(tv_tab,                    "Total Tracked Value")
+        tabs.addTab(self._settings_tab,        "Settings")
         self.setCentralWidget(tabs)
 
         # Pre-populate Overview with cached closed positions so metric cards and

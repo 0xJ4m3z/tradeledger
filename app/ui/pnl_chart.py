@@ -90,10 +90,14 @@ class PnlChartWidget(QWidget):
         figsize: tuple = (6, 3),
     ):
         super().__init__()
-        self._activity = list(activity or [])
-        self._closed   = list(closed or [])
-        self._range    = range_
-        self.is_partial = False
+        self._activity    = list(activity or [])
+        self._closed      = list(closed or [])
+        self._range       = range_
+        self.is_partial   = False
+        # Chart style — updated via set_chart_style()
+        self._smooth      = True    # True = PCHIP interpolation; False = raw points
+        self._linewidth   = 1.8
+        self._fill_alpha  = 0.12
 
         self._fig, self._ax = plt.subplots(figsize=figsize)
         self._fig.patch.set_facecolor(_BG)
@@ -137,6 +141,18 @@ class PnlChartWidget(QWidget):
         self._range    = range_
         self._request_draw()
 
+    def set_chart_style(
+        self,
+        smooth: bool = True,
+        linewidth: float = 1.8,
+        fill_alpha: float = 0.12,
+    ) -> None:
+        """Apply visual style options and redraw. Called from the Settings tab."""
+        self._smooth     = smooth
+        self._linewidth  = linewidth
+        self._fill_alpha = fill_alpha
+        self._request_draw()
+
     # ── Worker management ─────────────────────────────────────────────────────
 
     def _request_draw(self) -> None:
@@ -178,20 +194,23 @@ class PnlChartWidget(QWidget):
         final = y_vals[-1] if len(y_vals) > 1 else 0.0
         color = _GREEN if final >= 0 else _RED
 
-        x_draw, y_draw = pchip_smooth(x_nums, y_vals, n=300)
+        if self._smooth:
+            x_draw, y_draw = pchip_smooth(x_nums, y_vals, n=300)
+        else:
+            x_draw, y_draw = x_nums, y_vals
 
-        ax.plot(x_draw, y_draw, color=color, linewidth=1.8, zorder=3)
+        ax.plot(x_draw, y_draw, color=color, linewidth=self._linewidth, zorder=3)
         ax.axhline(0, color=_MUTED, linewidth=0.5, alpha=0.5, zorder=1)
 
         ax.fill_between(
             x_draw, 0, y_draw,
             where=[v >= 0 for v in y_draw],
-            color=_GREEN, alpha=0.12, zorder=2,
+            color=_GREEN, alpha=self._fill_alpha, zorder=2,
         )
         ax.fill_between(
             x_draw, 0, y_draw,
             where=[v < 0 for v in y_draw],
-            color=_RED, alpha=0.12, zorder=2,
+            color=_RED, alpha=self._fill_alpha, zorder=2,
         )
 
         _rng = self._range

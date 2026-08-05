@@ -43,7 +43,6 @@ from app.services.date_range import (
 )
 from app.ui.date_range_control import DateRangeControl
 from app.ui.pnl_chart import PnlChartWidget
-from app.ui.wallet_panel import WalletPanel
 
 try:
     from zoneinfo import ZoneInfo as _ZoneInfo
@@ -241,7 +240,7 @@ def _active_section(positions: List[ActivePosition]) -> QWidget:
     vbox.setContentsMargins(0, 0, 0, 0)
     vbox.setSpacing(8)
 
-    lbl = QLabel(f"Active Positions  ({len(positions)})")
+    lbl = QLabel(f"Active  ({len(positions)})")
     lbl.setStyleSheet(_SECTION_HDR_S)
     vbox.addWidget(lbl)
 
@@ -286,7 +285,7 @@ def _resolved_section(positions: List[ResolvedPosition]) -> QWidget:
     vbox.setContentsMargins(0, 0, 0, 0)
     vbox.setSpacing(8)
 
-    lbl = QLabel(f"Resolved Positions  ({len(positions)})")
+    lbl = QLabel(f"Resolved  ({len(positions)})")
     lbl.setStyleSheet(_SECTION_HDR_S)
     vbox.addWidget(lbl)
 
@@ -354,7 +353,7 @@ def _sold_section(positions: List[ResolvedPosition], range_label: str = "") -> Q
     vbox.setSpacing(8)
 
     count = len(sold)
-    hdr_text = "Sold Positions"
+    hdr_text = "Sold"
     if range_label:
         hdr_text += f"  —  {range_label}"
     hdr_text += f"  ({count})"
@@ -443,7 +442,7 @@ def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") 
     vbox.setSpacing(8)
 
     total = len(positions)
-    lbl = QLabel(f"Closed Positions — {range_label}  ({total})")
+    lbl = QLabel(f"Closed — {range_label}  ({total})")
     lbl.setStyleSheet(_SECTION_HDR_S)
     vbox.addWidget(lbl)
 
@@ -500,6 +499,7 @@ class OverviewWidget(QWidget):
         active: List[ActivePosition],
         resolved: List[ResolvedPosition],
         metrics: dict,
+        wallet_panel: "WalletPanel",
     ):
         super().__init__()
 
@@ -517,6 +517,17 @@ class OverviewWidget(QWidget):
         # Guard: clear today's stale snapshots (saved before real positions load) on first fetch
         self._first_positions_fetch = True
 
+        # WalletPanel is owned by MainWindow / displayed in SettingsTab;
+        # we hold a reference here for data-flow purposes only (no layout add).
+        self._wallet_panel = wallet_panel
+        self._wallet_panel.wallet_address_changed.connect(self._on_wallet_address_changed)
+        self._wallet_panel.wallet_value_changed.connect(self._on_wallet_value_changed)
+        self._wallet_panel.positions_fetched.connect(self._on_positions_fetched)
+        self._wallet_panel.activity_fetched.connect(self._on_activity_fetched)
+        self._wallet_panel.closed_cache_updated.connect(self._on_closed_cache_updated)
+        self._wallet_panel.more_closed_fetched.connect(self.more_closed.emit)
+        self._wallet_panel.more_activity_fetched.connect(self._on_more_activity_fetched)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -526,19 +537,6 @@ class OverviewWidget(QWidget):
         main.setContentsMargins(16, 16, 16, 20)
         main.setSpacing(0)
         self._content_layout = main
-
-        # ── Wallet panel ───────────────────────────────────────────────
-        self._wallet_panel = WalletPanel()
-        self._wallet_panel.wallet_address_changed.connect(self._on_wallet_address_changed)
-        self._wallet_panel.wallet_value_changed.connect(self._on_wallet_value_changed)
-        self._wallet_panel.positions_fetched.connect(self._on_positions_fetched)
-        self._wallet_panel.activity_fetched.connect(self._on_activity_fetched)
-        self._wallet_panel.closed_cache_updated.connect(self._on_closed_cache_updated)
-        self._wallet_panel.more_closed_fetched.connect(self.more_closed.emit)
-        self._wallet_panel.more_activity_fetched.connect(self._on_more_activity_fetched)
-        main.addWidget(self._wallet_panel)
-
-        main.addSpacing(12)
 
         # ── Time range filter ──────────────────────────────────────────
         main.addWidget(self._build_range_bar())
@@ -883,6 +881,10 @@ class OverviewWidget(QWidget):
         self._acknowledged_markets = load_loss_watch_acknowledged()
         count = compute_loss_watch_count(self._active_positions, self._acknowledged_markets)
         self._loss_watch_card.update_count(count)
+
+    def apply_chart_style(self, smooth: bool, linewidth: float, fill_alpha: float) -> None:
+        """Forward chart style options from Settings tab to the embedded chart."""
+        self._chart.set_chart_style(smooth=smooth, linewidth=linewidth, fill_alpha=fill_alpha)
 
     def _replace_section(self, attr: str, new_widget: QWidget) -> None:
         old = getattr(self, attr)

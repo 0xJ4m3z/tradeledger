@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.database import load_setting
 from app.debug import _dlog
 from app.models import ResolvedPosition
 from app.services import notes as _notes
@@ -352,8 +353,12 @@ class ResolvedPositionsTable(QWidget):
         today = datetime.now().strftime("%Y-%m-%d")
         default_name = f"closed_positions_{label}_{today}.csv"
 
+        export_dir  = load_setting("export_folder", "")
+        import os
+        default_path = os.path.join(export_dir, default_name) if export_dir else default_name
+
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Closed Positions", default_name, "CSV Files (*.csv)"
+            self, "Export Closed Positions", default_path, "CSV Files (*.csv)"
         )
         if not path:
             return

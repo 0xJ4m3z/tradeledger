@@ -414,6 +414,18 @@ def _load_setting(key: str, default: str = "") -> str:
     return row["value"] if row else default
 
 
+# ── Generic public setting accessors ─────────────────────────────────────────
+
+def load_setting(key: str, default: str = "") -> str:
+    """Return the stored value for *key*, or *default* if not set."""
+    return _load_setting(key, default)
+
+
+def save_setting(key: str, value: str) -> None:
+    """Persist an arbitrary key-value pair in the settings table."""
+    _save_setting(key, value)
+
+
 # ── Last wallet address ───────────────────────────────────────────────────────
 
 def save_last_wallet(wallet: str) -> None:
