@@ -594,9 +594,39 @@ class OverviewWidget(QWidget):
     # ── Range filter bar ───────────────────────────────────────────────────────
 
     def _build_range_bar(self) -> QWidget:
+        row = QWidget()
+        hbox = QHBoxLayout(row)
+        hbox.setContentsMargins(0, 0, 0, 0)
+        hbox.setSpacing(8)
+
         ctrl = DateRangeControl(default="1d", align="left")
         ctrl.range_changed.connect(self._on_range_changed)
-        return ctrl
+        hbox.addWidget(ctrl, 1)
+
+        self._refresh_btn = QPushButton("Refresh")
+        self._refresh_btn.setFixedHeight(30)
+        self._refresh_btn.setFixedWidth(90)
+        self._refresh_btn.setStyleSheet(
+            f"background-color: #21262d; border: 1px solid {_BORDER}; border-radius: 4px;"
+            f" color: {_TEXT}; padding: 0 14px; font-size: 13px;"
+        )
+        self._refresh_btn.clicked.connect(self._on_refresh_clicked)
+        hbox.addWidget(self._refresh_btn, 0, Qt.AlignmentFlag.AlignRight)
+
+        return row
+
+    def _on_refresh_clicked(self) -> None:
+        self._refresh_btn.setText("Refreshing…")
+        self._refresh_btn.setEnabled(False)
+        # Re-enable after next positions fetch completes
+        self._wallet_panel.positions_fetched.connect(
+            self._on_refresh_done, Qt.ConnectionType.SingleShotConnection
+        )
+        self.request_refresh()
+
+    def _on_refresh_done(self) -> None:
+        self._refresh_btn.setText("Refresh")
+        self._refresh_btn.setEnabled(True)
 
     def _on_range_changed(self, selection: DateRangeSelection) -> None:
         self._selection = selection
