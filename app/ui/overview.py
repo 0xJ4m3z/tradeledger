@@ -36,6 +36,7 @@ from app.services.daily_pnl import sort_closed_positions_newest_first
 from app.services.pnl_today import (
     classify_closed_positions,
     derive_closed_from_activity,
+    derive_sold_from_activity,
 )
 from app.services.date_range import (
     DateRangeSelection,
@@ -509,6 +510,7 @@ class OverviewWidget(QWidget):
         self._wallet_usd_value     = 0.0
         self._active_positions     = list(active)
         self._closed_positions: List[ResolvedPosition] = []
+        self._sold_stubs:       List[ResolvedPosition] = []   # ephemeral stubs from SELL activity
         self._activity: list       = []
         self._acknowledged_markets = load_loss_watch_acknowledged()
         self._selection            = DateRangeSelection.preset_range("1d")
@@ -634,10 +636,27 @@ class OverviewWidget(QWidget):
         self._update_pnl_chart()
         self._update_metric_cards()
 
+    def _rebuild_sold_stubs(self) -> None:
+        """Derive ephemeral SOLD stubs from activity SELL events.
+
+        Only keeps stubs for (market, outcome) pairs NOT already in _closed_positions
+        so the real API entry always wins as soon as it arrives.
+        """
+        derived  = derive_sold_from_activity(self._activity)
+        api_seen = {(p.market, p.outcome_held) for p in self._closed_positions}
+        self._sold_stubs = [
+            p for p in derived
+            if (p.market, p.outcome_held) not in api_seen
+        ]
+
     def _refresh_closed_section(self) -> None:
-        filtered = filter_closed_by_selection(self._closed_positions, self._selection)
-        label    = self._selection.display_label()
-        self._replace_section("_sold_section", _sold_section(filtered, label))
+        self._rebuild_sold_stubs()
+        filtered      = filter_closed_by_selection(self._closed_positions, self._selection)
+        stub_filtered = filter_closed_by_selection(self._sold_stubs, self._selection)
+        label         = self._selection.display_label()
+        # Sold section: stubs (pending API arrival) + real SOLD positions from API
+        self._replace_section("_sold_section", _sold_section(stub_filtered + filtered, label))
+        # Closed section: only real positions (stubs never graduate to Closed)
         self._replace_section("_cls_section",  _closed_section(filtered, label))
 
     def _update_pnl_chart(self) -> None:

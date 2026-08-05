@@ -382,6 +382,63 @@ def derive_closed_from_activity(
     return positions
 
 
+def derive_sold_from_activity(
+    activity: List[UserActivity],
+) -> List[ResolvedPosition]:
+    """Derive stub ResolvedPositions from TRADE SELL events in the activity feed.
+
+    Fills the gap between a CLOB sell and the position appearing in the
+    /closed-positions API (which is typically delayed by several minutes).
+    Each unique (market, outcome) pair that has SELL events becomes one stub,
+    with cost basis from the matching BUY events and redeem_value from the SELLs.
+
+    These stubs are ephemeral: the caller should exclude any whose (market, outcome_held)
+    is already present in the real closed-positions list so API data always wins.
+    """
+    from collections import defaultdict
+
+    # Aggregate BUYs per (market, outcome) for cost basis
+    cost_by_pos: dict = defaultdict(float)
+    for a in activity:
+        if a.type == "TRADE" and a.side == "BUY" and a.title:
+            cost_by_pos[(a.title, a.outcome)] += a.usdc_size
+
+    # Aggregate SELLs per (market, outcome)
+    sell_usdc:      dict = defaultdict(float)
+    sell_qty:       dict = defaultdict(float)
+    latest_sell_ts: dict = {}
+    sell_slug:      dict = {}
+    for a in activity:
+        if a.type == "TRADE" and a.side == "SELL" and a.title:
+            key = (a.title, a.outcome)
+            sell_usdc[key] += a.usdc_size
+            sell_qty[key]  += a.size
+            if key not in latest_sell_ts or a.timestamp > latest_sell_ts[key]:
+                latest_sell_ts[key] = a.timestamp
+            if a.slug and key not in sell_slug:
+                sell_slug[key] = a.slug
+
+    positions: List[ResolvedPosition] = []
+    for key, ts in latest_sell_ts.items():
+        market, outcome = key
+        positions.append(
+            ResolvedPosition(
+                market=market,
+                outcome_held=outcome,
+                winning_outcome="",           # unknown until market resolves
+                quantity=sell_qty[key],
+                cost_basis=cost_by_pos.get(key, 0.0),
+                redeem_value=sell_usdc[key],
+                redeemed=False,
+                resolved_date=None,
+                closed_at=ts,
+                close_type="SOLD",
+                slug=sell_slug.get(key),
+            )
+        )
+    return positions
+
+
 def classify_closed_positions(
     closed: List[ResolvedPosition],
     activity: List[UserActivity],
