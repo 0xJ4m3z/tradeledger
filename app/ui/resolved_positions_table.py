@@ -97,11 +97,11 @@ def _populate_row(table: QTableWidget, row: int, p: ResolvedPosition) -> None:
     if p.slug:
         mkt_item.setData(_ROLE_SLUG, p.slug)
         if note:
-            mkt_item.setToolTip(f"📝 {note}\n\nCtrl+click or right-click to open on Polymarket")
+            mkt_item.setToolTip(f"✏️ {note}\n\nCtrl+click or right-click to open on Polymarket")
         else:
             mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
     elif note:
-        mkt_item.setToolTip(f"📝 {note}")
+        mkt_item.setToolTip(f"✏️ {note}")
 
     win_item = _cell(winning_text)
     if winning_color:
@@ -336,7 +336,7 @@ class ResolvedPositionsTable(QWidget):
                     note = _notes.get(title)
                     if note:
                         mkt_item.setToolTip(
-                            f"📝 {note}\n\nCtrl+click or right-click to open on Polymarket"
+                            f"✏️ {note}\n\nCtrl+click or right-click to open on Polymarket"
                         )
                     else:
                         mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")

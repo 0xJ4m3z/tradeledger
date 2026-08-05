@@ -46,11 +46,11 @@ def _market_cell(p: ActivePosition) -> QTableWidgetItem:
     if p.slug:
         item.setData(_ROLE_SLUG, p.slug)
         if note:
-            item.setToolTip(f"📝 {note}\n\nCtrl+click or right-click to open on Polymarket")
+            item.setToolTip(f"✏️ {note}\n\nCtrl+click or right-click to open on Polymarket")
         else:
             item.setToolTip("Ctrl+click or right-click to open on Polymarket")
     elif note:
-        item.setToolTip(f"📝 {note}")
+        item.setToolTip(f"✏️ {note}")
     return item
 
 

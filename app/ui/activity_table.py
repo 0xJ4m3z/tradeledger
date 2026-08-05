@@ -88,11 +88,11 @@ def _populate_row(table: QTableWidget, row: int, a: UserActivity,
     if effective_slug:
         mkt_item.setData(_ROLE_SLUG, effective_slug)
         if note:
-            mkt_item.setToolTip(f"📝 {note}\n\nCtrl+click or right-click to open on Polymarket")
+            mkt_item.setToolTip(f"✏️ {note}\n\nCtrl+click or right-click to open on Polymarket")
         else:
             mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
     elif note:
-        mkt_item.setToolTip(f"📝 {note}")
+        mkt_item.setToolTip(f"✏️ {note}")
 
     table.setItem(row, 0, _cell(a.datetime_utc))
     table.setItem(row, 1, type_item)
@@ -295,7 +295,7 @@ class ActivityTable(QWidget):
                     note = _notes.get(title)
                     if note:
                         mkt_item.setToolTip(
-                            f"📝 {note}\n\nCtrl+click or right-click to open on Polymarket"
+                            f"✏️ {note}\n\nCtrl+click or right-click to open on Polymarket"
                         )
                     else:
                         mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")

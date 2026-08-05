@@ -5,14 +5,24 @@ No private keys, trades, wallet connections, or transactions.
 
 Notes:
     _ROLE_SLUG  (UserRole)     — Polymarket event slug stored on market QTableWidgetItems
-    _ROLE_TITLE (UserRole + 1) — clean market title (without the 📝 indicator suffix)
+    _ROLE_TITLE (UserRole + 1) — clean market title (without the ✏️ indicator suffix)
     Both are set by each table's _populate_row / _market_cell helper.
 """
 from typing import Optional
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QApplication, QInputDialog, QMenu, QTableWidgetItem
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QPlainTextEdit,
+    QPushButton,
+    QTableWidgetItem,
+    QVBoxLayout,
+)
 
 from app.services.polymarket_links import polymarket_url_for_slug
 
@@ -21,7 +31,7 @@ _ROLE_SLUG  = Qt.ItemDataRole.UserRole       # Polymarket eventSlug (str | None)
 _ROLE_TITLE = Qt.ItemDataRole.UserRole + 1   # clean market title, without any note emoji
 
 # Emoji appended to the market cell text when a note exists.
-NOTE_INDICATOR = "  📝"
+NOTE_INDICATOR = "  ✏️"
 
 MENU_STYLE = """
 QMenu {
@@ -43,7 +53,90 @@ QMenu::item:disabled {
 }
 """
 
+_DIALOG_STYLE = """
+QDialog {
+    background-color: #0d1117;
+}
+QLabel {
+    color: #8b949e;
+    font-size: 12px;
+    background: transparent;
+}
+QPlainTextEdit {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    color: #c9d1d9;
+    font-size: 13px;
+    padding: 6px;
+}
+QPlainTextEdit:focus {
+    border-color: #58a6ff;
+}
+"""
+
 _MENU_MIN_WIDTH = 0
+
+
+class NoteDialog(QDialog):
+    """Modal dialog for adding or editing a trade note.
+
+    Replaces QInputDialog.getMultiLineText so we can control the dialog size
+    and ensure text wraps properly without horizontal scrolling.
+    """
+
+    def __init__(self, parent, market: str, existing_note: str = "") -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Trade Note")
+        self.setStyleSheet(_DIALOG_STYLE)
+        self.setMinimumWidth(540)
+        self.setMinimumHeight(300)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        # Market title — shown as a dimmed label above the text area
+        lbl = QLabel(market)
+        lbl.setWordWrap(True)
+        layout.addWidget(lbl)
+
+        # Multi-line text area — word-wrap is on by default for QPlainTextEdit
+        self._edit = QPlainTextEdit()
+        self._edit.setPlainText(existing_note)
+        self._edit.setMinimumHeight(180)
+        # Move cursor to end so user can append without re-selecting
+        cursor = self._edit.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self._edit.setTextCursor(cursor)
+        layout.addWidget(self._edit)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(
+            "background-color: #21262d; border: 1px solid #30363d; border-radius: 4px;"
+            " color: #c9d1d9; padding: 6px 18px; font-size: 13px;"
+        )
+        save_btn = QPushButton("Save")
+        save_btn.setDefault(True)
+        save_btn.setStyleSheet(
+            "background-color: #1f6feb; border: 1px solid #388bfd; border-radius: 4px;"
+            " color: #ffffff; padding: 6px 18px; font-size: 13px; font-weight: 600;"
+        )
+
+        cancel_btn.clicked.connect(self.reject)
+        save_btn.clicked.connect(self.accept)
+
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(save_btn)
+        layout.addLayout(btn_row)
+
+    def note(self) -> str:
+        """Return the entered note text, stripped of leading/trailing whitespace."""
+        return self._edit.toPlainText().strip()
 
 
 def open_polymarket(slug: Optional[str]) -> None:
@@ -71,7 +164,7 @@ def apply_note_indicator(mkt_item: QTableWidgetItem, market: str, note: Optional
 
     if has_note:
         mkt_item.setText(market + NOTE_INDICATOR)
-        parts = [f"📝 {note.strip()}"]
+        parts = [f"✏️ {note.strip()}"]
         if has_link:
             parts.append("Ctrl+click or right-click to open on Polymarket")
         mkt_item.setToolTip("\n\n".join(parts))
@@ -81,6 +174,13 @@ def apply_note_indicator(mkt_item: QTableWidgetItem, market: str, note: Optional
             mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
         else:
             mkt_item.setToolTip("")
+
+
+def _run_note_dialog(parent, market: str, current_note: Optional[str]):
+    """Show the NoteDialog and return (new_note, accepted)."""
+    dlg = NoteDialog(parent, market, current_note or "")
+    accepted = dlg.exec() == QDialog.DialogCode.Accepted
+    return dlg.note(), accepted
 
 
 def show_table_context_menu(table, pos, market_col: int = 0) -> None:
@@ -132,17 +232,12 @@ def show_table_context_menu(table, pos, market_col: int = 0) -> None:
         return
 
     if chosen == note_action:
-        new_note, ok = QInputDialog.getMultiLineText(
-            table,
-            "Trade Note",
-            market,
-            current_note or "",
-        )
+        new_note, ok = _run_note_dialog(table, market, current_note)
         if not ok:
             return
-        if new_note.strip():
-            _notes.set(market, new_note.strip())
-            apply_note_indicator(mkt_item, market, new_note.strip())
+        if new_note:
+            _notes.set(market, new_note)
+            apply_note_indicator(mkt_item, market, new_note)
         else:
             # User cleared the text box — treat as delete
             _notes.delete(market)

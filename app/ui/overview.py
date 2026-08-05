@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.services import notes as _notes
-from app.ui.polymarket_menu import MENU_STYLE, NOTE_INDICATOR, open_polymarket
+from app.ui.polymarket_menu import MENU_STYLE, NOTE_INDICATOR, _run_note_dialog, open_polymarket
 
 from app.database import (
     clear_wallet_snapshots_today,
@@ -168,11 +168,11 @@ def _market_row_cell(text: str, slug: str = None) -> QLabel:
     lbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
     if slug and note:
-        lbl.setToolTip(f"📝 {note}\n\nRight-click to open on Polymarket")
+        lbl.setToolTip(f"✏️ {note}\n\nRight-click to open on Polymarket")
     elif slug:
         lbl.setToolTip("Right-click to open on Polymarket")
     elif note:
-        lbl.setToolTip(f"📝 {note}")
+        lbl.setToolTip(f"✏️ {note}")
 
     def _show_menu(pos, _market=text, _slug=slug, _lbl=lbl):
         from PySide6.QtWidgets import QInputDialog
@@ -194,16 +194,14 @@ def _market_row_cell(text: str, slug: str = None) -> QLabel:
         if chosen == open_action:
             open_polymarket(_slug)
         elif chosen == note_action:
-            new_note, ok = QInputDialog.getMultiLineText(
-                _lbl, "Trade Note", _market, current_note or ""
-            )
+            new_note, ok = _run_note_dialog(_lbl, _market, current_note)
             if not ok:
                 return
-            if new_note.strip():
-                _notes.set(_market, new_note.strip())
+            if new_note:
+                _notes.set(_market, new_note)
                 _lbl.setText(_market + NOTE_INDICATOR)
                 _lbl.setToolTip(
-                    f"📝 {new_note.strip()}"
+                    f"✏️ {new_note}"
                     + ("\n\nRight-click to open on Polymarket" if _slug else "")
                 )
             else:
