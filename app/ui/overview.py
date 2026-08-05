@@ -427,6 +427,10 @@ _OVERVIEW_ROW_CAP = 100   # max rows rendered in the overview panel grid
 
 
 def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") -> QWidget:
+    # Exclude SOLD positions — they have their own section above.
+    # The Closed section only shows positions that resolved definitively.
+    positions = [p for p in positions if getattr(p, "close_type", None) != "SOLD"]
+
     outer = QWidget()
     vbox = QVBoxLayout(outer)
     vbox.setContentsMargins(0, 0, 0, 0)
