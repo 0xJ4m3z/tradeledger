@@ -357,6 +357,7 @@ def _sold_section(positions: List[ResolvedPosition], range_label: str = "") -> Q
     vbox.setContentsMargins(0, 0, 0, 0)
     vbox.setSpacing(8)
 
+    count = len(sold)
     lbl = QLabel("Sold")
     lbl.setStyleSheet(_SECTION_HDR_S)
     vbox.addWidget(lbl)
