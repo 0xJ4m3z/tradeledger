@@ -227,10 +227,12 @@ def show_table_context_menu(table, pos, market_col: int = 0) -> None:
     menu.setStyleSheet(MENU_STYLE)
 
     open_action  = None
+    copy_action  = None
     clear_action = None
 
     if slug:
         open_action = menu.addAction("Open on Polymarket")
+        copy_action = menu.addAction("Copy Slug")
         menu.addSeparator()
 
     note_label  = "Edit Note…" if current_note else "Add Note…"
@@ -244,6 +246,10 @@ def show_table_context_menu(table, pos, market_col: int = 0) -> None:
 
     if chosen == open_action:
         open_polymarket(slug)
+        return
+
+    if chosen == copy_action:
+        QApplication.clipboard().setText(slug)
         return
 
     if chosen == note_action:

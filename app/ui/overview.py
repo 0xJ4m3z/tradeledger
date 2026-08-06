@@ -180,14 +180,16 @@ def _market_row_cell(text: str, slug: str = None) -> QLabel:
         lbl.setToolTip(f"✏️ {note}")
 
     def _show_menu(pos, _market=text, _slug=slug, _lbl=lbl):
-        from PySide6.QtWidgets import QInputDialog
+        from PySide6.QtWidgets import QApplication, QInputDialog
         current_note = _notes.get(_market)
         menu = QMenu(_lbl)
         menu.setStyleSheet(MENU_STYLE)
         open_action  = None
+        copy_action  = None
         clear_action = None
         if _slug:
             open_action = menu.addAction("Open on Polymarket")
+            copy_action = menu.addAction("Copy Slug")
             menu.addSeparator()
         note_label  = "Edit Note…" if current_note else "Add Note…"
         note_action = menu.addAction(note_label)
@@ -198,6 +200,8 @@ def _market_row_cell(text: str, slug: str = None) -> QLabel:
             return
         if chosen == open_action:
             open_polymarket(_slug)
+        elif chosen == copy_action:
+            QApplication.clipboard().setText(_slug)
         elif chosen == note_action:
             new_note, ok = _run_note_dialog(_lbl, _market, current_note)
             if not ok:
