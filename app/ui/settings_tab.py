@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -112,7 +113,13 @@ class SettingsTab(QWidget):
         except ValueError:
             self._fill_alpha = 0.12
 
-        outer = QVBoxLayout(self)
+        # ── Scroll area wrapper (lets all sections breathe) ────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        _content = QWidget()
+        outer = QVBoxLayout(_content)
         outer.setContentsMargins(24, 20, 24, 24)
         outer.setSpacing(20)
 
@@ -235,6 +242,11 @@ class SettingsTab(QWidget):
         outer.addWidget(chart_card)
         outer.addStretch(1)
 
+        scroll.setWidget(_content)
+        tab_layout = QVBoxLayout(self)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.addWidget(scroll)
+
     # ── Live Trade Stream (credentials file) ──────────────────────────────────
 
     def _build_stream_card(self) -> QFrame:
@@ -242,30 +254,11 @@ class SettingsTab(QWidget):
         card.setStyleSheet(_CARD_FRAME)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 14, 16, 16)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
 
-        # Description
-        desc = QLabel(
-            "Point to the credentials file pm-bot already uses.  "
-            "TradeLedger reads only the API key, secret, and passphrase — "
-            "your private key and wallet address are never touched."
-        )
-        desc.setStyleSheet(f"color: {_MUTED}; font-size: 12px;")
-        desc.setWordWrap(True)
-        layout.addWidget(desc)
-
-        # Expected fields note
-        fields_lbl = QLabel(
-            "Required fields (any of):  "
-            "<span style='color:#58a6ff;'>CLOB_API_KEY</span>  ·  "
-            "<span style='color:#58a6ff;'>CLOB_API_SECRET</span>  ·  "
-            "<span style='color:#58a6ff;'>CLOB_API_PASSPHRASE</span>"
-        )
-        fields_lbl.setStyleSheet(f"color: {_MUTED}; font-size: 11px;")
-        fields_lbl.setTextFormat(Qt.TextFormat.RichText)
-        layout.addWidget(fields_lbl)
-
-        layout.addWidget(_field_label("Credentials file"))
+        layout.addWidget(_field_label(
+            "Credentials file  (.env or .json — needs CLOB_API_KEY, CLOB_API_SECRET, CLOB_API_PASSPHRASE)"
+        ))
 
         # File path row
         file_row = QHBoxLayout()
