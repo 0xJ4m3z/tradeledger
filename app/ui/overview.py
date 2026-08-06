@@ -532,6 +532,8 @@ class OverviewWidget(QWidget):
         # User stream (authenticated WebSocket) — started when credentials are loaded
         self._user_stream: UserStreamThread | None = None
         self._user_stream_connected: bool          = False
+        # Dedup: trade IDs we have already processed from the user stream
+        self._seen_trade_ids: set[str]             = set()
         # Settings tab reference for status feedback (set via set_settings_tab())
         self._settings_tab = None
 
@@ -825,27 +827,55 @@ class OverviewWidget(QWidget):
     def _on_user_trade(self, event: dict) -> None:
         """Handle a Trade Event from the authenticated user stream.
 
-        Converts the event to a UserActivity row and injects it into the
-        in-memory activity list.  For SELL events, the sold-stubs mechanism
-        immediately updates the Sold section — no API round-trip needed.
-        For BUY events, trigger a debounced refresh to pick up the new position.
+        For SELL: inject into the internal activity list (for sold-stub building)
+        and immediately refresh the Sold section — no API round-trip needed.
+        For BUY: trigger a 5-second debounced full refresh.
 
-        Only processes MATCHED events (the first confirmation) to avoid
-        creating duplicate activity rows for MINED / CONFIRMED status updates
-        of the same trade.
+        We deliberately do NOT emit activity_changed here.  User-stream events
+        often lack the market title at MATCHED status, which would add "—" rows
+        to the Activity tab.  The Activity tab updates cleanly via the next API
+        poll, which always has full titles.
+
+        Only MATCHED events are acted on; subsequent MINED / CONFIRMED updates
+        for the same trade ID are dropped by the seen-ID dedup.
         """
         status = (event.get("status") or "").upper()
-        # Skip repeated status updates for the same trade — act on first arrival only.
-        # MATCHED is the first status from the CLOB; if absent (some server versions
-        # omit it), also accept empty/unknown status to avoid missing events.
+        # Only act on the first confirmation (MATCHED); later status updates
+        # (MINED, CONFIRMED) carry no new information for our purposes.
+        # Empty status means the server omitted it — treat as MATCHED.
         if status and status not in ("MATCHED", ""):
             return
 
-        side  = (event.get("side") or "").upper()
-        title = event.get("title") or ""
-        outcome = event.get("outcome") or ""
+        # ── Dedup by server-assigned trade ID ─────────────────────────────────
+        trade_id = event.get("id") or ""
+        if trade_id:
+            if trade_id in self._seen_trade_ids:
+                return
+            self._seen_trade_ids.add(trade_id)
 
-        # Parse timestamp — match_time may be epoch-seconds string or ISO datetime
+        side     = (event.get("side") or "").upper()
+        outcome  = event.get("outcome") or ""
+        asset_id = event.get("asset_id") or ""
+        size     = float(event.get("size")  or 0)
+        price    = float(event.get("price") or 0)
+
+        # ── Title lookup ───────────────────────────────────────────────────────
+        # Trade Events at MATCHED status often omit the market title.
+        # Look it up from active positions (which always have the title).
+        title = event.get("title") or ""
+        if not title and asset_id:
+            for pos in self._active_positions:
+                if getattr(pos, "asset_id", None) == asset_id:
+                    title = pos.market
+                    break
+        # If we still have no title, check recent activity for the same asset
+        if not title and asset_id:
+            for act in self._activity[:200]:
+                if act.title and getattr(act, "asset_id", None) == asset_id:
+                    title = act.title
+                    break
+
+        # ── Timestamp ─────────────────────────────────────────────────────────
         ts_raw = event.get("match_time") or event.get("timestamp") or ""
         try:
             ts = int(float(ts_raw))
@@ -857,48 +887,46 @@ class OverviewWidget(QWidget):
             except Exception:
                 ts = int(time.time())
 
-        size  = float(event.get("size")  or 0)
-        price = float(event.get("price") or 0)
+        _dlog("user_stream", "trade: %s %s '%s' qty=%.2f price=%.4f id=%s",
+              side, outcome, title[:50], size, price, trade_id)
 
-        activity_row = UserActivity(
-            timestamp = ts,
-            type      = "TRADE",
-            title     = title,
-            outcome   = outcome,
-            side      = side,
-            size      = size,
-            usdc_size = round(size * price, 6),
-            price     = price,
-            slug      = None,
-        )
-
-        # Dedup: skip if an identical event is already in the list
-        key = (ts, "TRADE", side, size)
-        if any((a.timestamp, a.type, a.side, a.size) == key for a in self._activity):
-            return
-
-        # Prepend (newest first)
-        self._activity.insert(0, activity_row)
-        _dlog("user_stream", "trade event: %s %s %s qty=%.2f price=%.4f",
-              side, outcome, title[:40], size, price)
-
-        # For SELL: immediately rebuild sold stubs so the position appears in
-        # the Sold section without waiting for the next API poll.
+        # ── For SELL: inject into _activity (for sold-stub building only) ─────
+        # We do NOT emit activity_changed — the Activity tab will get the clean
+        # API version (with proper title) on the next poll.
         if side == "SELL":
+            activity_row = UserActivity(
+                timestamp = ts,
+                type      = "TRADE",
+                title     = title,
+                outcome   = outcome,
+                side      = side,
+                size      = size,
+                usdc_size = round(size * price, 6),
+                price     = price,
+                slug      = None,
+            )
+            # Only inject if we have a title — otherwise the stub would show "Unknown"
+            # and be indistinguishable from other unknown stubs.
+            if title:
+                # Avoid double-injection if the API already fetched this trade
+                key = (ts, "TRADE", side, size)
+                already_there = any(
+                    (a.timestamp, a.type, a.side, a.size) == key
+                    for a in self._activity
+                )
+                if not already_there:
+                    self._activity.insert(0, activity_row)
+
+            # Rebuild Sold section immediately
             self._refresh_closed_section()
 
-        # For BUY (or unknown side): trigger a debounced refresh to pick up the
-        # new active position from the API (we don't have cost-basis data here).
-        if side != "SELL":
-            if self._trade_debounce and self._trade_debounce.isActive():
-                return
-            self._trade_debounce = QTimer(self)
-            self._trade_debounce.setSingleShot(True)
-            self._trade_debounce.timeout.connect(self.request_refresh)
-            self._trade_debounce.start(5_000)
-
-        # Emit updated activity so the Activity tab shows it too
-        self.activity_changed.emit(self._activity)
+        # ── For BUY: debounced refresh to pick up new active position ─────────
+        else:
+            if not (self._trade_debounce and self._trade_debounce.isActive()):
+                self._trade_debounce = QTimer(self)
+                self._trade_debounce.setSingleShot(True)
+                self._trade_debounce.timeout.connect(self.request_refresh)
+                self._trade_debounce.start(5_000)
 
     def _on_range_changed(self, selection: DateRangeSelection) -> None:
         self._selection = selection
@@ -1014,6 +1042,7 @@ class OverviewWidget(QWidget):
         # Stop market stream for old wallet — restarts once new wallet's positions load
         self._stop_stream()
         self._stream_token_ids = set()
+        self._seen_trade_ids   = set()
         # User stream is per-credentials, not per-wallet — keep it running
 
     # ── Wallet value update ────────────────────────────────────────────────────
