@@ -442,6 +442,7 @@ def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") 
     vbox.setContentsMargins(0, 0, 0, 0)
     vbox.setSpacing(8)
 
+    total = len(positions)
     lbl = QLabel(f"Closed — {range_label}")
     lbl.setStyleSheet(_SECTION_HDR_S)
     vbox.addWidget(lbl)
