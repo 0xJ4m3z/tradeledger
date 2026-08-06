@@ -71,7 +71,13 @@ class UserStreamThread(QThread):
     # ── Thread entry point ─────────────────────────────────────────────────────
 
     def run(self) -> None:
-        import websocket as _ws_lib   # websocket-client
+        try:
+            import websocket as _ws_lib   # websocket-client
+        except ImportError:
+            self.stream_error.emit(
+                "websocket-client not installed — run: pip install websocket-client"
+            )
+            return
 
         # Set a 15 s socket timeout so a hung TCP connect doesn't block forever.
         _ws_lib.setdefaulttimeout(15)

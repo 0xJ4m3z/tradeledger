@@ -61,7 +61,12 @@ class MarketStreamThread(QThread):
     # ── Thread entry point ────────────────────────────────────────────────────
 
     def run(self) -> None:
-        import websocket as _ws_lib   # websocket-client
+        try:
+            import websocket as _ws_lib   # websocket-client
+        except ImportError:
+            # Emit disconnected so the UI shows "No stream" rather than crashing.
+            self.stream_disconnected.emit()
+            return
 
         while not self._stop_flag:
             _ping_timer: list = [None]   # wrapped in list so nested functions can reassign
