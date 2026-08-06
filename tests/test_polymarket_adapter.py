@@ -162,64 +162,84 @@ class TestFetchResolvedPositions:
             p = fetch_resolved_positions(_FAKE_WALLET)[0]
         assert p.realized_pnl == pytest.approx(25.0)
 
-    def test_multi_market_event_condition_id_picks_correct_sub_market(self):
-        # Root cause of the "ETH above X" display bug:
-        # Multiple "Ethereum above X?" markets share ONE event slug.  Querying by
-        # event slug returns all sub-markets; taking the first resolved one
-        # (e.g. "No" for above-1990) poisoned the cache for every other position
-        # with the same slug — so "above-1830" (which resolved Yes) showed "No".
+    def test_multi_market_event_cur_price_approx_picks_correct_winner(self):
+        # Root cause of the "ETH above X" display bug: multiple sub-markets share
+        # one event slug, and the old Gamma fallback returned the first resolved
+        # sub-market's winner for ALL positions.
         #
-        # The fix: conditionId uniquely identifies a single market.
-        # _fetch_winner_by_condition_id() queries /markets?condition_id=<id>
-        # and gets exactly one market — no multi-market disambiguation needed.
+        # The fix: _to_resolved now uses currentValue / size as the primary signal
+        # (identical to _to_closed's curPrice logic).  For a resolved binary market,
+        # winning tokens = ~$1 each, losing tokens = ~$0 each.  This means:
+        #   - row_1830 ("Yes", 5 shares, $5 current value) → $1/share → Yes won ✓
+        #   - row_1990 ("No",  5 shares, $5 current value) → $1/share → No won  ✓
+        # No Gamma API calls needed — the answer is in the row itself.
         import app.adapters.polymarket_adapter as _mod
         _mod._slug_winner_cache.clear()
 
-        row_1830 = {          # ETH > 1830 → Yes won
-            "title":       "Ethereum above 1,830 on August 6, 11AM ET?",
-            "outcome":     "Yes",
-            "eventSlug":   "eth-price-aug6-11am",
-            "conditionId": "0xcondition_1830",
-            "size":        5.0,
-            "avgPrice":    0.50,
-            "currentValue": 5.0,
+        row_1830 = {          # ETH > 1830 → Yes won; user holds Yes at $1/share
+            "title":        "Ethereum above 1,830 on August 6, 11AM ET?",
+            "outcome":      "Yes",
+            "eventSlug":    "eth-price-aug6-11am",
+            "conditionId":  "0xcondition_1830",
+            "size":         5.0,
+            "avgPrice":     0.50,
+            "currentValue": 5.0,   # 5 shares × $1 = winning token
         }
-        row_1990 = {          # ETH < 1990 → No won
-            "title":       "Ethereum above 1,990 on August 6, 10AM ET?",
-            "outcome":     "No",
-            "eventSlug":   "eth-price-aug6-11am",
-            "conditionId": "0xcondition_1990",
-            "size":        5.0,
-            "avgPrice":    0.50,
-            "currentValue": 5.0,
+        row_1990 = {          # ETH < 1990 → No won; user holds No at $1/share
+            "title":        "Ethereum above 1,990 on August 6, 10AM ET?",
+            "outcome":      "No",
+            "eventSlug":    "eth-price-aug6-11am",
+            "conditionId":  "0xcondition_1990",
+            "size":         5.0,
+            "avgPrice":     0.50,
+            "currentValue": 5.0,   # 5 shares × $1 = winning token
         }
-        # Gamma markets endpoint returns ONE market per conditionId lookup.
-        gamma_market_1830 = [{"outcomes": '["Yes","No"]', "outcomePrices": '["1","0"]'}]  # Yes won
-        gamma_market_1990 = [{"outcomes": '["Yes","No"]', "outcomePrices": '["0","1"]'}]  # No won
 
-        with patch("requests.get") as mock_get:
-            # Call 1: positions API → both rows
-            # Call 2: /markets?condition_id=0xcondition_1830 → Yes won
-            # Call 3: /markets?condition_id=0xcondition_1990 → No won
-            mock_get.side_effect = [
-                _mock_response([row_1830, row_1990]),
-                _mock_response(gamma_market_1830),
-                _mock_response(gamma_market_1990),
-            ]
+        # Only one requests.get call: the positions API.  No Gamma calls.
+        with patch("requests.get", return_value=_mock_response([row_1830, row_1990])):
             results = fetch_resolved_positions(_FAKE_WALLET)
 
         assert len(results) == 2
         by_title = {p.market: p for p in results}
 
         p_1830 = by_title["Ethereum above 1,830 on August 6, 11AM ET?"]
-        assert p_1830.winning_outcome == "Yes"   # ETH > 1830 → Yes won
+        assert p_1830.winning_outcome == "Yes"   # $1/share → Yes won
         assert p_1830.outcome_held    == "Yes"
         assert p_1830.is_win          is True
 
         p_1990 = by_title["Ethereum above 1,990 on August 6, 10AM ET?"]
-        assert p_1990.winning_outcome == "No"    # ETH < 1990 → No won
+        assert p_1990.winning_outcome == "No"    # $1/share → No won
         assert p_1990.outcome_held    == "No"
         assert p_1990.is_win          is True
+
+    def test_resolved_losing_position_uses_binary_opposite_when_gamma_unavailable(self):
+        # Losing resolved position: user holds Yes but No won (currentValue ≈ 0).
+        # Gamma unavailable (no slug, no conditionId) → _binary_opposite fallback.
+        row = {
+            "title":        "Will it rain?",
+            "outcome":      "Yes",
+            "size":         10.0,
+            "avgPrice":     0.50,
+            "currentValue": 0.05,   # ~$0/share → Yes lost
+        }
+        with patch("requests.get", return_value=_mock_response([row])):
+            p = fetch_resolved_positions(_FAKE_WALLET)[0]
+        assert p.winning_outcome == "No"    # binary opposite of "Yes"
+        assert p.outcome_held    == "Yes"
+        assert p.is_win          is False
+
+    def test_resolved_losing_position_up_down_binary_opposite(self):
+        row = {
+            "title":        "BTC Up or Down?",
+            "outcome":      "Up",
+            "size":         10.0,
+            "avgPrice":     0.50,
+            "currentValue": 0.0,    # Up token worth $0 → Down won
+        }
+        with patch("requests.get", return_value=_mock_response([row])):
+            p = fetch_resolved_positions(_FAKE_WALLET)[0]
+        assert p.winning_outcome == "Down"
+        assert p.is_win          is False
 
     def test_gamma_winner_cached_separately_per_asset_id(self):
         # Verify the (slug, asset_id) cache key on the event slug path — a second

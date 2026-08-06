@@ -959,10 +959,15 @@ class OverviewWidget(QWidget):
         filtered      = filter_closed_by_selection(self._closed_positions, self._selection)
         stub_filtered = filter_closed_by_selection(self._sold_stubs, self._selection)
         label         = self._selection.display_label()
-        # Sold section: stubs (pending API arrival) + real SOLD positions from API
+        # Sold section: stubs whose market window is still open + real SOLD from API
         self._replace_section("_sold_section", _sold_section(stub_filtered + filtered, label))
-        # Closed section: only real positions (stubs never graduate to Closed)
-        self._replace_section("_cls_section",  _closed_section(filtered, label))
+        # Closed section: real positions + "graduated" stubs — stubs whose market
+        # window has now closed but haven't yet appeared in the closed-positions API.
+        # Without this, a freshly-sold position disappears for the brief window between
+        # the market closing and the API indexing the record.
+        graduated = [p for p in stub_filtered
+                     if _window_closed(p.market, p.resolved_date, p.closed_at)]
+        self._replace_section("_cls_section",  _closed_section(graduated + filtered, label))
 
     def _update_pnl_chart(self) -> None:
         if self._selection.is_preset():

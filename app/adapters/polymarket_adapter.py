@@ -224,6 +224,18 @@ def _to_active(row: dict) -> ActivePosition:
     )
 
 
+def _binary_opposite(outcome: str) -> str:
+    """Return the opposite outcome name for common binary markets (Yes/No, Up/Down).
+
+    Used as a last-resort fallback when Gamma is unavailable and we know the
+    user's outcome lost (currentValue ≈ 0) but need the winner's name.
+    Returns "" for non-standard outcome strings.
+    """
+    return {"yes": "No", "no": "Yes", "up": "Down", "down": "Up"}.get(
+        outcome.lower(), ""
+    )
+
+
 def _to_resolved(row: dict) -> ResolvedPosition:
     size          = float(row.get("size") or row.get("quantity") or 0)
     avg_price     = float(row.get("avgPrice") or 0)
@@ -234,22 +246,46 @@ def _to_resolved(row: dict) -> ResolvedPosition:
                      or row.get("tokenId") or row.get("token_id") or "")
     condition_id  = row.get("conditionId") or row.get("condition_id") or ""
 
-    # Use Gamma API for the authoritative winning outcome.
-    # conditionId (preferred): directly queries /markets?condition_id=<id>
-    # which returns exactly one market — no multi-market disambiguation needed.
-    # This correctly handles "ETH above X" price-level series where many markets
-    # share one event slug but each resolves independently.
-    # Falls back to event slug + asset_id if conditionId is absent.
-    if condition_id:
-        gamma_winner = _fetch_winner_by_condition_id(condition_id)
-        if gamma_winner is None and slug:
-            gamma_winner = _fetch_winner_from_gamma(slug, asset_id)
-    elif slug:
-        gamma_winner = _fetch_winner_from_gamma(slug, asset_id)
-    else:
-        gamma_winner = None
+    # Use currentValue / size as the primary winning-outcome signal — identical
+    # logic to _to_closed's curPrice approach.  For a resolved binary market,
+    # each token is worth ~$1 (winner) or ~$0 (loser).
+    #
+    # Why this beats Gamma for /positions?redeemable=true:
+    #   • No network call — uses data already in the row.
+    #   • Gamma outcomePrices may still show mid-market prices for markets that
+    #     just resolved (settlement takes a few minutes to finalise on-chain).
+    #   • Multi-market events (e.g. "ETH above 1,840" / "ETH above 1,960") each
+    #     return their own currentValue, so no slug-level cache-poisoning.
+    cur_price_approx = (current_value / size) if size > 0 else -1.0
 
-    winning_outcome = gamma_winner if gamma_winner else outcome
+    if cur_price_approx >= 0.99:
+        # User's tokens are worth ~$1 each → their outcome won.
+        winning_outcome = outcome
+
+    elif 0.0 <= cur_price_approx <= 0.01:
+        # User's tokens are worth ~$0 → the other outcome won.
+        # Try Gamma for the authoritative name; fall back to binary inference.
+        if condition_id:
+            gamma_winner = _fetch_winner_by_condition_id(condition_id)
+            if gamma_winner is None and slug:
+                gamma_winner = _fetch_winner_from_gamma(slug, asset_id)
+        elif slug:
+            gamma_winner = _fetch_winner_from_gamma(slug, asset_id)
+        else:
+            gamma_winner = None
+        winning_outcome = gamma_winner or _binary_opposite(outcome) or outcome
+
+    else:
+        # currentValue not yet settled (market still pricing in) — use Gamma.
+        if condition_id:
+            gamma_winner = _fetch_winner_by_condition_id(condition_id)
+            if gamma_winner is None and slug:
+                gamma_winner = _fetch_winner_from_gamma(slug, asset_id)
+        elif slug:
+            gamma_winner = _fetch_winner_from_gamma(slug, asset_id)
+        else:
+            gamma_winner = None
+        winning_outcome = gamma_winner if gamma_winner else outcome
 
     return ResolvedPosition(
         market          = row.get("title") or "Unknown",
