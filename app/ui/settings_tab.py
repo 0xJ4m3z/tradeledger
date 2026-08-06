@@ -333,7 +333,9 @@ class SettingsTab(QWidget):
     def update_stream_status(self, connected: bool, error: str = "") -> None:
         """Called by Overview to reflect live user-stream status in Settings."""
         if error:
-            self._creds_status.setText(f"✗  {error}")
+            # Truncate long error messages so they fit the label
+            short = error[:100] + "…" if len(error) > 100 else error
+            self._creds_status.setText(f"✗  {short}")
             self._creds_status.setStyleSheet("color: #f85149; font-size: 12px;")
         elif connected:
             self._creds_status.setText("✓  Connected — receiving live trade events")
@@ -341,8 +343,7 @@ class SettingsTab(QWidget):
         else:
             path = self._creds_edit.text()
             if path:
-                # Not connected yet but file is valid — probably reconnecting
-                ok, msg = _creds.validate_file(path)
+                ok, _ = _creds.validate_file(path)
                 if ok:
                     self._creds_status.setText("○  Connecting…")
                     self._creds_status.setStyleSheet(f"color: {_MUTED}; font-size: 12px;")

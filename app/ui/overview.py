@@ -803,14 +803,22 @@ class OverviewWidget(QWidget):
 
     def _on_user_stream_disconnected(self) -> None:
         self._user_stream_connected = False
-        self._user_dot.setText("○  User…")
+        self._user_dot.setText("○  Reconnecting…")
         self._user_dot.setStyleSheet(f"color: {_MUTED}; font-size: 11px; padding: 0 6px;")
         if self._settings_tab is not None:
             self._settings_tab.update_stream_status(False)
 
     def _on_user_stream_error(self, error: str) -> None:
-        self._user_dot.setText("✗  User auth error")
+        """Handle a fatal stream error (auth rejected, server closed).
+
+        Stops the reconnect loop so we don't hammer the server with bad
+        credentials.  The user must fix the credentials file and re-select it.
+        """
+        self._stop_user_stream()
+        self._user_stream_connected = False
+        self._user_dot.setText("✗  Stream error")
         self._user_dot.setStyleSheet(f"color: #f85149; font-size: 11px; padding: 0 6px;")
+        self._user_dot.setVisible(True)
         if self._settings_tab is not None:
             self._settings_tab.update_stream_status(False, error)
 

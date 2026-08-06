@@ -73,6 +73,9 @@ class UserStreamThread(QThread):
     def run(self) -> None:
         import websocket as _ws_lib   # websocket-client
 
+        # Set a 15 s socket timeout so a hung TCP connect doesn't block forever.
+        _ws_lib.setdefaulttimeout(15)
+
         while not self._stop_flag:
             _ping_timer: list = [None]
 
@@ -141,14 +144,22 @@ class UserStreamThread(QThread):
 
             def on_error(ws, error):
                 err_str = str(error)
-                # Detect auth failures so the caller can surface a clear message
+                # HTTP-level auth failures (server rejects the WebSocket upgrade)
                 if any(x in err_str for x in ("401", "403", "Unauthorized", "Forbidden")):
-                    self.stream_error.emit(f"Auth failed: {error}")
+                    self.stream_error.emit(f"Auth failed — check credentials ({error})")
 
             def on_close(ws, code, msg):
                 _cancel_ping()
                 self._ws = None
-                self.stream_disconnected.emit()
+                # App-level WebSocket close codes (4000–4999) mean the server
+                # explicitly rejected the session — treat as a fatal auth/protocol
+                # error so the caller can stop retrying and surface the message.
+                # Code 1008 (policy violation) also indicates auth failure on some servers.
+                if code and (code >= 4000 or code == 1008):
+                    reason = msg or f"code {code}"
+                    self.stream_error.emit(f"Server rejected connection: {reason}")
+                else:
+                    self.stream_disconnected.emit()
 
             try:
                 app = _ws_lib.WebSocketApp(
