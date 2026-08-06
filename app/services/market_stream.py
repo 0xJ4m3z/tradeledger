@@ -162,5 +162,11 @@ class MarketStreamThread(QThread):
                 pass
 
             _cancel_ping()
+            # Interruptible reconnect delay: wake every 100 ms so stop()
+            # can exit quickly instead of blocking for the full 5 s.
             if not self._stop_flag:
-                self.msleep(_RECONNECT_DELAY * 1000)
+                deadline = _RECONNECT_DELAY * 10   # × 100 ms
+                for _ in range(deadline):
+                    if self._stop_flag:
+                        break
+                    self.msleep(100)

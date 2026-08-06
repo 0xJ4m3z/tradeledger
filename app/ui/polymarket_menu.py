@@ -92,6 +92,11 @@ class NoteDialog(QDialog):
         self.setMinimumWidth(540)
         self.setMinimumHeight(300)
 
+        # Cache the text as a plain Python string so note() is safe to call
+        # after exec() returns — on Windows/PySide6, Qt can delete child C++
+        # objects (QPlainTextEdit) before the caller reads the dialog result.
+        self._note_text: str = ""
+
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -134,9 +139,19 @@ class NoteDialog(QDialog):
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
 
+    def accept(self) -> None:
+        """Cache note text as a Python str before Qt tears down child widgets."""
+        self._note_text = self._edit.toPlainText().strip()
+        super().accept()
+
     def note(self) -> str:
-        """Return the entered note text, stripped of leading/trailing whitespace."""
-        return self._edit.toPlainText().strip()
+        """Return the entered note text, stripped of leading/trailing whitespace.
+
+        Reads _note_text (captured in accept()) rather than querying the widget
+        directly — on Windows/PySide6 the C++ QPlainTextEdit may already be
+        deleted by the time the caller invokes this after exec() returns.
+        """
+        return self._note_text
 
 
 def open_polymarket(slug: Optional[str]) -> None:
