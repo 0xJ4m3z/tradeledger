@@ -164,16 +164,26 @@ def _to_resolved(row: dict) -> ResolvedPosition:
     avg_price     = float(row.get("avgPrice") or 0)
     current_value = float(row.get("currentValue") or 0)
     outcome       = row.get("outcome") or ""
+    slug          = row.get("eventSlug") or row.get("slug") or None
+
+    # Use Gamma API for the authoritative winning outcome.
+    # Although positions in the /positions?redeemable=true endpoint are expected
+    # to be wins, the API occasionally includes losing positions (e.g. ETH 5m
+    # markets where the user's outcome lost but the record wasn't swept).
+    # Guessing from the user's held outcome is unreliable; Gamma knows.
+    gamma_winner    = _fetch_winner_from_gamma(slug) if slug else None
+    winning_outcome = gamma_winner if gamma_winner else outcome
+
     return ResolvedPosition(
         market          = row.get("title") or "Unknown",
         outcome_held    = outcome,
-        winning_outcome = outcome,   # resolved + not redeemed ⟹ user's outcome won
+        winning_outcome = winning_outcome,
         quantity        = size,
         cost_basis      = avg_price * size,
         redeem_value    = current_value,
         redeemed        = False,
         resolved_date   = row.get("endDate"),
-        slug            = row.get("eventSlug") or row.get("slug") or None,
+        slug            = slug,
     )
 
 
@@ -213,31 +223,27 @@ def _to_closed(row: dict) -> ResolvedPosition:
     cost_basis   = total_bought * avg_price           # USDC spent
     redeem_value = cost_basis + realized_pnl          # USDC received
 
-    # Determine winning outcome and close type.
-    #
-    # Priority order:
-    #   1. curPrice ≈ 1.0 or ≈ 0.0 → definitive (position held to resolution,
-    #      or sold very close to resolution price).
-    #   2. Gamma API lookup by slug → actual market resolution for SOLD positions
-    #      where curPrice is the sell price, not the resolution price.
-    #   3. Proceeds heuristic (got back ≈$0 → loss; ≈$1/share → win).
-    #   4. P/L sign → last resort; can be wrong for stop-loss exits where the
-    #      user's direction ultimately won.
+    # Gamma API is the authoritative source for the actual winning outcome.
+    # Look it up once up front — it is cached in-process so repeated calls
+    # for the same slug within a session are free.
+    gamma_winner = _fetch_winner_from_gamma(slug) if slug else None
+
     if cur_price >= 0.98:
-        # Token resolved at ~$1 → user's outcome won.
+        # Token resolved at ~$1 → user's outcome won.  Gamma confirms.
         winning_outcome = outcome
         per_share = (redeem_value / quantity) if quantity > 0 else 0
         close_type = "REDEEMED_WIN" if per_share >= 0.95 else "SOLD"
     elif 0.0 <= cur_price <= 0.02:
-        # Token resolved at ~$0 → opposite won.
-        winning_outcome = opposite
+        # Token resolved at ~$0 → the OTHER outcome won.
+        # If oppositeOutcome is missing, Gamma fills the gap.
+        winning_outcome = opposite or gamma_winner or ""
         close_type = "RESOLVED_LOSS" if redeem_value < 0.01 else "SOLD"
     else:
         # curPrice is mid-market (CLOB sell price, not resolution price) or
         # unavailable.  This is the common case for stop-loss SOLD positions.
         if redeem_value < 0.01:
             # Got back nothing → resolved against them without any CLOB exit.
-            winning_outcome = opposite
+            winning_outcome = opposite or gamma_winner or ""
             close_type      = "RESOLVED_LOSS"
         elif quantity > 0 and (redeem_value / quantity) >= 0.95:
             # Got back ~$1/share → effectively redeemed at full value.
@@ -245,15 +251,13 @@ def _to_closed(row: dict) -> ResolvedPosition:
             close_type      = "REDEEMED_WIN"
         else:
             # Sold at mid-market via stop-loss / take-profit exit.
-            # Use the Gamma API to get the actual market resolution.
-            slug = row.get("eventSlug") or row.get("slug") or None
-            gamma_winner = _fetch_winner_from_gamma(slug) if slug else None
+            # Gamma is the primary source for the actual market resolution.
             if gamma_winner:
                 winning_outcome = gamma_winner
             else:
-                # Gamma API unavailable or market not yet resolved —
-                # fall back to P/L sign as last resort (wrong for stop-loss
-                # positions where user's direction still won, but avoids "—").
+                # Gamma unavailable or market not yet resolved — fall back
+                # to P/L sign as last resort (can be wrong for stop-loss
+                # positions where the user's direction ultimately won).
                 winning_outcome = outcome if realized_pnl >= 0 else opposite
                 _dlog("closed_winner",
                       "gamma miss for '%s' (slug=%s) | fallback P/L sign | "
