@@ -162,6 +162,114 @@ class TestFetchResolvedPositions:
             p = fetch_resolved_positions(_FAKE_WALLET)[0]
         assert p.realized_pnl == pytest.approx(25.0)
 
+    def test_multi_market_event_each_sub_market_gets_correct_winner(self):
+        # Root cause of the "ETH above X" display bug:
+        # Multiple "Ethereum above X?" markets share ONE event slug.  The old code
+        # cached the first resolved sub-market's winner (e.g. "No" for above-1990)
+        # under the event slug and returned it for ALL positions, making "above-1830"
+        # (which resolved Yes) also show "No".
+        #
+        # The fix: _fetch_winner_from_gamma now filters by clobTokenIds and caches
+        # by (slug, asset_id) so each sub-market gets its own winner.
+        import app.adapters.polymarket_adapter as _mod
+        _mod._slug_winner_cache.clear()
+
+        row_1830 = {          # ETH > 1830 → Yes won
+            "title":      "Ethereum above 1,830 on August 6, 11AM ET?",
+            "outcome":    "Yes",
+            "eventSlug":  "eth-price-aug6-11am",
+            "assetId":    "token_1830_yes",
+            "size":       5.0,
+            "avgPrice":   0.50,
+            "currentValue": 5.0,
+        }
+        row_1990 = {          # ETH < 1990 → No won
+            "title":      "Ethereum above 1,990 on August 6, 10AM ET?",
+            "outcome":    "No",
+            "eventSlug":  "eth-price-aug6-11am",
+            "assetId":    "token_1990_no",
+            "size":       5.0,
+            "avgPrice":   0.50,
+            "currentValue": 5.0,
+        }
+        # Gamma event has two sub-markets with distinct clobTokenIds.
+        # above-1830: Yes resolved to $1 (ETH > 1830).
+        # above-1990: No resolved to $1 (ETH < 1990).
+        gamma_event = [{
+            "slug": "eth-price-aug6-11am",
+            "markets": [
+                {
+                    "outcomes":      '["Yes","No"]',
+                    "outcomePrices": '["1","0"]',       # Yes won (ETH > 1830)
+                    "clobTokenIds":  ["token_1830_yes", "token_1830_no"],
+                },
+                {
+                    "outcomes":      '["Yes","No"]',
+                    "outcomePrices": '["0","1"]',       # No won (ETH < 1990)
+                    "clobTokenIds":  ["token_1990_yes", "token_1990_no"],
+                },
+            ],
+        }]
+
+        with patch("requests.get") as mock_get:
+            # Call 1: positions API returns both rows.
+            # Call 2: Gamma API for (eth-price-aug6-11am, token_1830_yes)
+            # Call 3: Gamma API for (eth-price-aug6-11am, token_1990_no)
+            mock_get.side_effect = [
+                _mock_response([row_1830, row_1990]),
+                _mock_response(gamma_event),
+                _mock_response(gamma_event),
+            ]
+            results = fetch_resolved_positions(_FAKE_WALLET)
+
+        assert len(results) == 2
+        by_title = {p.market: p for p in results}
+
+        p_1830 = by_title["Ethereum above 1,830 on August 6, 11AM ET?"]
+        assert p_1830.winning_outcome == "Yes"   # ETH > 1830 → Yes won
+        assert p_1830.outcome_held    == "Yes"
+        assert p_1830.is_win          is True
+
+        p_1990 = by_title["Ethereum above 1,990 on August 6, 10AM ET?"]
+        assert p_1990.winning_outcome == "No"    # ETH < 1990 → No won
+        assert p_1990.outcome_held    == "No"
+        assert p_1990.is_win          is True
+
+    def test_gamma_winner_cached_separately_per_asset_id(self):
+        # Verify the (slug, asset_id) cache key — a second call for the same slug
+        # but different asset_id must NOT return the first call's cached winner.
+        import app.adapters.polymarket_adapter as _mod
+        _mod._slug_winner_cache.clear()
+
+        from app.adapters.polymarket_adapter import _fetch_winner_from_gamma
+
+        gamma_event = [{
+            "markets": [
+                {
+                    "outcomes":      '["Yes","No"]',
+                    "outcomePrices": '["1","0"]',
+                    "clobTokenIds":  ["token_a_yes", "token_a_no"],
+                },
+                {
+                    "outcomes":      '["Yes","No"]',
+                    "outcomePrices": '["0","1"]',
+                    "clobTokenIds":  ["token_b_yes", "token_b_no"],
+                },
+            ],
+        }]
+
+        with patch("requests.get") as mock_get:
+            mock_get.side_effect = [
+                _mock_response(gamma_event),   # first call
+                _mock_response(gamma_event),   # second call (different asset_id)
+            ]
+            winner_a = _fetch_winner_from_gamma("shared-slug", "token_a_yes")
+            winner_b = _fetch_winner_from_gamma("shared-slug", "token_b_yes")
+
+        assert winner_a == "Yes"   # token_a sub-market: Yes resolved to $1
+        assert winner_b == "No"    # token_b sub-market: No resolved to $1
+        assert winner_a != winner_b
+
 
 # ── Pagination ─────────────────────────────────────────────────────────────────
 
