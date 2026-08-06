@@ -623,15 +623,15 @@ class OverviewWidget(QWidget):
         ctrl.range_changed.connect(self._on_range_changed)
         hbox.addWidget(ctrl, 1)
 
-        # Market stream — real-time price ticks (requires CLOB token IDs)
-        self._stream_dot = QLabel("○  Prices")
+        # Market stream — real-time price ticks; hidden until actually connected
+        self._stream_dot = QLabel("")
         self._stream_dot.setStyleSheet(
-            f"color: {_MUTED}; font-size: 11px; padding: 0 6px;"
+            f"color: {_GREEN}; font-size: 11px; padding: 0 6px;"
         )
         self._stream_dot.setToolTip(
-            "Market price stream — live price ticks for active positions.\n"
-            "Requires CLOB token IDs from the Polymarket API."
+            "Market price stream — live price ticks for active positions."
         )
+        self._stream_dot.setVisible(False)
         hbox.addWidget(self._stream_dot, 0, Qt.AlignmentFlag.AlignRight)
 
         # User stream — authenticated trade notifications (hidden until credentials set)
@@ -685,8 +685,7 @@ class OverviewWidget(QWidget):
         self._stream_token_ids = new_ids
         self._stop_stream()
         if not new_ids:
-            self._stream_dot.setText("○  Prices")
-            self._stream_dot.setStyleSheet(f"color: {_MUTED}; font-size: 11px; padding: 0 6px;")
+            self._stream_dot.setVisible(False)
             return
         self._stream = MarketStreamThread(list(new_ids))
         self._stream.price_updated.connect(self._on_stream_price)
@@ -705,15 +704,15 @@ class OverviewWidget(QWidget):
     def _on_stream_connected(self) -> None:
         n = len(self._stream_token_ids)
         self._stream_dot.setText(f"● Prices  ({n})")
-        self._stream_dot.setStyleSheet(
-            f"color: {_GREEN}; font-size: 11px; padding: 0 6px;"
-        )
+        self._stream_dot.setStyleSheet(f"color: {_GREEN}; font-size: 11px; padding: 0 6px;")
+        self._stream_dot.setVisible(True)
 
     def _on_stream_disconnected(self) -> None:
+        # Keep visible briefly while reconnecting; _update_stream hides it
+        # again if there end up being no token IDs.
         self._stream_dot.setText("○  Prices…")
-        self._stream_dot.setStyleSheet(
-            f"color: {_MUTED}; font-size: 11px; padding: 0 6px;"
-        )
+        self._stream_dot.setStyleSheet(f"color: {_MUTED}; font-size: 11px; padding: 0 6px;")
+        self._stream_dot.setVisible(True)
 
     def _on_stream_price(self, asset_id: str, price: float) -> None:
         """Update the matching active position's current price and redraw the section.
