@@ -245,7 +245,7 @@ def _active_section(positions: List[ActivePosition]) -> QWidget:
     vbox.setContentsMargins(0, 0, 0, 0)
     vbox.setSpacing(8)
 
-    lbl = QLabel(f"Active  ({len(positions)})")
+    lbl = QLabel("Active")
     lbl.setStyleSheet(_SECTION_HDR_S)
     vbox.addWidget(lbl)
 
@@ -290,7 +290,7 @@ def _resolved_section(positions: List[ResolvedPosition]) -> QWidget:
     vbox.setContentsMargins(0, 0, 0, 0)
     vbox.setSpacing(8)
 
-    lbl = QLabel(f"Resolved  ({len(positions)})")
+    lbl = QLabel("Resolved")
     lbl.setStyleSheet(_SECTION_HDR_S)
     vbox.addWidget(lbl)
 
@@ -357,12 +357,7 @@ def _sold_section(positions: List[ResolvedPosition], range_label: str = "") -> Q
     vbox.setContentsMargins(0, 0, 0, 0)
     vbox.setSpacing(8)
 
-    count = len(sold)
-    hdr_text = "Sold"
-    if range_label:
-        hdr_text += f"  —  {range_label}"
-    hdr_text += f"  ({count})"
-    lbl = QLabel(hdr_text)
+    lbl = QLabel("Sold")
     lbl.setStyleSheet(_SECTION_HDR_S)
     vbox.addWidget(lbl)
 
@@ -446,8 +441,7 @@ def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") 
     vbox.setContentsMargins(0, 0, 0, 0)
     vbox.setSpacing(8)
 
-    total = len(positions)
-    lbl = QLabel(f"Closed — {range_label}  ({total})")
+    lbl = QLabel(f"Closed — {range_label}")
     lbl.setStyleSheet(_SECTION_HDR_S)
     vbox.addWidget(lbl)
 
