@@ -45,28 +45,81 @@ def _get_with_retry(url: str, params: dict) -> requests.Response:
         raise PolymarketLookupError(f"Network error: {exc}") from exc
 
 
+def _winner_from_markets(markets: list) -> Optional[str]:
+    """Extract the winning outcome from a list of Gamma API market objects.
+
+    Checks the market's winner/winnerOutcome field first, then derives it from
+    the outcomePrices array (outcome with price ≥ 0.99 = resolved winner).
+    Returns the first winner found, or None if no market is resolved.
+    """
+    for market in markets:
+        w = market.get("winner") or market.get("winnerOutcome")
+        if w:
+            return str(w)
+
+        raw_outcomes = market.get("outcomes", "[]")
+        raw_prices   = market.get("outcomePrices", "[]")
+        try:
+            mkt_outcomes = (json.loads(raw_outcomes)
+                            if isinstance(raw_outcomes, str) else raw_outcomes)
+            mkt_prices   = (json.loads(raw_prices)
+                            if isinstance(raw_prices, str) else raw_prices)
+            for o, p in zip(mkt_outcomes, mkt_prices):
+                if float(p) >= 0.99:
+                    return str(o)
+        except (ValueError, TypeError, json.JSONDecodeError):
+            pass
+
+    return None
+
+
+def _fetch_winner_by_condition_id(condition_id: str) -> Optional[str]:
+    """Return the resolved winning outcome for a specific Polymarket market.
+
+    Queries gamma-api.polymarket.com/markets?condition_id=<id>.  Each binary
+    market has a unique conditionId, so this returns exactly one market — no
+    multi-market disambiguation needed.  Critical for events with many
+    sub-markets at different price levels (e.g. "ETH above 1,830", "ETH above
+    1,990", …) that all share one event slug but resolve independently.
+
+    Results are cached in _slug_winner_cache under the key ("cond", condition_id).
+
+    Read-only — no auth, no side effects.
+    """
+    cache_key = ("cond", condition_id)
+    if cache_key in _slug_winner_cache:
+        return _slug_winner_cache[cache_key]
+
+    winner: Optional[str] = None
+    try:
+        r = requests.get(
+            f"{_GAMMA_API}/markets",
+            params={"condition_id": condition_id},
+            timeout=8,
+        )
+        r.raise_for_status()
+        data = r.json()
+        markets = data if isinstance(data, list) else ([data] if data else [])
+        winner = _winner_from_markets(markets)
+    except Exception as exc:
+        _dlog("gamma_winner", "condition_id=%s error=%s", condition_id, exc)
+
+    _slug_winner_cache[cache_key] = winner
+    _dlog("gamma_winner", "condition_id=%s → winner=%s", condition_id, winner)
+    return winner
+
+
 def _fetch_winner_from_gamma(slug: str, asset_id: str = "") -> Optional[str]:
     """Return the resolved winning outcome for a Polymarket event by slug.
 
-    Queries the Gamma API events endpoint (gamma-api.polymarket.com/events)
-    with the event slug and inspects the market resolution to determine which
-    outcome token resolved at $1/share.
+    Queries gamma-api.polymarket.com/events with the event slug.  When multiple
+    sub-markets share the same event slug (e.g. "ETH above X" price-level series),
+    asset_id narrows the lookup to the market whose clobTokenIds include it.
 
-    asset_id: when provided, restricts the lookup to the specific sub-market
-    that contains this CLOB token ID (critical for events with multiple
-    sub-markets at different price levels, e.g. "ETH above 1,830" / "ETH above
-    1,990" series that share one event slug — each price level resolves
-    independently, so we must not use the first resolved market's winner for all).
+    Prefer _fetch_winner_by_condition_id when the position's conditionId is
+    available — it's a direct single-market lookup with no disambiguation.
 
-    Results are cached in _slug_winner_cache for the session as (slug, asset_id)
-    so each sub-market gets its own entry.  Repeated refreshes never re-hit the
-    API for the same (slug, asset_id) pair.
-
-    Returns the winning outcome string (e.g. "Up", "Down", "Yes", "No"),
-    or None if the market is unresolved, the slug is missing, or the API
-    call fails for any reason.
-
-    Read-only — no auth, no side effects.
+    Results are cached as (slug, asset_id).  Read-only — no auth, no side effects.
     """
     cache_key = (slug, asset_id)
     if cache_key in _slug_winner_cache:
@@ -83,21 +136,19 @@ def _fetch_winner_from_gamma(slug: str, asset_id: str = "") -> Optional[str]:
         data = r.json()
         events = data if isinstance(data, list) else ([data] if data else [])
 
-        matched_by_token = False   # did any market match via clobTokenIds?
+        matched_by_token = False
 
         for event in events:
-            # Only use the event-level winner field when we're NOT filtering
-            # by a specific token — it's ambiguous for multi-market events.
+            # Only use the event-level winner when not filtering by token —
+            # it's ambiguous for events that span multiple sub-markets.
             if not asset_id:
                 w = event.get("winner") or event.get("winnerOutcome")
                 if w:
                     winner = str(w)
                     break
 
-            # Inspect child markets for resolution data.
             for market in event.get("markets", []):
                 if asset_id:
-                    # clobTokenIds = [yes_token_id, no_token_id] for this sub-market.
                     clob_ids = market.get("clobTokenIds") or []
                     if isinstance(clob_ids, str):
                         try:
@@ -105,42 +156,23 @@ def _fetch_winner_from_gamma(slug: str, asset_id: str = "") -> Optional[str]:
                         except (ValueError, json.JSONDecodeError):
                             clob_ids = []
                     if asset_id not in clob_ids:
-                        continue   # this market doesn't own the token we're asking about
+                        continue
                     matched_by_token = True
 
-                w = market.get("winner") or market.get("winnerOutcome")
+                w = _winner_from_markets([market])
                 if w:
-                    winner = str(w)
+                    winner = w
                     break
 
-                # Derive winner from outcomes + outcomePrices arrays.
-                raw_outcomes = market.get("outcomes", "[]")
-                raw_prices   = market.get("outcomePrices", "[]")
-                try:
-                    mkt_outcomes = (json.loads(raw_outcomes)
-                                   if isinstance(raw_outcomes, str) else raw_outcomes)
-                    mkt_prices   = (json.loads(raw_prices)
-                                   if isinstance(raw_prices, str) else raw_prices)
-                    for o, p in zip(mkt_outcomes, mkt_prices):
-                        if float(p) >= 0.99:
-                            winner = str(o)
-                            break
-                except (ValueError, TypeError, json.JSONDecodeError):
-                    pass
-
-                if winner:
-                    break
             if winner:
                 break
 
-        # If asset_id was given but no market exposed clobTokenIds that matched
-        # (the API omitted the field), fall back to unfiltered search — but only
-        # when the event has exactly one market (safe) to avoid returning the
-        # wrong sub-market's winner in a multi-market event.
+        # If asset_id filtering found no clobTokenIds match (API omitted the
+        # field), fall back to unfiltered only for single-market events.
         if asset_id and not matched_by_token and winner is None:
             total_markets = sum(len(e.get("markets", [])) for e in events)
             if total_markets == 1:
-                winner = _fetch_winner_from_gamma(slug)   # unfiltered, single-market safe
+                winner = _fetch_winner_from_gamma(slug)
 
     except Exception as exc:
         _dlog("gamma_winner", "slug=%s asset_id=%s error=%s", slug, asset_id, exc)
@@ -200,15 +232,23 @@ def _to_resolved(row: dict) -> ResolvedPosition:
     slug          = row.get("eventSlug") or row.get("slug") or None
     asset_id      = (row.get("assetId") or row.get("asset_id")
                      or row.get("tokenId") or row.get("token_id") or "")
+    condition_id  = row.get("conditionId") or row.get("condition_id") or ""
 
     # Use Gamma API for the authoritative winning outcome.
-    # Although positions in the /positions?redeemable=true endpoint are expected
-    # to be wins, the API occasionally includes losing positions (e.g. ETH 5m
-    # markets where the user's outcome lost but the record wasn't swept).
-    # Guessing from the user's held outcome is unreliable; Gamma knows.
-    # Pass asset_id so multi-market events (e.g. "ETH above X" series sharing
-    # one event slug) resolve to the correct sub-market winner.
-    gamma_winner    = _fetch_winner_from_gamma(slug, asset_id) if slug else None
+    # conditionId (preferred): directly queries /markets?condition_id=<id>
+    # which returns exactly one market — no multi-market disambiguation needed.
+    # This correctly handles "ETH above X" price-level series where many markets
+    # share one event slug but each resolves independently.
+    # Falls back to event slug + asset_id if conditionId is absent.
+    if condition_id:
+        gamma_winner = _fetch_winner_by_condition_id(condition_id)
+        if gamma_winner is None and slug:
+            gamma_winner = _fetch_winner_from_gamma(slug, asset_id)
+    elif slug:
+        gamma_winner = _fetch_winner_from_gamma(slug, asset_id)
+    else:
+        gamma_winner = None
+
     winning_outcome = gamma_winner if gamma_winner else outcome
 
     return ResolvedPosition(
@@ -257,16 +297,22 @@ def _to_closed(row: dict) -> ResolvedPosition:
     slug         = row.get("eventSlug") or row.get("slug") or None
     asset_id     = (row.get("assetId") or row.get("asset_id")
                     or row.get("tokenId") or row.get("token_id") or "")
+    condition_id = row.get("conditionId") or row.get("condition_id") or ""
 
     quantity     = total_bought                       # shares bought
     cost_basis   = total_bought * avg_price           # USDC spent
     redeem_value = cost_basis + realized_pnl          # USDC received
 
     # Gamma API is the authoritative source for the actual winning outcome.
-    # Look it up once up front — it is cached in-process so repeated calls
-    # for the same (slug, asset_id) within a session are free.
-    # asset_id ensures we pick the right sub-market for multi-price-level events.
-    gamma_winner = _fetch_winner_from_gamma(slug, asset_id) if slug else None
+    # conditionId gives a direct single-market lookup; falls back to event slug.
+    if condition_id:
+        gamma_winner = _fetch_winner_by_condition_id(condition_id)
+        if gamma_winner is None and slug:
+            gamma_winner = _fetch_winner_from_gamma(slug, asset_id)
+    elif slug:
+        gamma_winner = _fetch_winner_from_gamma(slug, asset_id)
+    else:
+        gamma_winner = None
 
     if cur_price >= 0.98:
         # Token resolved at ~$1 → user's outcome won.  Gamma confirms.

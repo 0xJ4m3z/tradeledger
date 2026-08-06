@@ -162,63 +162,49 @@ class TestFetchResolvedPositions:
             p = fetch_resolved_positions(_FAKE_WALLET)[0]
         assert p.realized_pnl == pytest.approx(25.0)
 
-    def test_multi_market_event_each_sub_market_gets_correct_winner(self):
+    def test_multi_market_event_condition_id_picks_correct_sub_market(self):
         # Root cause of the "ETH above X" display bug:
-        # Multiple "Ethereum above X?" markets share ONE event slug.  The old code
-        # cached the first resolved sub-market's winner (e.g. "No" for above-1990)
-        # under the event slug and returned it for ALL positions, making "above-1830"
-        # (which resolved Yes) also show "No".
+        # Multiple "Ethereum above X?" markets share ONE event slug.  Querying by
+        # event slug returns all sub-markets; taking the first resolved one
+        # (e.g. "No" for above-1990) poisoned the cache for every other position
+        # with the same slug — so "above-1830" (which resolved Yes) showed "No".
         #
-        # The fix: _fetch_winner_from_gamma now filters by clobTokenIds and caches
-        # by (slug, asset_id) so each sub-market gets its own winner.
+        # The fix: conditionId uniquely identifies a single market.
+        # _fetch_winner_by_condition_id() queries /markets?condition_id=<id>
+        # and gets exactly one market — no multi-market disambiguation needed.
         import app.adapters.polymarket_adapter as _mod
         _mod._slug_winner_cache.clear()
 
         row_1830 = {          # ETH > 1830 → Yes won
-            "title":      "Ethereum above 1,830 on August 6, 11AM ET?",
-            "outcome":    "Yes",
-            "eventSlug":  "eth-price-aug6-11am",
-            "assetId":    "token_1830_yes",
-            "size":       5.0,
-            "avgPrice":   0.50,
+            "title":       "Ethereum above 1,830 on August 6, 11AM ET?",
+            "outcome":     "Yes",
+            "eventSlug":   "eth-price-aug6-11am",
+            "conditionId": "0xcondition_1830",
+            "size":        5.0,
+            "avgPrice":    0.50,
             "currentValue": 5.0,
         }
         row_1990 = {          # ETH < 1990 → No won
-            "title":      "Ethereum above 1,990 on August 6, 10AM ET?",
-            "outcome":    "No",
-            "eventSlug":  "eth-price-aug6-11am",
-            "assetId":    "token_1990_no",
-            "size":       5.0,
-            "avgPrice":   0.50,
+            "title":       "Ethereum above 1,990 on August 6, 10AM ET?",
+            "outcome":     "No",
+            "eventSlug":   "eth-price-aug6-11am",
+            "conditionId": "0xcondition_1990",
+            "size":        5.0,
+            "avgPrice":    0.50,
             "currentValue": 5.0,
         }
-        # Gamma event has two sub-markets with distinct clobTokenIds.
-        # above-1830: Yes resolved to $1 (ETH > 1830).
-        # above-1990: No resolved to $1 (ETH < 1990).
-        gamma_event = [{
-            "slug": "eth-price-aug6-11am",
-            "markets": [
-                {
-                    "outcomes":      '["Yes","No"]',
-                    "outcomePrices": '["1","0"]',       # Yes won (ETH > 1830)
-                    "clobTokenIds":  ["token_1830_yes", "token_1830_no"],
-                },
-                {
-                    "outcomes":      '["Yes","No"]',
-                    "outcomePrices": '["0","1"]',       # No won (ETH < 1990)
-                    "clobTokenIds":  ["token_1990_yes", "token_1990_no"],
-                },
-            ],
-        }]
+        # Gamma markets endpoint returns ONE market per conditionId lookup.
+        gamma_market_1830 = [{"outcomes": '["Yes","No"]', "outcomePrices": '["1","0"]'}]  # Yes won
+        gamma_market_1990 = [{"outcomes": '["Yes","No"]', "outcomePrices": '["0","1"]'}]  # No won
 
         with patch("requests.get") as mock_get:
-            # Call 1: positions API returns both rows.
-            # Call 2: Gamma API for (eth-price-aug6-11am, token_1830_yes)
-            # Call 3: Gamma API for (eth-price-aug6-11am, token_1990_no)
+            # Call 1: positions API → both rows
+            # Call 2: /markets?condition_id=0xcondition_1830 → Yes won
+            # Call 3: /markets?condition_id=0xcondition_1990 → No won
             mock_get.side_effect = [
                 _mock_response([row_1830, row_1990]),
-                _mock_response(gamma_event),
-                _mock_response(gamma_event),
+                _mock_response(gamma_market_1830),
+                _mock_response(gamma_market_1990),
             ]
             results = fetch_resolved_positions(_FAKE_WALLET)
 
@@ -236,8 +222,9 @@ class TestFetchResolvedPositions:
         assert p_1990.is_win          is True
 
     def test_gamma_winner_cached_separately_per_asset_id(self):
-        # Verify the (slug, asset_id) cache key — a second call for the same slug
-        # but different asset_id must NOT return the first call's cached winner.
+        # Verify the (slug, asset_id) cache key on the event slug path — a second
+        # call for the same slug but different asset_id must NOT return the first
+        # call's cached winner (clobTokenIds filtering path).
         import app.adapters.polymarket_adapter as _mod
         _mod._slug_winner_cache.clear()
 
@@ -269,6 +256,27 @@ class TestFetchResolvedPositions:
         assert winner_a == "Yes"   # token_a sub-market: Yes resolved to $1
         assert winner_b == "No"    # token_b sub-market: No resolved to $1
         assert winner_a != winner_b
+
+    def test_condition_id_winner_cached_independently(self):
+        # _fetch_winner_by_condition_id caches under ("cond", condition_id) —
+        # different condition IDs never share a cached winner.
+        import app.adapters.polymarket_adapter as _mod
+        _mod._slug_winner_cache.clear()
+
+        from app.adapters.polymarket_adapter import _fetch_winner_by_condition_id
+
+        with patch("requests.get") as mock_get:
+            mock_get.side_effect = [
+                _mock_response([{"outcomes": '["Yes","No"]', "outcomePrices": '["1","0"]'}]),
+                _mock_response([{"outcomes": '["Yes","No"]', "outcomePrices": '["0","1"]'}]),
+            ]
+            w1 = _fetch_winner_by_condition_id("cond_a")
+            w2 = _fetch_winner_by_condition_id("cond_b")
+
+        assert w1 == "Yes"
+        assert w2 == "No"
+        assert ("cond", "cond_a") in _mod._slug_winner_cache
+        assert ("cond", "cond_b") in _mod._slug_winner_cache
 
 
 # ── Pagination ─────────────────────────────────────────────────────────────────
