@@ -623,17 +623,25 @@ class OverviewWidget(QWidget):
         ctrl.range_changed.connect(self._on_range_changed)
         hbox.addWidget(ctrl, 1)
 
-        # Market stream indicator
-        self._stream_dot = QLabel("○  No stream")
+        # Market stream — real-time price ticks (requires CLOB token IDs)
+        self._stream_dot = QLabel("○  Prices")
         self._stream_dot.setStyleSheet(
             f"color: {_MUTED}; font-size: 11px; padding: 0 6px;"
         )
+        self._stream_dot.setToolTip(
+            "Market price stream — live price ticks for active positions.\n"
+            "Requires CLOB token IDs from the Polymarket API."
+        )
         hbox.addWidget(self._stream_dot, 0, Qt.AlignmentFlag.AlignRight)
 
-        # User stream indicator (hidden until credentials are loaded)
+        # User stream — authenticated trade notifications (hidden until credentials set)
         self._user_dot = QLabel("")
         self._user_dot.setStyleSheet(
             f"color: {_MUTED}; font-size: 11px; padding: 0 6px;"
+        )
+        self._user_dot.setToolTip(
+            "User trade stream — authenticated live notifications\n"
+            "for your own buys and sells."
         )
         self._user_dot.setVisible(False)
         hbox.addWidget(self._user_dot, 0, Qt.AlignmentFlag.AlignRight)
@@ -677,7 +685,7 @@ class OverviewWidget(QWidget):
         self._stream_token_ids = new_ids
         self._stop_stream()
         if not new_ids:
-            self._stream_dot.setText("○  No stream")
+            self._stream_dot.setText("○  Prices")
             self._stream_dot.setStyleSheet(f"color: {_MUTED}; font-size: 11px; padding: 0 6px;")
             return
         self._stream = MarketStreamThread(list(new_ids))
@@ -696,13 +704,13 @@ class OverviewWidget(QWidget):
 
     def _on_stream_connected(self) -> None:
         n = len(self._stream_token_ids)
-        self._stream_dot.setText(f"● Live  ({n} token{'s' if n != 1 else ''})")
+        self._stream_dot.setText(f"● Prices  ({n})")
         self._stream_dot.setStyleSheet(
             f"color: {_GREEN}; font-size: 11px; padding: 0 6px;"
         )
 
     def _on_stream_disconnected(self) -> None:
-        self._stream_dot.setText("○  Reconnecting…")
+        self._stream_dot.setText("○  Prices…")
         self._stream_dot.setStyleSheet(
             f"color: {_MUTED}; font-size: 11px; padding: 0 6px;"
         )
@@ -774,7 +782,7 @@ class OverviewWidget(QWidget):
         """Start (or restart) the authenticated user stream."""
         self._stop_user_stream()
         self._user_stream_connected = False
-        self._user_dot.setText("○  User stream…")
+        self._user_dot.setText("○  Trades…")
         self._user_dot.setStyleSheet(f"color: {_MUTED}; font-size: 11px; padding: 0 6px;")
         self._user_dot.setVisible(True)
 
@@ -797,7 +805,7 @@ class OverviewWidget(QWidget):
 
     def _on_user_stream_connected(self) -> None:
         self._user_stream_connected = True
-        self._user_dot.setText("● User stream")
+        self._user_dot.setText("● Trades")
         self._user_dot.setStyleSheet(f"color: {_GREEN}; font-size: 11px; padding: 0 6px;")
         self._user_dot.setVisible(True)
         if self._settings_tab is not None:
@@ -805,7 +813,7 @@ class OverviewWidget(QWidget):
 
     def _on_user_stream_disconnected(self) -> None:
         self._user_stream_connected = False
-        self._user_dot.setText("○  Reconnecting…")
+        self._user_dot.setText("○  Trades…")
         self._user_dot.setStyleSheet(f"color: {_MUTED}; font-size: 11px; padding: 0 6px;")
         if self._settings_tab is not None:
             self._settings_tab.update_stream_status(False)
@@ -818,7 +826,7 @@ class OverviewWidget(QWidget):
         """
         self._stop_user_stream()
         self._user_stream_connected = False
-        self._user_dot.setText("✗  Stream error")
+        self._user_dot.setText("✗  Trades error")
         self._user_dot.setStyleSheet(f"color: #f85149; font-size: 11px; padding: 0 6px;")
         self._user_dot.setVisible(True)
         if self._settings_tab is not None:
