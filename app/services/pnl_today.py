@@ -392,16 +392,23 @@ def derive_sold_from_activity(
     Each unique (market, outcome) pair that has SELL events becomes one stub,
     with cost basis from the matching BUY events and redeem_value from the SELLs.
 
+    Cost basis is proportional: avg_cost_per_token × tokens_sold.
+    This correctly handles partial sells — if you bought 275 tokens but only
+    sold 144, the stub shows the cost of those 144 tokens, not all 275.
+
     These stubs are ephemeral: the caller should exclude any whose (market, outcome_held)
     is already present in the real closed-positions list so API data always wins.
     """
     from collections import defaultdict
 
-    # Aggregate BUYs per (market, outcome) for cost basis
+    # Aggregate BUYs per (market, outcome) — both qty and cost for avg price
     cost_by_pos: dict = defaultdict(float)
+    qty_by_pos:  dict = defaultdict(float)
     for a in activity:
         if a.type == "TRADE" and a.side == "BUY" and a.title:
-            cost_by_pos[(a.title, a.outcome)] += a.usdc_size
+            key = (a.title, a.outcome)
+            cost_by_pos[key] += a.usdc_size
+            qty_by_pos[key]  += a.size
 
     # Aggregate SELLs per (market, outcome)
     sell_usdc:      dict = defaultdict(float)
@@ -421,13 +428,26 @@ def derive_sold_from_activity(
     positions: List[ResolvedPosition] = []
     for key, ts in latest_sell_ts.items():
         market, outcome = key
+        total_buy_qty  = qty_by_pos.get(key, 0.0)
+        total_buy_cost = cost_by_pos.get(key, 0.0)
+        sold_qty       = sell_qty[key]
+
+        # Proportional cost: avg price paid × tokens sold.
+        # Handles partial sells correctly — if you held some tokens to resolution,
+        # only the sold share of the cost is attributed here.
+        if total_buy_qty > 0:
+            avg_cost_per_token = total_buy_cost / total_buy_qty
+            cost_basis         = sold_qty * avg_cost_per_token
+        else:
+            cost_basis = total_buy_cost   # no BUY data; fall back to whatever we have
+
         positions.append(
             ResolvedPosition(
                 market=market,
                 outcome_held=outcome,
                 winning_outcome="",           # unknown until market resolves
-                quantity=sell_qty[key],
-                cost_basis=cost_by_pos.get(key, 0.0),
+                quantity=sold_qty,
+                cost_basis=cost_basis,
                 redeem_value=sell_usdc[key],
                 redeemed=False,
                 resolved_date=None,
