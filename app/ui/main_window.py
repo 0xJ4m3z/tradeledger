@@ -178,9 +178,15 @@ class MainWindow(QMainWindow):
                 self._activity_tab.update_slug_map(_startup_slug_map)
                 self._closed_tab.update_slug_map(_startup_slug_map)
 
+        # Seed activity into the Closed tab immediately so double-click works
+        # from the first render (before any live fetch).
+        if cached_activity:
+            self._closed_tab.set_activity(cached_activity)
+
         # ── Signal wiring ───────────────────────────────────────────────────────
         overview.positions_changed.connect(self._on_positions_changed)
         overview.activity_changed.connect(self._activity_tab.update_activity)
+        overview.activity_changed.connect(self._closed_tab.set_activity)
         self._closed_tab.refresh_requested.connect(overview.request_refresh)
         self._activity_tab.refresh_requested.connect(overview.request_refresh)
 

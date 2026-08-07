@@ -147,6 +147,8 @@ class ResolvedPositionsTable(QWidget):
         self._infinite_scroll = show_refresh  # only Closed Positions tab uses API scroll-load
         self._show_date_filter = show_date_filter
         self._selection        = DateRangeSelection.preset_range("all")
+        self._activity: list  = []                # full activity feed; set via set_activity()
+        self._displayed: List[ResolvedPosition] = list(positions)  # tracks current table rows
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -208,6 +210,7 @@ class ResolvedPositionsTable(QWidget):
 
         attach_table_links(self._table)
         self._table.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        self._table.doubleClicked.connect(self._on_row_double_clicked)
 
         search.textChanged.connect(self._apply_filter)
         layout.addWidget(self._table)
@@ -224,6 +227,8 @@ class ResolvedPositionsTable(QWidget):
         self._table.setRowCount(n_shown)
         for row, p in enumerate(to_display):
             _populate_row(self._table, row, p)
+        # Track which positions are currently rendered so double-click can find them.
+        self._displayed = list(to_display)
         # Set _displayed_count to n_all so the in-memory lazy-scroll guard
         # (_displayed_count < len(_all_positions)) never fires when filtered.
         self._displayed_count = n_all
@@ -231,6 +236,19 @@ class ResolvedPositionsTable(QWidget):
             self._header.setText(f"{self._label}  ({n_all})")
         else:
             self._header.setText(f"{self._label}  ({n_shown} of {n_all})")
+
+    def set_activity(self, activity: list) -> None:
+        """Store the full activity feed so double-click can show per-position transactions."""
+        self._activity = activity
+
+    def _on_row_double_clicked(self, index) -> None:
+        row = index.row()
+        if row < 0 or row >= len(self._displayed):
+            return
+        from app.ui.position_transactions_dialog import PositionTransactionsDialog
+        p   = self._displayed[row]
+        dlg = PositionTransactionsDialog(p.market, self._activity, parent=self)
+        dlg.exec()
 
     def update_positions(self, positions: List[ResolvedPosition]) -> None:
         """Replace all positions (called on initial/refresh fetch)."""

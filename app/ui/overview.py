@@ -433,7 +433,11 @@ def _fmt_closed_date(p: ResolvedPosition) -> str:
 _OVERVIEW_ROW_CAP = 100   # max rows rendered in the overview panel grid
 
 
-def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") -> QWidget:
+def _closed_section(
+    positions: List[ResolvedPosition],
+    range_label: str = "1D",
+    activity: list = None,
+) -> QWidget:
     # Show definitively resolved positions (REDEEMED_WIN / RESOLVED_LOSS) plus
     # any SOLD positions whose market window has now closed — those graduate here
     # from the Sold section once the window end time passes.
@@ -473,9 +477,29 @@ def _closed_section(positions: List[ResolvedPosition], range_label: str = "1D") 
             (f"{p.realized_pnl_pct:+.1f}%",   _R, pc),
             (_fmt_closed_date(p),              _L, _MUTED),
         ]
-        grid.addWidget(_market_row_cell(p.market, getattr(p, "slug", None)), r, 0)
+        mkt_lbl = _market_row_cell(p.market, getattr(p, "slug", None))
+        grid.addWidget(mkt_lbl, r, 0)
+        row_labels = [mkt_lbl]
         for col, (text, align, color) in enumerate(cells, start=1):
-            grid.addWidget(_row_cell(text, align, color), r, col)
+            cell_lbl = _row_cell(text, align, color)
+            grid.addWidget(cell_lbl, r, col)
+            row_labels.append(cell_lbl)
+
+        # Attach double-click to every cell in this row so the user can
+        # double-click anywhere on the row to open the transactions dialog.
+        if activity is not None:
+            def _make_dclick(_p=p, _act=activity):
+                def _handler(event):
+                    if event.button() == Qt.MouseButton.LeftButton:
+                        from app.ui.position_transactions_dialog import (
+                            PositionTransactionsDialog,
+                        )
+                        dlg = PositionTransactionsDialog(_p.market, _act)
+                        dlg.exec()
+                return _handler
+            _fn = _make_dclick()
+            for cell_lbl in row_labels:
+                cell_lbl.mouseDoubleClickEvent = _fn
 
     if total > _OVERVIEW_ROW_CAP:
         overflow_lbl = QLabel(
@@ -967,7 +991,7 @@ class OverviewWidget(QWidget):
         # the market closing and the API indexing the record.
         graduated = [p for p in stub_filtered
                      if _window_closed(p.market, p.resolved_date, p.closed_at)]
-        self._replace_section("_cls_section",  _closed_section(graduated + filtered, label))
+        self._replace_section("_cls_section",  _closed_section(graduated + filtered, label, self._activity))
 
     def _update_pnl_chart(self) -> None:
         if self._selection.is_preset():
