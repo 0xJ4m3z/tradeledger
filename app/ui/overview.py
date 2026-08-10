@@ -647,6 +647,17 @@ class OverviewWidget(QWidget):
         ctrl.range_changed.connect(self._on_range_changed)
         hbox.addWidget(ctrl, 1)
 
+        # Loading indicator — visible until the first positions fetch completes
+        self._loading_label = QLabel("Loading positions…")
+        self._loading_label.setStyleSheet(
+            f"color: {_MUTED}; font-size: 12px; padding: 0 6px;"
+        )
+        hbox.addWidget(self._loading_label, 0, Qt.AlignmentFlag.AlignRight)
+        # Hide after first successful fetch (SingleShot so it fires exactly once)
+        self._wallet_panel.positions_fetched.connect(
+            self._on_loading_done, Qt.ConnectionType.SingleShotConnection
+        )
+
         # Market stream — real-time price ticks; hidden until actually connected
         self._stream_dot = QLabel("")
         self._stream_dot.setStyleSheet(
@@ -685,6 +696,8 @@ class OverviewWidget(QWidget):
     def _on_refresh_clicked(self) -> None:
         self._refresh_btn.setText("Refreshing…")
         self._refresh_btn.setEnabled(False)
+        self._loading_label.setText("Refreshing positions…")
+        self._loading_label.setVisible(True)
         # Re-enable after next positions fetch completes
         self._wallet_panel.positions_fetched.connect(
             self._on_refresh_done, Qt.ConnectionType.SingleShotConnection
@@ -694,6 +707,11 @@ class OverviewWidget(QWidget):
     def _on_refresh_done(self) -> None:
         self._refresh_btn.setText("Refresh")
         self._refresh_btn.setEnabled(True)
+        self._loading_label.setVisible(False)
+
+    def _on_loading_done(self) -> None:
+        """Hide the loading label after the first positions fetch completes."""
+        self._loading_label.setVisible(False)
 
     # ── Market stream (WebSocket) ───────────────────────────────────────────────
 

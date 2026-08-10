@@ -161,7 +161,9 @@ class MainWindow(QMainWindow):
 
         # WalletPanel lives in the Settings tab; OverviewWidget holds only a reference.
         wallet_panel           = WalletPanel()
+        self._wallet_panel     = wallet_panel   # kept for closeEvent cleanup
         overview               = OverviewWidget(active, resolved, metrics, wallet_panel)
+        self._overview         = overview       # kept for closeEvent cleanup
         self._loss_watch_tab   = LossWatchTab()
         self._closed_tab       = ResolvedPositionsTable(
             cached_closed, label="Closed Positions", show_refresh=True, show_date_filter=True
@@ -263,6 +265,17 @@ class MainWindow(QMainWindow):
                 f"Sample data mode  •  {len(active)} active  •  {len(resolved)} resolved"
             )
         self.setStatusBar(self._status_bar)
+
+    # ── App close ──────────────────────────────────────────────────────────────
+
+    def closeEvent(self, event) -> None:
+        """Gracefully stop all background threads before the window closes."""
+        # Stop WebSocket streams owned by overview
+        self._overview._stop_stream()
+        self._overview._stop_user_stream()
+        # Stop wallet fetch / backfill threads (waits up to ~2 s per thread, then terminates)
+        self._wallet_panel.stop_all_threads()
+        super().closeEvent(event)
 
     def _on_positions_changed(self, active: list, resolved: list, closed: list) -> None:
         before = len(self._closed_tab._all_positions)

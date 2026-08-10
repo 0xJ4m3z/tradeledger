@@ -614,6 +614,31 @@ class WalletPanel(QWidget):
 
     # ── Public ─────────────────────────────────────────────────────────────
 
+    def stop_all_threads(self) -> None:
+        """Stop all background threads. Called on app close.
+
+        Attempts a clean quit first (2 s timeout); if a thread is blocked on a
+        network call it will be terminated — safe here because all writes go to
+        SQLite which handles incomplete transactions gracefully, and we are in
+        the middle of an app shutdown anyway.
+        """
+        self._timer.stop()
+        threads = [
+            self._thread,
+            self._backfill,
+            self._activity_backfill,
+            self._slug_backfill,
+            self._activity_page_thread,
+            self._closed_page_thread,
+        ]
+        for t in threads:
+            if t is None or not t.isRunning():
+                continue
+            t.quit()
+            if not t.wait(2000):   # 2 s grace period
+                t.terminate()
+                t.wait(500)
+
     def current_value(self) -> float:
         return self._current_value
 
