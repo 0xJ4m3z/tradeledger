@@ -228,6 +228,30 @@ class TestFetchResolvedPositions:
         assert p.outcome_held    == "Yes"
         assert p.is_win          is False
 
+    def test_partial_sell_winner_cost_basis_proportional(self):
+        # Real failing case: bought 203.04 shares @ $0.990, sold 201 before resolution,
+        # 2.04 shares redeemed at $1.  The API returns size=203.04 (total bought) and
+        # currentValue=2.04 (remaining value).  Without the fix, cost_basis = $201 and
+        # P/L = -$199 (a contradiction: labeled Win but -99% loss).
+        # With the fix, cost_basis = avgPrice × remaining_qty = 0.990 × 2.04 ≈ $2.02.
+        row = {
+            "title":        "Bitcoin Up or Down - August 10, 1:30PM-1:45PM ET",
+            "outcome":      "Up",
+            "size":         203.04,   # total originally bought (NOT remaining)
+            "avgPrice":     0.990,
+            "currentValue": 2.04,     # value of the 2.04 shares still held to resolution
+            "redeemable":   True,
+        }
+        with patch("requests.get", return_value=_mock_response([row])):
+            p = fetch_resolved_positions(_FAKE_WALLET)[0]
+
+        assert p.winning_outcome == "Up"           # cur_price_approx detects winner
+        assert p.is_win          is True
+        assert abs(p.quantity   - 2.04)     < 0.01  # remaining qty, not total bought
+        assert abs(p.cost_basis - 0.990 * 2.04) < 0.02  # ~$2.02, not ~$201
+        assert abs(p.redeem_value - 2.04)   < 0.01
+        assert p.realized_pnl > 0                  # small win, not -$199
+
     def test_resolved_losing_position_up_down_binary_opposite(self):
         row = {
             "title":        "BTC Up or Down?",

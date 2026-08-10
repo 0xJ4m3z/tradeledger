@@ -332,23 +332,31 @@ def derive_closed_from_activity(
 
     Used as a supplementary data source when the /closed-positions API only returns
     the most-recent N records.  Each REDEEM event with usdc_size > 0 represents a
-    winning closed position.  Cost basis is approximated by summing all BUY USDC
-    for the same (title, outcome) pair.
+    winning closed position.
+
+    Cost basis is proportional: avg_price_per_token × redeemed_quantity.
+    This handles partial sells correctly — if 203 tokens were bought and only 2
+    were redeemed (the rest were CLOB-sold earlier), the cost basis reflects only
+    the 2 redeemed tokens' share of the original investment.
 
     Only WIN positions are derivable this way.  Loss positions (resolved to $0)
     generate no REDEEM event and are left to the API's closed-positions data.
     """
     from collections import defaultdict
 
-    cost_by_pos: dict = defaultdict(float)
+    cost_by_pos:  dict = defaultdict(float)
+    qty_by_pos:   dict = defaultdict(float)   # BUY token qty per (title, outcome)
     cost_by_title: dict = defaultdict(float)
+    qty_by_title:  dict = defaultdict(float)
     # Track the bought outcome per title so REDEEM events with outcome=""
     # can be matched to the correct side.
     bought_outcome: dict = {}
     for a in activity:
         if a.type == "TRADE" and a.side == "BUY" and a.title:
-            cost_by_pos[(a.title, a.outcome)] += a.usdc_size
-            cost_by_title[a.title] += a.usdc_size
+            cost_by_pos[(a.title, a.outcome)]  += a.usdc_size
+            qty_by_pos[(a.title, a.outcome)]   += a.size
+            cost_by_title[a.title]             += a.usdc_size
+            qty_by_title[a.title]              += a.size
             if a.title not in bought_outcome and a.outcome:
                 bought_outcome[a.title] = a.outcome
 
@@ -362,17 +370,28 @@ def derive_closed_from_activity(
     positions: List[ResolvedPosition] = []
     for (market, outcome), ev in latest_redeem.items():
         # REDEEM events often have outcome="" while BUY events have "Yes"/"No".
-        # Fall back to per-title total cost when the exact (title, outcome) key gives 0,
-        # and infer the actual outcome held from the BUY events for that title.
-        cost = cost_by_pos.get((market, outcome)) or cost_by_title.get(market, 0.0)
+        # Fall back to per-title totals when the exact (title, outcome) key has no data.
         actual_outcome = outcome or bought_outcome.get(market, outcome)
+        key = (market, outcome)
+        total_buy_qty  = qty_by_pos.get(key)  or qty_by_title.get(market, 0.0)
+        total_buy_cost = cost_by_pos.get(key) or cost_by_title.get(market, 0.0)
+
+        # Proportional cost: avg price paid × tokens actually redeemed.
+        # Correctly handles partial sells: if 203 tokens were bought and only 2
+        # were held to resolution, cost_basis = avg_price × 2 (not avg_price × 203).
+        if total_buy_qty > 0:
+            avg_cost_per_token = total_buy_cost / total_buy_qty
+            cost_basis = ev.size * avg_cost_per_token
+        else:
+            cost_basis = total_buy_cost   # no BUY data; best effort
+
         positions.append(
             ResolvedPosition(
                 market=market,
                 outcome_held=actual_outcome,
                 winning_outcome=actual_outcome,
                 quantity=ev.size,
-                cost_basis=cost,
+                cost_basis=cost_basis,
                 redeem_value=ev.usdc_size,
                 redeemed=True,
                 resolved_date=None,

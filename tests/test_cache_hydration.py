@@ -957,6 +957,36 @@ class TestDeriveClosedFromActivity:
         assert len(result) == 1
         assert result[0].cost_basis == pytest.approx(99.0)
 
+    def test_partial_sell_proportional_cost_basis(self):
+        """Partial sell before redemption: cost_basis = avg_price × redeemed_qty only.
+
+        Old code used total BUY cost ($201) as cost_basis but only redeemed proceeds ($2)
+        as redeem_value, producing a fake -$199 loss on a winning position.
+        """
+        import pytest
+        from app.services.pnl_today import derive_closed_from_activity
+        activity = [
+            # Bought 203.04 shares at avg $0.990 = $201.01
+            UserActivity(timestamp=1000, type="TRADE", title="BTC Up/Down", outcome="Up",
+                         side="BUY", size=203.04, usdc_size=201.01, price=0.990),
+            # Sold 201 shares (partial CLOB exit) — handled by derive_sold_from_activity
+            UserActivity(timestamp=2000, type="TRADE", title="BTC Up/Down", outcome="Up",
+                         side="SELL", size=201.0, usdc_size=199.0, price=0.990),
+            # Remaining 2.04 shares redeemed at $1/share = $2.04
+            UserActivity(timestamp=3000, type="REDEEM", title="BTC Up/Down", outcome="Up",
+                         side="", size=2.04, usdc_size=2.04, price=0.0),
+        ]
+        result = derive_closed_from_activity(activity)
+        assert len(result) == 1
+        p = result[0]
+        # cost_basis = avg_price × redeemed_qty = (201.01/203.04) × 2.04 ≈ $2.02
+        expected_cost = (201.01 / 203.04) * 2.04
+        assert abs(p.cost_basis - expected_cost) < 0.02, \
+            f"expected ~{expected_cost:.2f} (proportional), got {p.cost_basis:.2f}"
+        assert p.redeem_value == pytest.approx(2.04)
+        assert p.quantity == pytest.approx(2.04)
+        assert p.realized_pnl > 0, "small win: redeemed above avg cost"
+
     def test_no_redeem_no_closed_position(self):
         from app.services.pnl_today import derive_closed_from_activity
         activity = [

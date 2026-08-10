@@ -250,12 +250,17 @@ def _to_resolved(row: dict) -> ResolvedPosition:
     # logic to _to_closed's curPrice approach.  For a resolved binary market,
     # each token is worth ~$1 (winner) or ~$0 (loser).
     #
-    # Why this beats Gamma for /positions?redeemable=true:
+    # IMPORTANT: for positions that were partially CLOB-sold before resolution,
+    # `size` from the API is the ORIGINAL total-bought quantity, not the remaining
+    # redeemable amount.  `currentValue` always reflects only the remaining shares.
+    # Example: bought 203 shares, sold 201, 2 remain redeemable → size=203, currentValue=2.
+    # That makes cur_price_approx = 2/203 ≈ 0.01, which looks like a loser signal,
+    # even though the position won.  The Gamma lookup rescues the winning_outcome label,
+    # but cost_basis and quantity must also be corrected (see below).
+    #
+    # Why this still beats Gamma as the first-pass signal:
     #   • No network call — uses data already in the row.
-    #   • Gamma outcomePrices may still show mid-market prices for markets that
-    #     just resolved (settlement takes a few minutes to finalise on-chain).
-    #   • Multi-market events (e.g. "ETH above 1,840" / "ETH above 1,960") each
-    #     return their own currentValue, so no slug-level cache-poisoning.
+    #   • Multi-market events each return their own currentValue (no cache-poisoning).
     cur_price_approx = (current_value / size) if size > 0 else -1.0
 
     if cur_price_approx >= 0.99:
@@ -263,8 +268,8 @@ def _to_resolved(row: dict) -> ResolvedPosition:
         winning_outcome = outcome
 
     elif 0.0 <= cur_price_approx <= 0.01:
-        # User's tokens are worth ~$0 → the other outcome won.
-        # Try Gamma for the authoritative name; fall back to binary inference.
+        # Either a clear loser OR a partial-sell winner (big original size, tiny remainder).
+        # Gamma tells us which outcome actually won.
         if condition_id:
             gamma_winner = _fetch_winner_by_condition_id(condition_id)
             if gamma_winner is None and slug:
@@ -287,12 +292,32 @@ def _to_resolved(row: dict) -> ResolvedPosition:
             gamma_winner = None
         winning_outcome = gamma_winner if gamma_winner else outcome
 
+    # Compute the actual remaining (redeemable) quantity and its proportional cost.
+    #
+    # For a winner (settlement price = $1.00/token):
+    #   remaining_qty = currentValue / $1 = currentValue
+    #   cost_basis    = avgPrice × remaining_qty
+    #
+    # This is correct whether or not a partial sell occurred:
+    #   • No partial sell: remaining_qty = size, cost_basis = avgPrice × size  (unchanged)
+    #   • Partial sell: remaining_qty < size, cost_basis = proportional share  (fixed)
+    #
+    # For a loser (settlement price = $0.00/token):
+    #   currentValue ≈ 0, so remaining_qty cannot be inferred from it.
+    #   Fall back to `size`.  Partial-sell losers in the redeemable endpoint are
+    #   rare (worthless tokens are auto-settled) so this edge-case is acceptable.
+    user_won = winning_outcome.lower() == outcome.lower()
+    if user_won:
+        remaining_qty = current_value   # $1/token at settlement → qty == USDC value
+    else:
+        remaining_qty = size            # loser fallback — use full reported size
+
     return ResolvedPosition(
         market          = row.get("title") or "Unknown",
         outcome_held    = outcome,
         winning_outcome = winning_outcome,
-        quantity        = size,
-        cost_basis      = avg_price * size,
+        quantity        = remaining_qty,
+        cost_basis      = avg_price * remaining_qty,
         redeem_value    = current_value,
         redeemed        = False,
         resolved_date   = row.get("endDate"),

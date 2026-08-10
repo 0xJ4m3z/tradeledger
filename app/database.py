@@ -545,10 +545,21 @@ def upsert_activity_derived_closed_positions(
                 (wallet_address, p.market),
             ).fetchone()
             if existing:
-                # Replace stale zero-cost rows with the corrected derivation.
-                # cost_basis=0 means a prior derivation failed to match BUY costs;
-                # if we now have a positive cost, delete and re-insert with correct data.
-                if existing["cost_basis"] == 0.0 and p.cost_basis > 0:
+                old_cost = existing["cost_basis"]
+                new_cost = p.cost_basis
+                # Correct two classes of stale rows:
+                # 1. cost_basis=0 — prior derivation couldn't match BUY costs.
+                # 2. cost_basis >> new cost — old code used TOTAL buy cost instead of
+                #    the proportional share (partial-sell bug: bought 203 tokens, sold
+                #    201, redeemed 2, but old code stored cost_basis for all 203).
+                #    A >2× mismatch reliably identifies these without touching valid
+                #    API-sourced records (which flow through upsert_closed_positions_cache
+                #    and are always within a few percent of activity-derived values).
+                needs_correction = (
+                    (old_cost == 0.0 and new_cost > 0)
+                    or (new_cost > 0.0 and old_cost > new_cost * 2.0)
+                )
+                if needs_correction:
                     conn.execute(
                         "DELETE FROM closed_positions_cache WHERE id = ?",
                         (existing["id"],),
