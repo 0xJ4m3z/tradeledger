@@ -164,6 +164,7 @@ class PositionTransactionsDialog(QDialog):
         self,
         market: str,
         activity: List[UserActivity],
+        position=None,          # ResolvedPosition — for outcome_held / winning_outcome
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
@@ -212,6 +213,16 @@ class PositionTransactionsDialog(QDialog):
         summary_row.addWidget(_StatLabel("Total Received",  f"${received:,.2f}", _MUTED))
         summary_row.addWidget(_StatLabel("Net",             net_text,            net_color))
         summary_row.addWidget(_StatLabel("Transactions",    str(len(rows)),      _TEXT))
+
+        # Outcome held + winning outcome tiles (when position data is available)
+        if position is not None:
+            held   = getattr(position, "outcome_held",    None) or "—"
+            won    = getattr(position, "winning_outcome", None) or "—"
+            is_win = getattr(position, "is_win",          False)
+            held_color = _GREEN if is_win else _RED
+            summary_row.addWidget(_StatLabel("Outcome Held",    held, held_color))
+            summary_row.addWidget(_StatLabel("Winning Outcome", won,  _TEXT))
+
         summary_row.addStretch(1)
         layout.addLayout(summary_row)
 

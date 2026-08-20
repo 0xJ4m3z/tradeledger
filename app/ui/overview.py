@@ -414,7 +414,7 @@ def _sold_section(
                 def _handler(event):
                     if event.button() == Qt.MouseButton.LeftButton:
                         from app.ui.position_transactions_dialog import PositionTransactionsDialog
-                        dlg = PositionTransactionsDialog(_p.market, _act)
+                        dlg = PositionTransactionsDialog(_p.market, _act, position=_p)
                         dlg.exec()
                 return _handler
             _fn = _make_dclick()
@@ -515,7 +515,7 @@ def _closed_section(
                         from app.ui.position_transactions_dialog import (
                             PositionTransactionsDialog,
                         )
-                        dlg = PositionTransactionsDialog(_p.market, _act)
+                        dlg = PositionTransactionsDialog(_p.market, _act, position=_p)
                         dlg.exec()
                 return _handler
             _fn = _make_dclick()

@@ -247,7 +247,7 @@ class ResolvedPositionsTable(QWidget):
             return
         from app.ui.position_transactions_dialog import PositionTransactionsDialog
         p   = self._displayed[row]
-        dlg = PositionTransactionsDialog(p.market, self._activity, parent=self)
+        dlg = PositionTransactionsDialog(p.market, self._activity, position=p, parent=self)
         dlg.exec()
 
     def update_positions(self, positions: List[ResolvedPosition]) -> None:
