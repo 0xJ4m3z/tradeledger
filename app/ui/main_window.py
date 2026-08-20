@@ -169,7 +169,7 @@ class MainWindow(QMainWindow):
             cached_closed, label="Closed Positions", show_refresh=True, show_date_filter=True
         )
         self._activity_tab     = ActivityTable(cached_activity)
-        self._pnl_tab          = PnlTab(cached_closed)
+        self._pnl_tab          = PnlTab(cached_closed, cached_activity)
 
         # Seed slug maps for all tabs that show Polymarket links.
         # Many DB-cached positions have slug=None (cached before slug support was added);
@@ -180,7 +180,7 @@ class MainWindow(QMainWindow):
                 self._activity_tab.update_slug_map(_startup_slug_map)
                 self._closed_tab.update_slug_map(_startup_slug_map)
 
-        # Seed activity into the Closed tab immediately so double-click works
+        # Seed activity into tabs immediately so double-click drilldowns work
         # from the first render (before any live fetch).
         if cached_activity:
             self._closed_tab.set_activity(cached_activity)
@@ -189,6 +189,7 @@ class MainWindow(QMainWindow):
         overview.positions_changed.connect(self._on_positions_changed)
         overview.activity_changed.connect(self._activity_tab.update_activity)
         overview.activity_changed.connect(self._closed_tab.set_activity)
+        overview.activity_changed.connect(self._pnl_tab.set_activity)
         self._closed_tab.refresh_requested.connect(overview.request_refresh)
         self._activity_tab.refresh_requested.connect(overview.request_refresh)
 

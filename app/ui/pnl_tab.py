@@ -56,8 +56,8 @@ _BTN_ACTION_DISABLED = (
 )
 
 _DAILY_COLS   = ["Date", "Realized P/L", "Closed Positions", "Wins", "Losses", "Cumulative P/L"]
-_DETAIL_COLS  = ["Market", "Outcome", "Result", "Cost Basis", "Redeem / Sell Value",
-                 "Realized P/L", "Closed Time"]
+_DETAIL_COLS  = ["Market", "Outcome", "Winning Outcome", "Result", "Cost Basis",
+                 "Redeem / Sell Value", "Realized P/L", "P/L %", "Closed Time"]
 
 _STATUS_TEXT = {
     "REDEEMED_WIN":  "Win",
@@ -80,8 +80,11 @@ def _cell(text: str, align=Qt.AlignmentFlag.AlignLeft) -> QTableWidgetItem:
     return item
 
 
-def _pnl_cell(val: float) -> QTableWidgetItem:
-    text = f"${val:,.2f}" if val >= 0 else f"-${abs(val):,.2f}"
+def _pnl_cell(val: float, suffix: str = "", precision: int = 2) -> QTableWidgetItem:
+    if suffix:
+        text = f"{val:+,.{precision}f}{suffix}"
+    else:
+        text = f"${val:,.{precision}f}" if val >= 0 else f"-${abs(val):,.{precision}f}"
     item = _cell(text, Qt.AlignmentFlag.AlignRight)
     item.setForeground(_Q_GREEN if val > 0 else (_Q_RED if val < 0 else _Q_MUTED))
     return item
@@ -189,20 +192,24 @@ class DayDetailDialog(QDialog):
         self,
         target_date: date,
         positions: List[ResolvedPosition],
+        activity: Optional[List] = None,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
+        self._activity = activity or []
         self.setWindowTitle(f"Closed Positions — {target_date.strftime('%Y-%m-%d')}")
-        self.setMinimumSize(920, 500)
-        self.resize(1060, 600)
+        self.setMinimumSize(980, 500)
+        self.resize(1160, 620)
         self.setStyleSheet(_DIALOG_STYLE)
         self.setWindowFlags(
             self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint
         )
 
-        pnl   = sum(p.realized_pnl for p in positions)
-        wins  = sum(1 for p in positions if p.realized_pnl > 0)
-        losses = len(positions) - wins
+        pnl        = sum(p.realized_pnl for p in positions)
+        total_cost = sum(p.cost_basis   for p in positions)
+        wins       = sum(1 for p in positions if p.realized_pnl > 0)
+        losses     = len(positions) - wins
+        pnl_pct    = (pnl / total_cost * 100) if total_cost > 0 else 0.0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -211,10 +218,12 @@ class DayDetailDialog(QDialog):
         # ── Summary row ────────────────────────────────────────────────────────
         pnl_color = _GREEN if pnl > 0 else (_RED if pnl < 0 else _MUTED)
         pnl_text  = f"${pnl:,.2f}" if pnl >= 0 else f"-${abs(pnl):,.2f}"
+        pct_text  = f"{pnl_pct:+.1f}%"
 
         summary_row = QHBoxLayout()
         summary_row.setSpacing(10)
         summary_row.addWidget(_StatLabel("Realized P/L",      pnl_text,           pnl_color))
+        summary_row.addWidget(_StatLabel("P/L %",             pct_text,           pnl_color))
         summary_row.addWidget(_StatLabel("Closed Positions",  str(len(positions)), _TEXT))
         summary_row.addWidget(_StatLabel("Wins",              str(wins),           _GREEN if wins  else _MUTED))
         summary_row.addWidget(_StatLabel("Losses",            str(losses),         _RED   if losses else _MUTED))
@@ -236,6 +245,8 @@ class DayDetailDialog(QDialog):
         for col in range(1, len(_DETAIL_COLS)):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
 
+        self._positions = positions  # stored for double-click drilldown
+
         for row, p in enumerate(positions):
             ct = getattr(p, "close_type", "UNKNOWN")
             result_text  = _STATUS_TEXT.get(ct, "—")
@@ -245,8 +256,14 @@ class DayDetailDialog(QDialog):
             outcome_item = _cell(p.outcome_held)
             outcome_item.setForeground(_Q_GREEN if p.is_win else _Q_RED)
 
+            win_outcome = getattr(p, "winning_outcome", "") or ""
+            win_item    = _cell(win_outcome if win_outcome else "—")
+            win_item.setForeground(_Q_MUTED if not win_outcome else _Q_TEXT)
+
             result_item = _cell(result_text)
             result_item.setForeground(result_color)
+
+            pct_item = _pnl_cell(p.realized_pnl_pct, suffix="%", precision=1)
 
             time_item = _cell(_fmt_close_time(p))
             time_item.setForeground(_Q_MUTED)
@@ -254,17 +271,29 @@ class DayDetailDialog(QDialog):
             mkt_item = _cell(p.market)
             if p.slug:
                 mkt_item.setData(Qt.ItemDataRole.UserRole, p.slug)
-                mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket")
+                mkt_item.setToolTip("Ctrl+click or right-click to open on Polymarket\n"
+                                    "Double-click to view transactions")
+            else:
+                mkt_item.setToolTip("Double-click to view transactions")
 
             self._table.setItem(row, 0, mkt_item)
             self._table.setItem(row, 1, outcome_item)
-            self._table.setItem(row, 2, result_item)
-            self._table.setItem(row, 3, _cell(f"${p.cost_basis:,.2f}",   Qt.AlignmentFlag.AlignRight))
-            self._table.setItem(row, 4, _cell(f"${p.redeem_value:,.2f}", Qt.AlignmentFlag.AlignRight))
-            self._table.setItem(row, 5, _pnl_cell(p.realized_pnl))
-            self._table.setItem(row, 6, time_item)
+            self._table.setItem(row, 2, win_item)
+            self._table.setItem(row, 3, result_item)
+            self._table.setItem(row, 4, _cell(f"${p.cost_basis:,.2f}",   Qt.AlignmentFlag.AlignRight))
+            self._table.setItem(row, 5, _cell(f"${p.redeem_value:,.2f}", Qt.AlignmentFlag.AlignRight))
+            self._table.setItem(row, 6, _pnl_cell(p.realized_pnl))
+            self._table.setItem(row, 7, pct_item)
+            self._table.setItem(row, 8, time_item)
+
+        # Double-click a row → open transactions drilldown
+        self._table.doubleClicked.connect(self._on_row_double_clicked)
 
         layout.addWidget(self._table, 1)
+
+        hint = QLabel("Double-click a row to view its buy/sell transactions.")
+        hint.setStyleSheet(f"color: {_MUTED}; font-size: 11px; font-style: italic;")
+        layout.addWidget(hint)
 
         # ── Close button ───────────────────────────────────────────────────────
         btn_row = QHBoxLayout()
@@ -275,15 +304,25 @@ class DayDetailDialog(QDialog):
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
 
+    def _on_row_double_clicked(self, index) -> None:
+        row = index.row()
+        if row < 0 or row >= len(self._positions):
+            return
+        from app.ui.position_transactions_dialog import PositionTransactionsDialog
+        p = self._positions[row]
+        dlg = PositionTransactionsDialog(p.market, self._activity, parent=self)
+        dlg.exec()
+
 
 # ── Main P/L tab ───────────────────────────────────────────────────────────────
 
 class PnlTab(QWidget):
     """Top-level P/L tab: range buttons, cumulative chart, daily breakdown table."""
 
-    def __init__(self, closed_positions: List[ResolvedPosition] = None):
+    def __init__(self, closed_positions: List[ResolvedPosition] = None, activity: list = None):
         super().__init__()
         self._closed: List[ResolvedPosition] = list(closed_positions or [])
+        self._activity: list                 = list(activity or [])
         self._selection = DateRangeSelection.preset_range("1m")
         self._daily_rows: list = []   # mirrors table rows for drilldown
 
@@ -362,6 +401,10 @@ class PnlTab(QWidget):
         self._closed = list(closed_positions)
         self._refresh()
 
+    def set_activity(self, activity: list) -> None:
+        """Update the activity feed used for transaction drilldowns."""
+        self._activity = list(activity)
+
     # ── Internal ───────────────────────────────────────────────────────────────
 
     def _on_range_changed(self, selection: DateRangeSelection) -> None:
@@ -414,5 +457,5 @@ class PnlTab(QWidget):
             return
         target_date = self._daily_rows[row_index]["date"]
         positions   = get_positions_for_date(self._closed, target_date)
-        dlg = DayDetailDialog(target_date, positions, parent=self)
+        dlg = DayDetailDialog(target_date, positions, activity=self._activity, parent=self)
         dlg.exec()

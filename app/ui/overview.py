@@ -346,7 +346,11 @@ def _fmt_sold_time(p: ResolvedPosition) -> str:
     return "—"
 
 
-def _sold_section(positions: List[ResolvedPosition], range_label: str = "") -> QWidget:
+def _sold_section(
+    positions: List[ResolvedPosition],
+    range_label: str = "",
+    activity: list = None,
+) -> QWidget:
     """Closed positions that were CLOB-sold (stop-loss / manual exit).
 
     Shows only positions whose market window is still open (not yet resolved).
@@ -396,9 +400,26 @@ def _sold_section(positions: List[ResolvedPosition], range_label: str = "") -> Q
             (f"{p.realized_pnl_pct:+.1f}%",  _R, pc),
             (_fmt_sold_time(p),               _L, _MUTED),
         ]
-        grid.addWidget(_market_row_cell(p.market, getattr(p, "slug", None)), r, 0)
+        mkt_lbl = _market_row_cell(p.market, getattr(p, "slug", None))
+        grid.addWidget(mkt_lbl, r, 0)
+        row_labels = [mkt_lbl]
         for col, (text, align, color) in enumerate(cells, start=1):
-            grid.addWidget(_row_cell(text, align, color), r, col)
+            cell_lbl = _row_cell(text, align, color)
+            grid.addWidget(cell_lbl, r, col)
+            row_labels.append(cell_lbl)
+
+        # Double-click any cell → open transaction drilldown
+        if activity is not None:
+            def _make_dclick(_p=p, _act=activity):
+                def _handler(event):
+                    if event.button() == Qt.MouseButton.LeftButton:
+                        from app.ui.position_transactions_dialog import PositionTransactionsDialog
+                        dlg = PositionTransactionsDialog(_p.market, _act)
+                        dlg.exec()
+                return _handler
+            _fn = _make_dclick()
+            for cell_lbl in row_labels:
+                cell_lbl.mouseDoubleClickEvent = _fn
 
     if count > _OVERVIEW_ROW_CAP:
         overflow_lbl = QLabel(
@@ -1002,7 +1023,7 @@ class OverviewWidget(QWidget):
         stub_filtered = filter_closed_by_selection(self._sold_stubs, self._selection)
         label         = self._selection.display_label()
         # Sold section: stubs whose market window is still open + real SOLD from API
-        self._replace_section("_sold_section", _sold_section(stub_filtered + filtered, label))
+        self._replace_section("_sold_section", _sold_section(stub_filtered + filtered, label, self._activity))
         # Closed section: real positions + "graduated" stubs — stubs whose market
         # window has now closed but haven't yet appeared in the closed-positions API.
         # Without this, a freshly-sold position disappears for the brief window between
