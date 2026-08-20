@@ -205,11 +205,16 @@ class DayDetailDialog(QDialog):
             self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint
         )
 
-        pnl        = sum(p.realized_pnl for p in positions)
-        total_cost = sum(p.cost_basis   for p in positions)
-        wins       = sum(1 for p in positions if p.realized_pnl > 0)
-        losses     = len(positions) - wins
-        pnl_pct    = (pnl / total_cost * 100) if total_cost > 0 else 0.0
+        pnl    = sum(p.realized_pnl for p in positions)
+        wins   = sum(1 for p in positions if p.realized_pnl > 0)
+        losses = len(positions) - wins
+        # Average P/L % across trades — each trade counts equally regardless of
+        # bet size.  This lets you compare strategy performance without the large
+        # bets drowning out the small ones (which the capital-weighted version does).
+        avg_pct = (
+            sum(p.realized_pnl_pct for p in positions) / len(positions)
+            if positions else 0.0
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -218,12 +223,13 @@ class DayDetailDialog(QDialog):
         # ── Summary row ────────────────────────────────────────────────────────
         pnl_color = _GREEN if pnl > 0 else (_RED if pnl < 0 else _MUTED)
         pnl_text  = f"${pnl:,.2f}" if pnl >= 0 else f"-${abs(pnl):,.2f}"
-        pct_text  = f"{pnl_pct:+.1f}%"
+        pct_color = _GREEN if avg_pct > 0 else (_RED if avg_pct < 0 else _MUTED)
+        pct_text  = f"{avg_pct:+.1f}%"
 
         summary_row = QHBoxLayout()
         summary_row.setSpacing(10)
         summary_row.addWidget(_StatLabel("Realized P/L",      pnl_text,           pnl_color))
-        summary_row.addWidget(_StatLabel("P/L %",             pct_text,           pnl_color))
+        summary_row.addWidget(_StatLabel("Avg P/L %",         pct_text,           pct_color))
         summary_row.addWidget(_StatLabel("Closed Positions",  str(len(positions)), _TEXT))
         summary_row.addWidget(_StatLabel("Wins",              str(wins),           _GREEN if wins  else _MUTED))
         summary_row.addWidget(_StatLabel("Losses",            str(losses),         _RED   if losses else _MUTED))
