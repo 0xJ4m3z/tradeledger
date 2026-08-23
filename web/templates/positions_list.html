@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — TradeLedger{% endblock %}
+
+{% block content %}
+<h1>{{ title }}</h1>
+<p class="subtitle">{{ subtitle }}</p>
+
+{% if positions %}
+<div class="table-toolbar">
+  <input
+    type="search"
+    id="position-filter"
+    placeholder="Filter by market…"
+    aria-label="Filter positions by market name"
+    data-testid="position-filter"
+  >
+  <span class="result-count" data-testid="result-count">{{ positions|length }} position{{ "s" if positions|length != 1 else "" }}</span>
+</div>
+
+<table class="positions-table" data-testid="{{ kind }}-positions-table" id="positions-table">
+  <thead>
+    {% if kind == "active" %}
+    <tr><th>Market</th><th>Outcome</th><th>Qty</th><th>Avg Cost</th><th>Current Price</th><th>Unrealized P/L</th><th>Unrealized P/L %</th></tr>
+    {% elif kind == "resolved" %}
+    <tr><th>Market</th><th>Outcome Held</th><th>Winning Outcome</th><th>Qty</th><th>Cost Basis</th><th>Redeem Value</th><th>Realized P/L</th></tr>
+    {% else %}
+    <tr><th>Market</th><th>Outcome Held</th><th>Result</th><th>Cost Basis</th><th>Redeem Value</th><th>Realized P/L</th><th>Resolved</th></tr>
+    {% endif %}
+  </thead>
+  <tbody>
+    {% for p in positions %}
+    <tr data-testid="position-row" data-market="{{ p.market | lower }}" data-polymarket-url="{{ polymarket_url_for_slug(p.slug) or '' }}">
+      {% if kind == "active" %}
+      <td><a href="/positions/active/{{ loop.index0 }}">{{ p.market }}</a></td>
+      <td>{{ p.outcome }}</td>
+      <td>{{ "%.2f"|format(p.quantity) }}</td>
+      <td>{{ p.avg_cost | usd }}</td>
+      <td>{{ p.current_price | usd }}</td>
+      <td class="{{ p.unrealized_pnl | pnl_class }}">{{ p.unrealized_pnl | usd }}</td>
+      <td class="{{ p.unrealized_pnl_pct | pnl_class }}">{{ p.unrealized_pnl_pct | pct }}</td>
+      {% elif kind == "resolved" %}
+      <td><a href="/positions/resolved/{{ loop.index0 }}">{{ p.market }}</a></td>
+      <td>{{ p.outcome_held }}</td>
+      <td>{{ p.winning_outcome }}</td>
+      <td>{{ "%.2f"|format(p.quantity) }}</td>
+      <td>{{ p.cost_basis | usd }}</td>
+      <td>{{ p.redeem_value | usd }}</td>
+      <td class="{{ p.realized_pnl | pnl_class }}">{{ p.realized_pnl | usd }}</td>
+      {% else %}
+      <td><a href="/positions/closed/{{ loop.index0 }}">{{ p.market }}</a></td>
+      <td>{{ p.outcome_held }}</td>
+      <td>
+        {% if p.is_win %}<span class="badge badge-win" data-testid="win-loss-badge">WIN</span>
+        {% else %}<span class="badge badge-loss" data-testid="win-loss-badge">LOSS</span>{% endif %}
+      </td>
+      <td>{{ p.cost_basis | usd }}</td>
+      <td>{{ p.redeem_value | usd }}</td>
+      <td class="{{ p.realized_pnl | pnl_class }}">{{ p.realized_pnl | usd }}</td>
+      <td>{{ p.resolved_date or "—" }}</td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+{% with empty_message = "No " + kind + " positions." %}
+{% include "partials/empty_state.html" %}
+{% endwith %}
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/table_filter.js"></script>
+{% endblock %}

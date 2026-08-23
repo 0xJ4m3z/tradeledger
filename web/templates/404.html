@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Not Found — TradeLedger{% endblock %}
+{% block content %}
+<div class="error-page" data-testid="not-found-page">
+  <h1>404</h1>
+  <p>{{ detail or "That page doesn't exist." }}</p>
+  <p><a href="/">&larr; Back to Dashboard</a></p>
+</div>
+{% endblock %}

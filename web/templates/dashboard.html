@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — TradeLedger{% endblock %}
+
+{% block content %}
+<h1>Dashboard</h1>
+
+<div class="range-bar" role="group" aria-label="Time range" data-testid="dashboard-range-bar">
+  {% for key, label in range_labels.items() %}
+  <a
+    href="/?range={{ key }}"
+    class="range-btn {{ 'active' if key == selected_range else '' }}"
+    data-testid="range-{{ key }}"
+  >{{ label }}</a>
+  {% endfor %}
+</div>
+
+<section class="cards" aria-label="Portfolio metrics">
+  <div class="card" data-testid="metric-total-tracked-value">
+    <p class="card-label">Total Tracked Value</p>
+    <p class="card-value">{{ metrics.total_tracked_value | usd }}</p>
+  </div>
+  <div class="card" data-testid="metric-wallet-usd-value">
+    <p class="card-label">Wallet USD Value</p>
+    <p class="card-value">{{ metrics.wallet_usd_value | usd }}</p>
+  </div>
+  <div class="card" data-testid="metric-positions-value">
+    <p class="card-label">Positions Value</p>
+    <p class="card-value">{{ metrics.active_positions_value | usd }}</p>
+  </div>
+  <div class="card" data-testid="metric-loss-watch">
+    <p class="card-label">Loss Watch</p>
+    <p class="card-value {{ 'pnl-neg' if metrics.loss_watch_count else '' }}">{{ metrics.loss_watch_count }}</p>
+  </div>
+  <div class="card" data-testid="metric-realized-pnl">
+    <p class="card-label">Realized P/L {{ '(partial)' if pnl.partial else '' }}</p>
+    <p class="card-value {{ pnl.realized_pnl | pnl_class }}">{{ '~' if pnl.partial else '' }}{{ pnl.realized_pnl | usd }}</p>
+  </div>
+  <div class="card" data-testid="metric-trades">
+    <p class="card-label">Trades</p>
+    <p class="card-value">{{ '~' if pnl.partial else '' }}{{ pnl.trade_count }}</p>
+  </div>
+  <div class="card" data-testid="metric-win-loss">
+    <p class="card-label">Win / Loss</p>
+    <p class="card-value"><span class="pnl-pos">{{ pnl.win_count }}W</span> / <span class="pnl-neg">{{ pnl.loss_count }}L</span></p>
+  </div>
+</section>
+
+<section class="chart-section" aria-label="Realized P/L over time">
+  <div class="section-header">
+    <h2>Realized P/L — {{ range_labels[selected_range] }}</h2>
+    <a href="/pnl?range={{ selected_range }}">View full P/L breakdown &rarr;</a>
+  </div>
+  <div class="chart-card" data-testid="dashboard-pnl-chart"
+       data-chart-points='{{ chart_points | tojson }}'>
+  </div>
+</section>
+
+<section class="table-section" aria-label="Active positions preview">
+  <div class="section-header">
+    <h2>Active Positions</h2>
+    <a href="/positions/active" data-testid="view-all-active">View all ({{ active_total }}) &rarr;</a>
+  </div>
+  {% if active_preview %}
+  <table class="positions-table" data-testid="active-positions-preview">
+    <thead>
+      <tr><th>Market</th><th>Outcome</th><th>Qty</th><th>Avg Cost</th><th>Current Price</th><th>Unrealized P/L</th></tr>
+    </thead>
+    <tbody>
+      {% for p in active_preview %}
+      <tr data-testid="position-row" data-polymarket-url="{{ polymarket_url_for_slug(p.slug) or '' }}">
+        <td><a href="/positions/active/{{ loop.index0 }}">{{ p.market }}</a></td>
+        <td>{{ p.outcome }}</td>
+        <td>{{ "%.2f"|format(p.quantity) }}</td>
+        <td>{{ p.avg_cost | usd }}</td>
+        <td>{{ p.current_price | usd }}</td>
+        <td class="{{ p.unrealized_pnl | pnl_class }}">{{ p.unrealized_pnl | usd }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  {% with empty_message = "No active positions right now." %}
+  {% include "partials/empty_state.html" %}
+  {% endwith %}
+  {% endif %}
+</section>
+
+<section class="table-section" aria-label="Recently closed positions">
+  <div class="section-header">
+    <h2>Recently Closed — {{ range_labels[selected_range] }}</h2>
+    <a href="/positions/closed" data-testid="view-all-closed">View all ({{ closed_total }}) &rarr;</a>
+  </div>
+  {% if closed_preview %}
+  <table class="positions-table" data-testid="closed-positions-preview">
+    <thead>
+      <tr><th>Market</th><th>Outcome Held</th><th>Result</th><th>Realized P/L</th><th>Resolved</th></tr>
+    </thead>
+    <tbody>
+      {% for row in closed_preview %}
+      {% set p = row.position %}
+      <tr data-testid="position-row" data-polymarket-url="{{ polymarket_url_for_slug(p.slug) or '' }}">
+        <td><a href="/positions/closed/{{ row.index }}">{{ p.market }}</a></td>
+        <td>{{ p.outcome_held }}</td>
+        <td>
+          {% if p.is_win %}<span class="badge badge-win" data-testid="win-loss-badge">WIN</span>
+          {% else %}<span class="badge badge-loss" data-testid="win-loss-badge">LOSS</span>{% endif %}
+        </td>
+        <td class="{{ p.realized_pnl | pnl_class }}">{{ p.realized_pnl | usd }}</td>
+        <td>{{ p.resolved_date or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  {% with empty_message = "No closed positions in this range." %}
+  {% include "partials/empty_state.html" %}
+  {% endwith %}
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/linechart.js"></script>
+{% endblock %}

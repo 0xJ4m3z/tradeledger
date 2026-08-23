@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}TradeLedger{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/">TradeLedger</a>
+      <nav class="nav" aria-label="Primary">
+        {% set path = request.url.path %}
+        <a href="/" data-testid="nav-dashboard" {% if path == "/" %}aria-current="page"{% endif %}>Dashboard</a>
+        <a href="/positions/active" data-testid="nav-active" {% if path.startswith("/positions/active") %}aria-current="page"{% endif %}>Active Positions</a>
+        <a href="/positions/resolved" data-testid="nav-resolved" {% if path.startswith("/positions/resolved") %}aria-current="page"{% endif %}>Resolved Positions</a>
+        <a href="/positions/closed" data-testid="nav-closed" {% if path.startswith("/positions/closed") %}aria-current="page"{% endif %}>Closed Positions</a>
+        <a href="/pnl" data-testid="nav-pnl" {% if path.startswith("/pnl") %}aria-current="page"{% endif %}>P/L</a>
+        <a href="/total-tracked-value" data-testid="nav-total-value" {% if path.startswith("/total-tracked-value") %}aria-current="page"{% endif %}>Total Tracked Value</a>
+      </nav>
+    </div>
+    {% set wallet = current_wallet() %}
+    {% set sample = is_sample_mode(wallet) %}
+    <form class="wallet-bar" method="post" action="/wallet/refresh" data-testid="wallet-form">
+      <div class="wallet-bar-inner">
+        <span class="wallet-current" data-testid="wallet-current" data-mode="{{ 'sample' if sample else 'live' }}">
+          {% if sample %}Sample data mode{% else %}Wallet {{ wallet | mask_wallet }}{% endif %}
+        </span>
+        <input
+          type="text"
+          name="address"
+          placeholder="0x… Polygon wallet address (read-only, public address only)"
+          data-testid="wallet-address-input"
+          autocomplete="off"
+          spellcheck="false"
+        >
+        <button type="submit" data-testid="wallet-submit">
+          {{ 'Fetch Wallet Value' if sample else 'Refresh' }}
+        </button>
+        {% if not sample %}
+        {% set last_updated = last_refreshed_at() %}
+        <span class="wallet-last-updated" data-testid="wallet-last-updated" data-timestamp="{{ last_updated or '' }}">
+          {% if last_updated %}Last updated {{ last_updated }} UTC{% endif %}
+        </span>
+        <label class="auto-refresh-toggle">
+          <input type="checkbox" id="auto-refresh-checkbox" data-testid="auto-refresh-checkbox" checked>
+          Auto-refresh (5 min)
+        </label>
+        {% endif %}
+      </div>
+    </form>
+  </header>
+  <main class="page">
+    {% set wallet_ok = request.query_params.get('wallet_ok') %}
+    {% set wallet_error = request.query_params.get('wallet_error') %}
+    {% if wallet_ok %}
+    <div class="flash flash-ok" data-testid="flash-ok" role="status">{{ wallet_ok }}</div>
+    {% endif %}
+    {% if wallet_error %}
+    <div class="flash flash-error" data-testid="flash-error" role="alert">{{ wallet_error }}</div>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="footer">
+    <p>TradeLedger — read-only Polymarket portfolio tracker. Public address only, no private keys, no transactions.</p>
+  </footer>
+  <script src="/static/js/wallet_form.js"></script>
+  <script src="/static/js/auto_refresh.js"></script>
+  <script src="/static/js/polymarket_link.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

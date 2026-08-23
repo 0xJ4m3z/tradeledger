@@ -245,6 +245,18 @@ def init_db() -> None:
             )
         """)
 
+        # Migration: add slug to active/resolved caches. closed_positions_cache
+        # got this in v0.4.0 (Polymarket market links); active/resolved never
+        # did, which silently drops the slug on every save/load round-trip —
+        # harmless for a single Qt session (the UI holds the live-fetched
+        # in-memory objects, slug intact) but a real gap for any reader that
+        # only ever goes through the cache, like the stateless web app.
+        for _table in ("active_positions_cache", "resolved_positions_cache"):
+            try:
+                conn.execute(f"ALTER TABLE {_table} ADD COLUMN slug TEXT")
+            except Exception:
+                pass  # column already exists
+
         # Activity cache — deduped by (wallet_address, event_key)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS activity_cache (
@@ -703,10 +715,10 @@ def save_active_positions_cache(
             conn.execute(
                 """
                 INSERT INTO active_positions_cache
-                    (wallet_address, market, outcome, quantity, avg_cost, current_price, saved_at)
-                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                    (wallet_address, market, outcome, quantity, avg_cost, current_price, slug, saved_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 """,
-                (wallet_address, p.market, p.outcome, p.quantity, p.avg_cost, p.current_price),
+                (wallet_address, p.market, p.outcome, p.quantity, p.avg_cost, p.current_price, p.slug),
             )
         conn.commit()
 
@@ -716,7 +728,7 @@ def load_active_positions_cache(wallet_address: str) -> List[ActivePosition]:
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT market, outcome, quantity, avg_cost, current_price
+            SELECT market, outcome, quantity, avg_cost, current_price, slug
             FROM active_positions_cache
             WHERE wallet_address = ?
             ORDER BY market ASC
@@ -730,6 +742,7 @@ def load_active_positions_cache(wallet_address: str) -> List[ActivePosition]:
             quantity=r["quantity"],
             avg_cost=r["avg_cost"],
             current_price=r["current_price"],
+            slug=r["slug"],
         )
         for r in rows
     ]
@@ -752,12 +765,12 @@ def save_resolved_positions_cache(
                 """
                 INSERT INTO resolved_positions_cache
                     (wallet_address, market, outcome_held, winning_outcome, quantity,
-                     cost_basis, redeem_value, redeemed, resolved_date, saved_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                     cost_basis, redeem_value, redeemed, resolved_date, slug, saved_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 """,
                 (wallet_address, p.market, p.outcome_held, p.winning_outcome,
                  p.quantity, p.cost_basis, p.redeem_value, int(p.redeemed),
-                 p.resolved_date),
+                 p.resolved_date, p.slug),
             )
         conn.commit()
 
@@ -768,7 +781,7 @@ def load_resolved_positions_cache(wallet_address: str) -> List[ResolvedPosition]
         rows = conn.execute(
             """
             SELECT market, outcome_held, winning_outcome, quantity, cost_basis,
-                   redeem_value, redeemed, resolved_date
+                   redeem_value, redeemed, resolved_date, slug
             FROM resolved_positions_cache
             WHERE wallet_address = ?
             ORDER BY market ASC
@@ -785,6 +798,7 @@ def load_resolved_positions_cache(wallet_address: str) -> List[ResolvedPosition]
             redeem_value=r["redeem_value"],
             redeemed=bool(r["redeemed"]),
             resolved_date=r["resolved_date"],
+            slug=r["slug"],
         )
         for r in rows
     ]

@@ -86,6 +86,24 @@ class TestActivePositionsCache:
         assert abs(loaded.avg_cost - 0.72) < 1e-6
         assert abs(loaded.current_price - 0.88) < 1e-6
 
+    def test_roundtrip_preserves_slug(self, isolated_db):
+        # Regression: slug used to be silently dropped on save/load — only
+        # closed_positions_cache persisted it, so the Polymarket link on any
+        # cache-loaded (rather than freshly-fetched) active position was
+        # always missing. See app.services.polymarket_links.
+        p = ActivePosition(
+            market="Gold", outcome="Up", quantity=500.0,
+            avg_cost=0.72, current_price=0.88, slug="gold-above-2400",
+        )
+        isolated_db.save_active_positions_cache(WALLET_A, [p])
+        loaded = isolated_db.load_active_positions_cache(WALLET_A)[0]
+        assert loaded.slug == "gold-above-2400"
+
+    def test_roundtrip_with_no_slug_stays_none(self, isolated_db):
+        isolated_db.save_active_positions_cache(WALLET_A, [_active("BTC")])
+        loaded = isolated_db.load_active_positions_cache(WALLET_A)[0]
+        assert loaded.slug is None
+
 
 # ── Resolved positions cache ──────────────────────────────────────────────────
 
@@ -120,6 +138,22 @@ class TestResolvedPositionsCache:
         isolated_db.save_resolved_positions_cache(WALLET_A, [p])
         loaded = isolated_db.load_resolved_positions_cache(WALLET_A)[0]
         assert abs(loaded.realized_pnl - 77.5) < 0.01
+
+    def test_roundtrip_preserves_slug(self, isolated_db):
+        # Same regression as ActivePositionsCache above, for resolved positions.
+        p = ResolvedPosition(
+            market="BTC", outcome_held="Yes", winning_outcome="Yes",
+            quantity=100.0, cost_basis=50.0, redeem_value=60.0,
+            redeemed=True, resolved_date="2025-06-01", slug="btc-above-100k",
+        )
+        isolated_db.save_resolved_positions_cache(WALLET_A, [p])
+        loaded = isolated_db.load_resolved_positions_cache(WALLET_A)[0]
+        assert loaded.slug == "btc-above-100k"
+
+    def test_roundtrip_with_no_slug_stays_none(self, isolated_db):
+        isolated_db.save_resolved_positions_cache(WALLET_A, [_resolved("BTC")])
+        loaded = isolated_db.load_resolved_positions_cache(WALLET_A)[0]
+        assert loaded.slug is None
 
 
 # ── Closed positions cache (wallet isolation) ─────────────────────────────────

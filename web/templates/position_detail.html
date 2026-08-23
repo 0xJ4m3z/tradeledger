@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}{{ position.market }} — TradeLedger{% endblock %}
+
+{% block content %}
+<a class="back-link" href="/positions/{{ kind }}" data-testid="back-to-list">&larr; Back to {{ title }}</a>
+
+<div class="detail-title-row">
+  <h1 data-testid="position-detail-market">{{ position.market }}</h1>
+  {% set pm_url = polymarket_url_for_slug(position.slug) %}
+  {% if pm_url %}
+  <a
+    class="polymarket-link"
+    href="{{ pm_url }}"
+    target="_blank"
+    rel="noopener noreferrer"
+    data-testid="open-on-polymarket-link"
+  >Open on Polymarket ↗</a>
+  {% endif %}
+</div>
+
+<section class="detail-card" aria-label="Asset information" data-testid="position-detail" data-polymarket-url="{{ pm_url or '' }}">
+  <dl class="detail-grid">
+    {% if kind == "active" %}
+    <div><dt>Outcome held</dt><dd>{{ position.outcome }}</dd></div>
+    <div><dt>Quantity</dt><dd>{{ "%.4f"|format(position.quantity) }}</dd></div>
+    <div><dt>Average cost</dt><dd>{{ position.avg_cost | usd }}</dd></div>
+    <div><dt>Current price</dt><dd>{{ position.current_price | usd }}</dd></div>
+    <div><dt>Cost basis</dt><dd>{{ position.cost_basis | usd }}</dd></div>
+    <div><dt>Current value</dt><dd>{{ position.current_value | usd }}</dd></div>
+    <div><dt>Unrealized P/L</dt><dd class="{{ position.unrealized_pnl | pnl_class }}" data-testid="detail-unrealized-pnl">{{ position.unrealized_pnl | usd }}</dd></div>
+    <div><dt>Unrealized P/L %</dt><dd class="{{ position.unrealized_pnl_pct | pnl_class }}">{{ position.unrealized_pnl_pct | pct }}</dd></div>
+    {% else %}
+    <div><dt>Outcome held</dt><dd>{{ position.outcome_held }}</dd></div>
+    <div><dt>Winning outcome</dt><dd>{{ position.winning_outcome or "—" }}</dd></div>
+    <div>
+      <dt>Result</dt>
+      <dd data-testid="detail-result">
+        {% if position.is_win %}<span class="badge badge-win">WIN</span>
+        {% else %}<span class="badge badge-loss">LOSS</span>{% endif %}
+      </dd>
+    </div>
+    <div><dt>Quantity</dt><dd>{{ "%.4f"|format(position.quantity) }}</dd></div>
+    <div><dt>Cost basis</dt><dd>{{ position.cost_basis | usd }}</dd></div>
+    <div><dt>Redeem value</dt><dd>{{ position.redeem_value | usd }}</dd></div>
+    <div><dt>Realized P/L</dt><dd class="{{ position.realized_pnl | pnl_class }}" data-testid="detail-realized-pnl">{{ position.realized_pnl | usd }}</dd></div>
+    <div><dt>Realized P/L %</dt><dd class="{{ position.realized_pnl_pct | pnl_class }}">{{ position.realized_pnl_pct | pct }}</dd></div>
+    <div><dt>Redeemed</dt><dd>{{ "Yes" if position.redeemed else "No" }}</dd></div>
+    <div><dt>Resolved date</dt><dd>{{ position.resolved_date or "—" }}</dd></div>
+    {% if kind == "closed" %}
+    <div><dt>Close type</dt><dd>{{ position.close_type }}</dd></div>
+    {% endif %}
+    {% endif %}
+  </dl>
+</section>
+{% endblock %}

@@ -1,0 +1,16 @@
+{
+  "name": "tradeledger-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright end-to-end test suite for the TradeLedger web app",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:debug": "playwright test --debug",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}P/L — TradeLedger{% endblock %}
+
+{% block content %}
+<h1>Realized P/L</h1>
+
+<div class="range-bar" role="group" aria-label="Time range" data-testid="pnl-range-bar">
+  {% for key, label in range_labels.items() %}
+  <a
+    href="/pnl?range={{ key }}"
+    class="range-btn {{ 'active' if key == selected_range else '' }}"
+    data-testid="range-{{ key }}"
+  >{{ label }}</a>
+  {% endfor %}
+</div>
+
+<section class="cards" aria-label="P/L summary">
+  <div class="card" data-testid="metric-realized-pnl-range">
+    <p class="card-label">Realized P/L {{ '(partial)' if pnl.partial else '' }}</p>
+    <p class="card-value {{ pnl.realized_pnl | pnl_class }}">{{ '~' if pnl.partial else '' }}{{ pnl.realized_pnl | usd }}</p>
+  </div>
+  <div class="card" data-testid="metric-trade-count">
+    <p class="card-label">Trades</p>
+    <p class="card-value">{{ '~' if pnl.partial else '' }}{{ pnl.trade_count }}</p>
+  </div>
+</section>
+
+<section class="chart-section" aria-label="Cumulative realized P/L chart">
+  <div class="chart-card" data-testid="pnl-chart" data-chart-points='{{ chart_points | tojson }}'></div>
+</section>
+
+<section class="table-section" aria-label="Daily P/L breakdown">
+  <h2>Daily Breakdown</h2>
+  {% if pnl.daily_rows %}
+  <table class="positions-table" data-testid="daily-pnl-table">
+    <thead>
+      <tr><th>Date</th><th>P/L</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Cumulative</th></tr>
+    </thead>
+    <tbody>
+      {% for row in pnl.daily_rows %}
+      <tr data-testid="daily-pnl-row">
+        <td>{{ row.date.isoformat() }}</td>
+        <td class="{{ row.pnl | pnl_class }}">{{ row.pnl | usd }}</td>
+        <td>{{ row.count }}</td>
+        <td>{{ row.wins }}</td>
+        <td>{{ row.losses }}</td>
+        <td class="{{ row.cumulative | pnl_class }}">{{ row.cumulative | usd }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  {% with empty_message = "No closed positions in this range." %}
+  {% include "partials/empty_state.html" %}
+  {% endwith %}
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/linechart.js"></script>
+{% endblock %}

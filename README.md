@@ -24,6 +24,31 @@ TradeLedger lets you monitor your open positions, resolved winnings, closed trad
 
 ---
 
+## Web app
+
+A FastAPI web version lives in [`web/`](web/) — same models, services,
+adapters, and SQLite data layer as the desktop app above. Starts in sample
+data mode; enter a real wallet address in the wallet bar to switch to live
+Polymarket/Polygon data, same as the desktop app's first launch. See
+[`web/README.md`](web/README.md) for how to run it.
+
+```bash
+pip install -r web/requirements.txt
+python run_web.py   # → http://127.0.0.1:8000
+```
+
+A Playwright end-to-end test suite lives in [`e2e/`](e2e/) and drives that
+web app through a real browser — dashboard, navigation, positions,
+filtering, P/L, charts, and invalid/missing-data edge cases. See
+[`e2e/README.md`](e2e/README.md).
+
+```bash
+cd e2e && npm install && npx playwright install --with-deps chromium
+npm test
+```
+
+---
+
 ## Terminology
 
 | Term | Definition |

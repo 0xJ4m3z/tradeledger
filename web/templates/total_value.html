@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Total Tracked Value — TradeLedger{% endblock %}
+
+{% block content %}
+<h1>Total Tracked Value</h1>
+<p class="subtitle">Wallet USD Value + Positions Value, snapshotted over time. Grows with each refresh.</p>
+
+<div class="range-bar" role="group" aria-label="Time range" data-testid="tv-range-bar">
+  {% for key, label in range_labels.items() %}
+  <a
+    href="/total-tracked-value?range={{ key }}"
+    class="range-btn {{ 'active' if key == selected_range else '' }}"
+    data-testid="tv-range-{{ key }}"
+  >{{ label }}</a>
+  {% endfor %}
+</div>
+
+<section class="chart-section" aria-label="Total tracked value chart">
+  {% if snapshots %}
+  <div class="chart-card" data-testid="tv-chart" data-chart-points='{{ chart_points | tojson }}'></div>
+  {% else %}
+  {% with empty_message = "Not enough history yet — Total Tracked Value is snapshotted on each refresh. Check back after the app has run for a while." %}
+  {% include "partials/empty_state.html" %}
+  {% endwith %}
+  {% endif %}
+</section>
+
+<section class="table-section" aria-label="Snapshot history">
+  <h2>Snapshots</h2>
+  {% if snapshots %}
+  <table class="positions-table" data-testid="tv-snapshots-table">
+    <thead>
+      <tr><th>Captured At</th><th>Wallet USD</th><th>Positions Value</th><th>Total Tracked Value</th></tr>
+    </thead>
+    <tbody>
+      {% for s in snapshots %}
+      <tr data-testid="tv-snapshot-row">
+        <td>{{ s.captured_at }}</td>
+        <td>{{ s.wallet_usd_value | usd }}</td>
+        <td>{{ s.active_positions_value | usd }}</td>
+        <td>{{ s.total_tracked_value | usd }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/linechart.js"></script>
+{% endblock %}
