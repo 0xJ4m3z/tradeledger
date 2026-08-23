@@ -106,7 +106,7 @@ QPushButton {{
 QPushButton:hover {{ border-color: {_BLUE}; color: {_BLUE}; }}
 """
 
-_COLS  = ["Time (ET)", "Side", "Outcome", "Tokens", "Price", "USDC"]
+_COLS  = ["Time (ET)", "Side", "Outcome", "Tokens", "Price", "Fee", "USDC"]
 _ALIGN = [
     Qt.AlignmentFlag.AlignLeft,
     Qt.AlignmentFlag.AlignLeft,
@@ -114,7 +114,25 @@ _ALIGN = [
     Qt.AlignmentFlag.AlignRight,
     Qt.AlignmentFlag.AlignRight,
     Qt.AlignmentFlag.AlignRight,
+    Qt.AlignmentFlag.AlignRight,
 ]
+
+
+def _trade_fee(a: "UserActivity") -> Optional[float]:
+    """Polymarket's taker fee (0 for makers) isn't a separate line item in
+    the activity feed — it's already baked into usdc_size, which is why a
+    BUY's USDC total comes out slightly ABOVE tokens*price, and a taker
+    SELL's comes out slightly BELOW it. Reverse-engineering it from that
+    gap (rather than reimplementing the fee formula, which needs the
+    market's category to pick the right rate) is exact by construction and
+    needs nothing beyond what's already in this row. Maker fills (no fee)
+    naturally come out ~$0 here, same math, no special-casing needed.
+    None for non-TRADE rows (REDEEM/SPLIT/MERGE/REWARD, …) — a redemption
+    isn't a CLOB trade, "fee" doesn't apply to it the same way."""
+    if a.type != "TRADE":
+        return None
+    nominal = a.size * a.price
+    return round(abs(nominal - a.usdc_size), 2)
 
 
 def _cell(text: str, align=Qt.AlignmentFlag.AlignLeft) -> QTableWidgetItem:
@@ -191,6 +209,7 @@ class PositionTransactionsDialog(QDialog):
             if a.side == "SELL" or a.type == "REDEEM"
         )
         net = received - bought
+        total_fees = sum(_trade_fee(a) or 0.0 for a in rows)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -212,6 +231,7 @@ class PositionTransactionsDialog(QDialog):
         summary_row.addWidget(_StatLabel("Total Invested",  f"${bought:,.2f}",   _MUTED))
         summary_row.addWidget(_StatLabel("Total Received",  f"${received:,.2f}", _MUTED))
         summary_row.addWidget(_StatLabel("Net",             net_text,            net_color))
+        summary_row.addWidget(_StatLabel("Fees Paid",       f"${total_fees:,.2f}", _RED if total_fees > 0 else _MUTED))
         summary_row.addWidget(_StatLabel("Transactions",    str(len(rows)),      _TEXT))
 
         # Outcome held + winning outcome tiles (when position data is available)
@@ -263,15 +283,20 @@ class PositionTransactionsDialog(QDialog):
             side_item = _cell(side_str, _ALIGN[1])
             side_item.setForeground(side_color)
 
-            usdc_item = _cell(f"${a.usdc_size:,.2f}", _ALIGN[5])
+            usdc_item = _cell(f"${a.usdc_size:,.2f}", _ALIGN[6])
             usdc_item.setForeground(side_color)
+
+            fee = _trade_fee(a)
+            fee_item = _cell("—" if fee is None else f"${fee:,.2f}", _ALIGN[5])
+            fee_item.setForeground(_Q_RED if (fee or 0) > 0 else _Q_MUTED)
 
             tbl.setItem(r, 0, time_item)
             tbl.setItem(r, 1, side_item)
             tbl.setItem(r, 2, _cell(a.outcome or "—",    _ALIGN[2]))
             tbl.setItem(r, 3, _cell(f"{a.size:,.2f}",   _ALIGN[3]))
             tbl.setItem(r, 4, _cell(f"${a.price:.4f}",  _ALIGN[4]))
-            tbl.setItem(r, 5, usdc_item)
+            tbl.setItem(r, 5, fee_item)
+            tbl.setItem(r, 6, usdc_item)
 
         layout.addWidget(tbl, 1)
 
