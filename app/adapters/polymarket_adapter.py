@@ -1,5 +1,5 @@
 """
-Read-only Polymarket position lookup via data-api.polymarket.com
+Read-only Polymarket position lookup via data-api.polymarket.com (v2)
 and gamma-api.polymarket.com.
 
 Fetches active, resolved, and closed positions for a wallet address.
@@ -9,19 +9,40 @@ Safety: read-only. No private keys, signatures, or transactions ever.
 """
 
 import json
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import requests
 
 from app.debug import _dlog
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 
-_DATA_API         = "https://data-api.polymarket.com"
+# Data API v1 was retired 2026-11-02 (every v1 route returns 410 Gone).
+# v2 differences handled here: payload wrapped in {"data", "pagination"},
+# snake_case fields, cursor-only paging (`offset` is an HTTP 400), and
+# /closed-positions replaced by /positions?status=CLOSED.
+_DATA_API         = "https://data-api.polymarket.com/v2"
 _GAMMA_API        = "https://gamma-api.polymarket.com"
 _TIMEOUT          = 30
 _RETRY_TIMEOUT    = 45   # longer timeout for the one retry attempt
-_PAGE_SIZE        = 50   # /positions endpoint
-_CLOSED_PAGE_SIZE = 50   # /closed-positions endpoint (API max: 50)
+_PAGE_SIZE        = 500  # /v2/positions (API max: 1000)
+_CLOSED_PAGE_SIZE = 50   # closed history; _BACKFILL_START assumes 2 × 50 rows
+
+# v2 key → v1 key, where the v1 name isn't just the camelCase of the v2 name.
+# Rows get the v1 keys added alongside the v2 ones so the _to_* mappers keep
+# reading the names they always have.
+_V1_RENAMES = {
+    "token_id":          "asset",
+    "current_size":      "size",
+    "current_price":     "curPrice",
+    "opposite_token_id": "oppositeAsset",
+    "total_size":        "totalBought",
+    "last_event_at":     "timestamp",
+}
+
+# (path, params) → {row offset: cursor that starts there}.  v2 is cursor-only,
+# but backfill and infinite scroll ask for rows by offset; remembering cursors
+# lets each sequential load cost one request instead of a walk from the start.
+_cursor_index: Dict[tuple, Dict[int, Optional[str]]] = {}
 
 # In-process cache: (slug, asset_id) → winning outcome name (or None on failure).
 # asset_id is "" when the caller doesn't have a specific token ID.
@@ -182,30 +203,74 @@ def _fetch_winner_from_gamma(slug: str, asset_id: str = "") -> Optional[str]:
     return winner
 
 
+def _camel(key: str) -> str:
+    head, *rest = key.split("_")
+    return head + "".join(p[:1].upper() + p[1:] for p in rest)
+
+
+def _v1_row(row: dict) -> dict:
+    out = dict(row)
+    for k, v in row.items():
+        alias = _V1_RENAMES.get(k) or _camel(k)
+        if alias != k:
+            out.setdefault(alias, v)
+    return out
+
+
+def _get_page(path: str, params: dict,
+              cursor: Optional[str] = None) -> Tuple[List[dict], Optional[str]]:
+    """Fetch one Data API v2 page. Returns (v1-shaped rows, next cursor or None)."""
+    q = dict(params)
+    if cursor:
+        q["cursor"] = cursor
+    body = _get_with_retry(f"{_DATA_API}/{path}", q).json()
+    if isinstance(body, list):
+        # Bare list, no pagination envelope — treat as a single final page.
+        return [_v1_row(r) for r in body], None
+    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(data, list):
+        raise PolymarketLookupError(f"Unexpected response from /{path}: {str(body)[:200]}")
+    next_cursor = (body.get("pagination") or {}).get("next_cursor")
+    return [_v1_row(r) for r in data], next_cursor
+
+
 def _paginate(path: str, params: dict, page_size: int, max_pages: int = 0) -> List[dict]:
-    """Fetch pages from a Polymarket Data API endpoint.
+    """Fetch pages from a Polymarket Data API v2 endpoint by following cursors.
 
     max_pages: stop after this many pages (0 = no limit).
     """
-    params = dict(params)
+    params = dict(params, limit=page_size)
     results: List[dict] = []
-    offset = 0
-    pages  = 0
+    cursor: Optional[str] = None
+    pages = 0
     while True:
-        params["limit"]  = page_size
-        params["offset"] = offset
-        r    = _get_with_retry(f"{_DATA_API}/{path}", params)
-        page = r.json()
-        if not page:
-            break
+        page, cursor = _get_page(path, params, cursor)
         results.extend(page)
         pages += 1
-        if len(page) < page_size:
+        if not page or not cursor:
             break
         if max_pages and pages >= max_pages:
             break
-        offset += page_size
     return results
+
+
+def _page_at_offset(path: str, params: dict, offset: int, limit: int) -> List[dict]:
+    """Return up to `limit` rows starting at row `offset`, emulated over cursors."""
+    params = dict(params, limit=limit)
+    index  = _cursor_index.setdefault((path, tuple(sorted(params.items()))), {0: None})
+    pos    = max(o for o in index if o <= offset)
+    cursor = index[pos]
+    rows: List[dict] = []
+    while True:
+        page, cursor = _get_page(path, params, cursor)
+        if pos + len(page) > offset:
+            rows.extend(page[max(0, offset - pos):])
+        pos += len(page)
+        if cursor:
+            index[pos] = cursor
+        if not page or not cursor or len(rows) >= limit:
+            break
+    return rows[:limit]
 
 
 def _to_active(row: dict) -> ActivePosition:
@@ -430,8 +495,8 @@ def _to_closed(row: dict) -> ResolvedPosition:
 def fetch_active_positions(wallet: str) -> List[ActivePosition]:
     """Return all open positions from the /positions endpoint (includes resolved-not-yet-claimed).
 
-    sizeThreshold omitted — active positions always have size > 0, and passing
-    sizeThreshold=0 causes server-side 408 timeouts on large wallets.
+    v2's default status (OPEN) is every held position, settled-but-unredeemed
+    winners included — the same set v1 /positions returned.
     Callers should deduplicate against fetch_resolved_positions to avoid showing the
     same market in both lists.
     """
@@ -442,11 +507,11 @@ def fetch_active_positions(wallet: str) -> List[ActivePosition]:
 def fetch_resolved_positions(wallet: str) -> List[ResolvedPosition]:
     """Return positions that are resolved and pending redemption.
 
-    sizeThreshold omitted — resolved positions always have size > 0,
-    and including it causes server-side 408 timeouts.
+    v2 has no `redeemable` filter, and status=REDEEMABLE drops held losers that
+    v1 redeemable=true included, so filter the OPEN set on each row's flag.
     """
-    rows = _paginate("positions", {"user": wallet, "redeemable": "true"}, _PAGE_SIZE)
-    return [_to_resolved(r) for r in rows]
+    rows = _paginate("positions", {"user": wallet}, _PAGE_SIZE)
+    return [_to_resolved(r) for r in rows if r.get("redeemable")]
 
 
 def _to_activity(row: dict) -> UserActivity:
@@ -467,7 +532,7 @@ def fetch_activity(wallet: str) -> List[UserActivity]:
     """Return the 100 most-recent activity events for a wallet, newest first."""
     rows = _paginate(
         "activity",
-        {"user": wallet, "sortBy": "TIMESTAMP", "sortDirection": "DESC"},
+        {"user": wallet, "sort_by": "TIMESTAMP", "sort_direction": "DESC"},
         page_size=100,
         max_pages=1,
     )
@@ -476,18 +541,12 @@ def fetch_activity(wallet: str) -> List[UserActivity]:
 
 def fetch_activity_page(wallet: str, offset: int, limit: int = 100) -> List[UserActivity]:
     """Fetch one page of activity at the given offset (for infinite-scroll load-more)."""
-    r = _get_with_retry(
-        f"{_DATA_API}/activity",
-        {
-            "user":          wallet,
-            "sortBy":        "TIMESTAMP",
-            "sortDirection": "DESC",
-            "limit":         limit,
-            "offset":        offset,
-        },
+    rows = _page_at_offset(
+        "activity",
+        {"user": wallet, "sort_by": "TIMESTAMP", "sort_direction": "DESC"},
+        offset, limit,
     )
-    rows = r.json()
-    return [_to_activity(row) for row in rows] if rows else []
+    return [_to_activity(row) for row in rows]
 
 
 def fetch_closed_positions_page(
@@ -498,19 +557,18 @@ def fetch_closed_positions_page(
 ) -> List[ResolvedPosition]:
     """Fetch one page of closed positions at the given offset.
 
-    sorted_=True (default) adds sortBy=TIMESTAMP/sortDirection=DESC — used for the
+    sorted_=True (default) sorts newest-first by last activity — used for the
     initial 2-page display fetch where newest-first order matters.
 
-    sorted_=False omits the sort params — used by the backfill thread where row order
-    is irrelevant and the sort clause causes server-side 408 timeouts at high offsets.
+    sorted_=False keeps v2's default order (realized P/L) — used by the backfill
+    thread, where row order is irrelevant.
     """
-    params: dict = {"user": wallet, "limit": limit, "offset": offset}
+    params: dict = {"user": wallet, "status": "CLOSED"}
     if sorted_:
-        params["sortBy"]        = "TIMESTAMP"
-        params["sortDirection"] = "DESC"
-    r = _get_with_retry(f"{_DATA_API}/closed-positions", params)
-    page = r.json()
-    return [_to_closed(row) for row in page] if page else []
+        params["sort_by"]        = "TIMESTAMP"
+        params["sort_direction"] = "DESC"
+    rows = _page_at_offset("positions", params, offset, limit)
+    return [_to_closed(row) for row in rows]
 
 
 def fetch_closed_positions(wallet: str) -> List[ResolvedPosition]:
@@ -520,8 +578,9 @@ def fetch_closed_positions(wallet: str) -> List[ResolvedPosition]:
     thousands of historical trades. Sorted by timestamp (newest first).
     """
     rows = _paginate(
-        "closed-positions",
-        {"user": wallet, "sortBy": "TIMESTAMP", "sortDirection": "DESC"},
+        "positions",
+        {"user": wallet, "status": "CLOSED",
+         "sort_by": "TIMESTAMP", "sort_direction": "DESC"},
         _CLOSED_PAGE_SIZE,
         max_pages=2,
     )

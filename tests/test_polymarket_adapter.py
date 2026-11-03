@@ -12,7 +12,9 @@ from app.adapters.polymarket_adapter import (
     PolymarketLookupError,
     fetch_active_positions,
     fetch_activity,
+    fetch_activity_page,
     fetch_closed_positions,
+    fetch_closed_positions_page,
     fetch_resolved_positions,
 )
 
@@ -25,6 +27,11 @@ def _mock_response(data: list) -> MagicMock:
     m.raise_for_status.return_value = None
     m.json.return_value = data
     return m
+
+
+def _v2_body(rows: list, next_cursor) -> dict:
+    return {"data": rows, "pagination": {"has_more": next_cursor is not None,
+                                         "next_cursor": next_cursor}}
 
 
 _ACTIVE_ROW = {
@@ -184,6 +191,7 @@ class TestFetchResolvedPositions:
             "size":         5.0,
             "avgPrice":     0.50,
             "currentValue": 5.0,   # 5 shares × $1 = winning token
+            "redeemable":   True,
         }
         row_1990 = {          # ETH < 1990 → No won; user holds No at $1/share
             "title":        "Ethereum above 1,990 on August 6, 10AM ET?",
@@ -193,6 +201,7 @@ class TestFetchResolvedPositions:
             "size":         5.0,
             "avgPrice":     0.50,
             "currentValue": 5.0,   # 5 shares × $1 = winning token
+            "redeemable":   True,
         }
 
         # Only one requests.get call: the positions API.  No Gamma calls.
@@ -221,6 +230,7 @@ class TestFetchResolvedPositions:
             "size":         10.0,
             "avgPrice":     0.50,
             "currentValue": 0.05,   # ~$0/share → Yes lost
+            "redeemable":   True,
         }
         with patch("requests.get", return_value=_mock_response([row])):
             p = fetch_resolved_positions(_FAKE_WALLET)[0]
@@ -259,6 +269,7 @@ class TestFetchResolvedPositions:
             "size":         10.0,
             "avgPrice":     0.50,
             "currentValue": 0.0,    # Up token worth $0 → Down won
+            "redeemable":   True,
         }
         with patch("requests.get", return_value=_mock_response([row])):
             p = fetch_resolved_positions(_FAKE_WALLET)[0]
@@ -583,31 +594,46 @@ class TestFetchClosedPositions:
             with pytest.raises(PolymarketLookupError):
                 fetch_closed_positions(_FAKE_WALLET)
 
-    def test_hits_closed_positions_endpoint(self):
+    def test_hits_v2_positions_with_closed_status(self):
+        # v1 /closed-positions was retired; v2 serves it as /positions?status=CLOSED
         with patch("requests.get", return_value=_mock_response([])) as mock_get:
             fetch_closed_positions(_FAKE_WALLET)
-        url = mock_get.call_args[0][0]
-        assert "closed-positions" in url
+        url    = mock_get.call_args[0][0]
+        params = mock_get.call_args[1]["params"]
+        assert url.endswith("/v2/positions")
+        assert params["status"]  == "CLOSED"
+        assert params["sort_by"] == "TIMESTAMP"
 
 
 class TestPagination:
-    def test_fetches_second_page_when_first_is_full(self):
-        page1 = [
-            {**_ACTIVE_ROW, "title": f"Market {i}"}
-            for i in range(50)
-        ]
-        page2 = [
-            {**_ACTIVE_ROW, "title": f"Market {i+50}"}
-            for i in range(3)
-        ]
+    def test_follows_next_cursor_until_null(self):
+        page1 = [{**_ACTIVE_ROW, "title": f"Market {i}"} for i in range(50)]
+        page2 = [{**_ACTIVE_ROW, "title": f"Market {i+50}"} for i in range(3)]
         with patch("requests.get") as mock_get:
             mock_get.side_effect = [
-                _mock_response(page1),
-                _mock_response(page2),
-                _mock_response([]),
+                _mock_response(_v2_body(page1, "c1")),
+                _mock_response(_v2_body(page2, None)),
             ]
             result = fetch_active_positions(_FAKE_WALLET)
         assert len(result) == 53
+        assert mock_get.call_count == 2
+        assert "cursor" not in mock_get.call_args_list[0][1]["params"]
+        assert mock_get.call_args_list[1][1]["params"]["cursor"] == "c1"
+
+    def test_never_sends_offset(self):
+        # v2 rejects `offset` with HTTP 400, even offset=0
+        with patch("requests.get", return_value=_mock_response(_v2_body([], None))) as mock_get:
+            fetch_active_positions(_FAKE_WALLET)
+            fetch_closed_positions_page(_FAKE_WALLET, 0)
+            fetch_activity_page(_FAKE_WALLET, 0)
+        for c in mock_get.call_args_list:
+            assert "offset" not in c[1]["params"]
+
+    def test_unexpected_body_raises_lookup_error(self):
+        body = {"error": "Data API v1 has been retired"}
+        with patch("requests.get", return_value=_mock_response(body)):
+            with pytest.raises(PolymarketLookupError):
+                fetch_active_positions(_FAKE_WALLET)
 
     def test_stops_after_partial_page(self):
         page = [_ACTIVE_ROW] * 10   # fewer than PAGE_SIZE=50
@@ -624,13 +650,77 @@ class TestPagination:
         params = call_kwargs[1]["params"]
         assert params["user"] == _FAKE_WALLET
 
-    def test_redeemable_filter_passed_for_resolved_fetch(self):
-        with patch("requests.get", return_value=_mock_response([])) as mock_get:
-            fetch_resolved_positions(_FAKE_WALLET)
-        params = mock_get.call_args[1]["params"]
-        assert params["redeemable"] == "true"
-        # sizeThreshold omitted to avoid server-side 408 timeouts
-        assert "sizeThreshold" not in params
+    def test_resolved_fetch_filters_on_row_redeemable_flag(self):
+        # v2 has no `redeemable` query filter — rows are filtered client-side
+        rows = [_ACTIVE_ROW, _REDEEMABLE_ROW]
+        with patch("requests.get", return_value=_mock_response(_v2_body(rows, None))) as mock_get:
+            result = fetch_resolved_positions(_FAKE_WALLET)
+        assert "redeemable" not in mock_get.call_args[1]["params"]
+        assert len(result) == 1
+
+
+class TestV2RowShape:
+    """v2 rows are snake_case; they must map to the same values as v1 rows."""
+
+    def test_active_v2_row_maps_renamed_fields(self):
+        row = {"title": "M", "outcome": "Yes", "current_size": 10.0, "avg_price": 0.4,
+               "current_price": 0.6, "event_slug": "ev", "token_id": "123"}
+        with patch("requests.get", return_value=_mock_response(_v2_body([row], None))):
+            p = fetch_active_positions(_FAKE_WALLET)[0]
+        assert p.quantity      == pytest.approx(10.0)
+        assert p.avg_cost      == pytest.approx(0.4)
+        assert p.current_price == pytest.approx(0.6)
+        assert p.slug          == "ev"
+        assert p.asset_id      == "123"
+
+    def test_closed_v2_row_maps_total_size_and_last_event_at(self):
+        row = {"title": "M", "outcome": "Down", "opposite_outcome": "Up",
+               "avg_price": 0.5, "total_size": 10.0, "realized_pnl": 5.0,
+               "current_price": 1.0, "last_event_at": 1_793_714_482}
+        with patch("requests.get", return_value=_mock_response(_v2_body([row], None))):
+            p = fetch_closed_positions(_FAKE_WALLET)[0]
+        assert p.quantity     == pytest.approx(10.0)
+        assert p.cost_basis   == pytest.approx(5.0)
+        assert p.redeem_value == pytest.approx(10.0)
+        assert p.closed_at    == 1_793_714_482
+
+    def test_activity_v2_row_maps_usdc_size(self):
+        row = {"timestamp": 1_750_000_000, "type": "TRADE", "usdc_size": 12.5,
+               "event_slug": "ev"}
+        with patch("requests.get", return_value=_mock_response(_v2_body([row], None))):
+            a = fetch_activity(_FAKE_WALLET)[0]
+        assert a.usdc_size == pytest.approx(12.5)
+        assert a.slug      == "ev"
+
+
+class TestOffsetEmulation:
+    def setup_method(self):
+        import app.adapters.polymarket_adapter as _mod
+        _mod._cursor_index.clear()
+
+    def _pages(self, n_pages, size):
+        return [
+            _mock_response(_v2_body(
+                [{**_ACTIVITY_ROW, "title": f"T{p * size + i}"} for i in range(size)],
+                f"c{p + 1}" if p + 1 < n_pages else None,
+            ))
+            for p in range(n_pages)
+        ]
+
+    def test_walks_cursors_to_reach_offset(self):
+        with patch("requests.get") as mock_get:
+            mock_get.side_effect = self._pages(3, 10)
+            rows = fetch_activity_page(_FAKE_WALLET, 15, limit=10)
+        assert [a.title for a in rows] == [f"T{i}" for i in range(15, 25)]
+
+    def test_sequential_pages_reuse_remembered_cursor(self):
+        pages = self._pages(3, 10)
+        with patch("requests.get") as mock_get:
+            mock_get.side_effect = pages[:2]
+            fetch_activity_page(_FAKE_WALLET, 0, limit=10)
+            fetch_activity_page(_FAKE_WALLET, 10, limit=10)
+        assert mock_get.call_count == 2
+        assert mock_get.call_args_list[1][1]["params"]["cursor"] == "c1"
 
 
 # ── Activity ───────────────────────────────────────────────────────────────────
@@ -712,8 +802,8 @@ class TestFetchActivity:
         with patch("requests.get", return_value=_mock_response([])) as mock_get:
             fetch_activity(_FAKE_WALLET)
         params = mock_get.call_args[1]["params"]
-        assert params["sortBy"]        == "TIMESTAMP"
-        assert params["sortDirection"] == "DESC"
+        assert params["sort_by"]        == "TIMESTAMP"
+        assert params["sort_direction"] == "DESC"
 
     def test_capped_at_single_page(self):
         # max_pages=1 means a full first page stops pagination (no second request)

@@ -310,6 +310,7 @@ class TestResolvedPositionSlug:
             "avgPrice": "0.5",
             "currentValue": "100",
             "endDate": "2025-06-01",
+            "redeemable": True,
         }
         base.update(kwargs)
         return base
