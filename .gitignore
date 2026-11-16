@@ -227,6 +227,8 @@ __marimo__/
 
 .env
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 __pycache__/

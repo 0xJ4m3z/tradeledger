@@ -118,6 +118,7 @@ class PnlChartWidget(QWidget):
         self._annot = None
 
         self._worker: Optional[_ChartWorker] = None
+        self._redraw_pending = False
 
         self._canvas.mpl_connect("motion_notify_event", self._on_motion)
         self._canvas.mpl_connect("axes_leave_event",    self._on_leave)
@@ -156,18 +157,31 @@ class PnlChartWidget(QWidget):
     # ── Worker management ─────────────────────────────────────────────────────
 
     def _request_draw(self) -> None:
-        """Cancel any in-progress worker and launch a fresh one."""
+        """Launch a worker, or coalesce into one follow-up run if one is busy.
+
+        Never replace a running worker: dropping the last reference to a running
+        QThread destroys it mid-run and corrupts the heap (freezes, then crashes
+        with `free(): invalid pointer`). Backfills request a redraw per page, so
+        overlap is routine once history is large.
+        """
         if self._worker is not None and self._worker.isRunning():
-            self._worker.done.disconnect()
-            self._worker.quit()
-            self._worker.wait(150)          # brief grace period; won't block UI
+            self._redraw_pending = True
+            return
+        self._redraw_pending = False
         self._worker = _ChartWorker(self._activity, self._closed, self._range)
         self._worker.done.connect(self._on_points_ready)
+        self._worker.finished.connect(self._on_worker_finished)
         self._worker.start()
 
     def _on_points_ready(self, points: list, is_partial: bool) -> None:
+        if self._redraw_pending:
+            return              # stale — a run with newer data follows
         self.is_partial = is_partial
         self._draw_points(points)
+
+    def _on_worker_finished(self) -> None:
+        if self._redraw_pending:
+            self._request_draw()
 
     # ── Drawing ───────────────────────────────────────────────────────────────
 

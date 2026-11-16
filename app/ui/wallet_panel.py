@@ -55,6 +55,7 @@ _BG     = "#0d1117"
 _BORDER = "#30363d"
 
 _AUTO_REFRESH_MS = 5 * 60 * 1000  # 5 minutes
+_BACKFILL_UI_THROTTLE_MS = 30 * 1000  # at most one full closed-history reload per 30 s
 _BACKFILL_START  = 100             # offset after the 2-page main fetch (pages 1-2 = offsets 0-99)
 
 
@@ -351,6 +352,14 @@ class WalletPanel(QWidget):
 
         init_db()
 
+        # Backfill pages are coalesced into one reload per throttle window:
+        # each reload rebuilds every closed row in two tables on the UI thread,
+        # so reloading per 50-row page froze the app for seconds at a time.
+        self._backfill_ui_timer = QTimer(self)
+        self._backfill_ui_timer.setSingleShot(True)
+        self._backfill_ui_timer.setInterval(_BACKFILL_UI_THROTTLE_MS)
+        self._backfill_ui_timer.timeout.connect(self._emit_closed_cache)
+
         self._timer = QTimer(self)
         self._timer.setInterval(_AUTO_REFRESH_MS)
         self._timer.timeout.connect(self._on_timer_tick)
@@ -558,26 +567,27 @@ class WalletPanel(QWidget):
         _dlog("activity_backfill", "done — %d total activity rows in cache", total)
 
     def _on_backfill_page_done(self) -> None:
-        """After each backfill page: reload ALL cached rows from DB and push to UI.
+        """Schedule a throttled reload; pages arriving inside the window coalesce."""
+        if not self._backfill_ui_timer.isActive():
+            self._backfill_ui_timer.start()
+
+    def _on_backfill_done(self) -> None:
+        """Final reload once all backfill pages are complete."""
+        self._backfill_ui_timer.stop()
+        self._emit_closed_cache()
+
+    def _emit_closed_cache(self) -> None:
+        """Reload ALL cached closed rows from DB and push to UI.
 
         Uses load_all_closed_for_wallet (no row cap) so the full history is emitted,
         not just the first 2000 rows.
         """
         try:
             all_closed = load_all_closed_for_wallet(self._full_address)
-            _dlog("backfill", "page done — %d total in cache", len(all_closed))
+            _dlog("backfill", "reload — %d total closed in cache", len(all_closed))
             self.closed_cache_updated.emit(all_closed)
         except Exception as exc:
-            _dlog("backfill", "ERROR in _on_backfill_page_done: %s", exc)
-
-    def _on_backfill_done(self) -> None:
-        """Final reload once all backfill pages are complete."""
-        try:
-            all_closed = load_all_closed_for_wallet(self._full_address)
-            _dlog("backfill", "done — %d total closed in cache", len(all_closed))
-            self.closed_cache_updated.emit(all_closed)
-        except Exception as exc:
-            _dlog("backfill", "ERROR in _on_backfill_done: %s", exc)
+            _dlog("backfill", "ERROR reloading closed cache: %s", exc)
 
     def _start_slug_backfill(self) -> None:
         """Start a background slug backfill if the cache has rows with missing slugs."""

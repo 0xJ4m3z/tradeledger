@@ -3,7 +3,7 @@ import os
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from app.models import ActivePosition, ResolvedPosition, UserActivity
 
@@ -20,6 +20,9 @@ def get_connection() -> sqlite3.Connection:
 
 def init_db() -> None:
     with get_connection() as conn:
+        # WAL (persistent per DB file): reads no longer block while a backfill
+        # thread commits, so UI-thread queries don't stall on the write lock.
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS snapshots (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -284,6 +287,13 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_activity_wallet_ts "
             "ON activity_cache(wallet_address, timestamp DESC)"
         )
+        # Per-market lookup in upsert_activity_derived_closed_positions, which runs
+        # on the UI thread every activity refresh.  Without it each lookup scanned
+        # the wallet's whole closed history: ~12 s per refresh at 7k closed rows.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_closed_wallet_market "
+            "ON closed_positions_cache(wallet_address, market)"
+        )
         # Trade notes — keyed by (wallet_address, market).  Persists across sessions;
         # never committed (gitignored via *.db).
         conn.execute("""
@@ -545,19 +555,27 @@ def upsert_activity_derived_closed_positions(
         return 0
     inserted = 0
     with get_connection() as conn:
+        # Match by market only — a wallet cannot hold both sides of the
+        # same market, so one row per market is the expected invariant.
+        # Matching on outcome_held too would miss stale rows where the
+        # REDEEM event had outcome="" (stored as outcome_held="") while
+        # the BUY event had outcome="Yes" (stored in earlier rows).
+        #
+        # Loaded once up front instead of one SELECT per position: this runs on
+        # the UI thread, and thousands of tiny queries each re-acquiring the GIL
+        # behind busy backfill threads froze the app for 10+ s per refresh.
+        by_market: Dict[str, List[list]] = {}
+        for r in conn.execute(
+            "SELECT id, market, cost_basis FROM closed_positions_cache "
+            "WHERE wallet_address = ? ORDER BY id",
+            (wallet_address,),
+        ):
+            by_market.setdefault(r["market"], []).append([r["id"], r["cost_basis"]])
         for p in positions:
-            existing = conn.execute(
-                # Match by market only — a wallet cannot hold both sides of the
-                # same market, so one row per market is the expected invariant.
-                # Matching on outcome_held too would miss stale rows where the
-                # REDEEM event had outcome="" (stored as outcome_held="") while
-                # the BUY event had outcome="Yes" (stored in earlier rows).
-                "SELECT id, cost_basis FROM closed_positions_cache "
-                "WHERE wallet_address = ? AND market = ? LIMIT 1",
-                (wallet_address, p.market),
-            ).fetchone()
+            rows = by_market.get(p.market)
+            existing = rows[0] if rows else None
             if existing:
-                old_cost = existing["cost_basis"]
+                old_cost = existing[1]
                 new_cost = p.cost_basis
                 # Correct two classes of stale rows:
                 # 1. cost_basis=0 — prior derivation couldn't match BUY costs.
@@ -574,13 +592,14 @@ def upsert_activity_derived_closed_positions(
                 if needs_correction:
                     conn.execute(
                         "DELETE FROM closed_positions_cache WHERE id = ?",
-                        (existing["id"],),
+                        (existing[0],),
                     )
+                    rows.pop(0)
                     # fall through to INSERT below
                 else:
                     continue  # has good data; preserve it
             key = _position_key(p)
-            conn.execute(
+            cur = conn.execute(
                 "INSERT OR IGNORE INTO closed_positions_cache "
                 "(wallet_address, position_key, market, outcome_held, winning_outcome, "
                 "quantity, cost_basis, redeem_value, redeemed, resolved_date, closed_at, "
@@ -590,6 +609,8 @@ def upsert_activity_derived_closed_positions(
                  p.quantity, p.cost_basis, p.redeem_value, int(p.redeemed),
                  p.resolved_date, p.closed_at, p.realized_pnl),
             )
+            if cur.rowcount:
+                by_market.setdefault(p.market, []).append([cur.lastrowid, p.cost_basis])
             inserted += 1
         conn.commit()
     return inserted

@@ -1,4 +1,4 @@
-PySide6>=6.5.0
+PySide6>=6.5.0,<6.10  # 6.12.0 crashes (heap corruption: "free(): invalid pointer"); 6.9.2 verified
 pandas>=2.0.0
 matplotlib>=3.7.0
 requests>=2.31.0
