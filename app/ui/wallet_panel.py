@@ -127,6 +127,10 @@ class _BackfillThread(QThread):
         super().__init__()
         self._address      = address
         self._start_offset = start_offset
+        self._changed_any  = False
+
+    def changed_any(self) -> bool:
+        return self._changed_any
 
     def run(self) -> None:
         offset = self._start_offset
@@ -165,9 +169,12 @@ class _BackfillThread(QThread):
                 break
 
             try:
-                upsert_closed_positions_cache(page, self._address)
-                _dlog("backfill", "closed offset=%d  inserted=%d", offset, len(page))
-                self.page_done.emit()
+                changed = upsert_closed_positions_cache(page, self._address)
+                _dlog("backfill", "closed offset=%d  rows=%d changed=%d",
+                      offset, len(page), changed)
+                if changed:
+                    self._changed_any = True
+                    self.page_done.emit()
             except Exception as exc:
                 _dlog("backfill", "closed persist error at offset=%d: %s", offset, exc)
 
@@ -574,7 +581,10 @@ class WalletPanel(QWidget):
     def _on_backfill_done(self) -> None:
         """Final reload once all backfill pages are complete."""
         self._backfill_ui_timer.stop()
-        self._emit_closed_cache()
+        if self._backfill is None or self._backfill.changed_any():
+            self._emit_closed_cache()
+        else:
+            _dlog("backfill", "done — nothing new, skipping reload")
 
     def _emit_closed_cache(self) -> None:
         """Reload ALL cached closed rows from DB and push to UI.

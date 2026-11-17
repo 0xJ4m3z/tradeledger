@@ -452,6 +452,14 @@ def _fmt_closed_date(p: ResolvedPosition) -> str:
 
 
 _OVERVIEW_ROW_CAP = 100   # max rows rendered in the overview panel grid
+def _row_sig(p) -> tuple:
+    """Every field the Sold/Closed grids render, for change detection."""
+    return (p.market, p.outcome_held, p.winning_outcome, p.quantity, p.cost_basis,
+            p.redeem_value, p.redeemed, p.realized_pnl, p.closed_at, p.resolved_date,
+            getattr(p, "close_type", None), p.slug)
+
+
+_MARKET_TRADE_REFRESH_GAP_S = 60  # min gap between refreshes triggered by public market trades
 
 
 def _closed_section(
@@ -573,6 +581,8 @@ class OverviewWidget(QWidget):
         self._stream_token_ids: set             = set()
         self._price_update_pending: bool        = False
         self._trade_debounce: QTimer | None     = None
+        self._last_market_trade_refresh         = 0.0
+        self._closed_sections_sig: tuple | None = None
 
         # User stream (authenticated WebSocket) — started when credentials are loaded
         self._user_stream: UserStreamThread | None = None
@@ -803,14 +813,21 @@ class OverviewWidget(QWidget):
         self._loss_watch_card.update_count(lw)
 
     def _on_stream_trade(self, asset_id: str, side: str) -> None:
-        """Schedule a quick full refresh when any trade hits one of our tokens.
+        """Schedule a refresh when a trade hits one of our tokens.
 
-        Debounced to 5 s so a burst of trades (e.g. a merge position) only
-        triggers one refresh.  Catches our own buys/sells much earlier than
-        the 5-minute polling interval.
+        This is the public market channel: it reports *everyone's* trades, so a
+        busy market (BTC 5-min) fires every few seconds, and each full refresh
+        blocks the UI for seconds. When the authenticated user stream is up it
+        reports our own trades exactly, so this is skipped; otherwise it is
+        rate-limited to one refresh per _MARKET_TRADE_REFRESH_GAP_S.
         """
+        if self._user_stream_connected:
+            return
         if self._trade_debounce and self._trade_debounce.isActive():
             return   # already scheduled
+        if time.monotonic() - self._last_market_trade_refresh < _MARKET_TRADE_REFRESH_GAP_S:
+            return
+        self._last_market_trade_refresh = time.monotonic()
         self._trade_debounce = QTimer(self)
         self._trade_debounce.setSingleShot(True)
         self._trade_debounce.timeout.connect(self.request_refresh)
@@ -1022,14 +1039,24 @@ class OverviewWidget(QWidget):
         filtered      = filter_closed_by_selection(self._closed_positions, self._selection)
         stub_filtered = filter_closed_by_selection(self._sold_stubs, self._selection)
         label         = self._selection.display_label()
+        graduated = [p for p in stub_filtered
+                     if _window_closed(p.market, p.resolved_date, p.closed_at)]
+        # Building these grids costs seconds, and most refreshes change nothing:
+        # skip when the rows and their Sold/Closed placement are unchanged.
+        open_sold = [p for p in stub_filtered + filtered
+                     if getattr(p, "close_type", None) == "SOLD"
+                     and not _window_closed(p.market, p.resolved_date, p.closed_at)]
+        sig = (label, len(graduated), len(open_sold),
+               tuple(_row_sig(p) for p in stub_filtered + filtered))
+        if sig == self._closed_sections_sig:
+            return
+        self._closed_sections_sig = sig
         # Sold section: stubs whose market window is still open + real SOLD from API
         self._replace_section("_sold_section", _sold_section(stub_filtered + filtered, label, self._activity))
         # Closed section: real positions + "graduated" stubs — stubs whose market
         # window has now closed but haven't yet appeared in the closed-positions API.
         # Without this, a freshly-sold position disappears for the brief window between
         # the market closing and the API indexing the record.
-        graduated = [p for p in stub_filtered
-                     if _window_closed(p.market, p.resolved_date, p.closed_at)]
         self._replace_section("_cls_section",  _closed_section(graduated + filtered, label, self._activity))
 
     def _update_pnl_chart(self) -> None:

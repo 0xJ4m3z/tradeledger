@@ -493,8 +493,12 @@ def _position_key(p: ResolvedPosition) -> str:
 def upsert_closed_positions_cache(
     positions: List[ResolvedPosition],
     wallet_address: str = "",
-) -> None:
+) -> int:
     """Insert or update cached closed positions keyed by (wallet_address, position_key).
+
+    Returns how many rows were inserted or actually changed. Rows identical to
+    the cache are left untouched, so callers can skip UI reloads when a page
+    brought nothing new (backfill re-reads thousands of known rows).
 
     Uses explicit SELECT + INSERT/UPDATE instead of ON CONFLICT so the upsert
     works regardless of which unique indexes exist on the table (the ON CONFLICT
@@ -502,16 +506,27 @@ def upsert_closed_positions_cache(
     the time the statement executes, which was unreliable across schema versions).
     """
     if not positions:
-        return
+        return 0
+    changed = 0
     with get_connection() as conn:
         for p in positions:
             key = _position_key(p)
             existing = conn.execute(
-                "SELECT id FROM closed_positions_cache "
+                "SELECT winning_outcome, quantity, cost_basis, redeem_value, "
+                "realized_pnl, closed_at, slug FROM closed_positions_cache "
                 "WHERE wallet_address = ? AND position_key = ? LIMIT 1",
                 (wallet_address, key),
             ).fetchone()
             if existing:
+                after = (
+                    p.winning_outcome, p.quantity, p.cost_basis,
+                    p.redeem_value, p.realized_pnl,
+                    p.closed_at if p.closed_at is not None else existing[5],
+                    p.slug if p.slug is not None else existing[6],
+                )
+                if tuple(existing) == after:
+                    continue
+                changed += 1
                 conn.execute(
                     "UPDATE closed_positions_cache SET "
                     "winning_outcome = ?, quantity = ?, cost_basis = ?, "
@@ -535,7 +550,9 @@ def upsert_closed_positions_cache(
                      p.quantity, p.cost_basis, p.redeem_value, int(p.redeemed),
                      p.resolved_date, p.closed_at, p.realized_pnl, p.slug),
                 )
+                changed += 1
         conn.commit()
+    return changed
 
 
 def upsert_activity_derived_closed_positions(
